@@ -21,7 +21,12 @@ proc generateUstva*(
   zeitraum: string,
   kz81: Option[float] = none(float),
   kz86: Option[float] = none(float),
-  herstellerId: string = "74931",
+  herstellerId: string,
+  produktName: string,
+  name: string,
+  strasse: string,
+  plz: string,
+  ort: string,
 ): string =
   ## Generate ELSTER XML for Umsatzsteuervoranmeldung
   ##
@@ -71,12 +76,12 @@ proc generateUstva*(
   <TransferHeader version="11">
     <Verfahren>ElsterAnmeldung</Verfahren>
     <DatenArt>UStVA</DatenArt>
-    <Vorgang>send-NoSig</Vorgang>
+    <Vorgang>send-Auth</Vorgang>
     <Testmerker>700000004</Testmerker>
     <HerstellerID>{herstellerId}</HerstellerID>
-    <DatenLieferant>viking</DatenLieferant>
+    <DatenLieferant>{name}</DatenLieferant>
     <Datei>
-      <Verschluesselung>PKCS#7v1.5</Verschluesselung>
+      <Verschluesselung>CMSEncryptedData</Verschluesselung>
       <Kompression>GZIP</Kompression>
       <TransportSchluessel></TransportSchluessel>
     </Datei>
@@ -87,19 +92,19 @@ proc generateUstva*(
         <NutzdatenTicket>1</NutzdatenTicket>
         <Empfaenger id="F">{finanzamt}</Empfaenger>
         <Hersteller>
-          <ProduktName>viking</ProduktName>
+          <ProduktName>{produktName}</ProduktName>
           <ProduktVersion>0.1.0</ProduktVersion>
         </Hersteller>
       </NutzdatenHeader>
       <Nutzdaten>
-        <Anmeldungssteuern art="UStVA" version="{jahr}01">
-          <DatenLieferant>
-            <Name>viking</Name>
-            <Strasse></Strasse>
-            <PLZ></PLZ>
-            <Ort></Ort>
-          </DatenLieferant>
+        <Anmeldungssteuern version="{jahr}" xmlns="http://finkonsens.de/elster/elsteranmeldung/ustva/v{jahr}">
           <Erstellungsdatum>{now().format("yyyyMMdd")}</Erstellungsdatum>
+          <DatenLieferant>
+            <Name>{name}</Name>
+            <Strasse>{strasse}</Strasse>
+            <PLZ>{plz}</PLZ>
+            <Ort>{ort}</Ort>
+          </DatenLieferant>
           <Steuerfall>
             <Umsatzsteuervoranmeldung>
               <Jahr>{jahr}</Jahr>

@@ -13,6 +13,11 @@ type
     certPin*: string
     steuernummer*: string
     herstellerId*: string
+    produktName*: string
+    name*: string
+    strasse*: string
+    plz*: string
+    ort*: string
 
 proc loadConfig*(): Config =
   ## Load configuration from .env file
@@ -28,7 +33,12 @@ proc loadConfig*(): Config =
   result.certPath = getEnv("CERT_PATH", "")
   result.certPin = getEnv("CERT_PIN", "")
   result.steuernummer = getEnv("STEUERNUMMER", "")
-  result.herstellerId = getEnv("HERSTELLER_ID", "74931")
+  result.herstellerId = getEnv("HERSTELLER_ID", "40036")
+  result.produktName = getEnv("PRODUKT_NAME", "Viking")
+  result.name = getEnv("DATENLIEFERANT_NAME", "")
+  result.strasse = getEnv("DATENLIEFERANT_STRASSE", "")
+  result.plz = getEnv("DATENLIEFERANT_PLZ", "")
+  result.ort = getEnv("DATENLIEFERANT_ORT", "")
 
 proc validate*(cfg: Config): seq[string] =
   ## Validate configuration and return list of errors
@@ -58,6 +68,15 @@ proc validate*(cfg: Config): seq[string] =
 proc validateForSubmission*(cfg: Config): seq[string] =
   ## Full validation for actual submission
   result = cfg.validate()
+
+  if cfg.name == "":
+    result.add("DATENLIEFERANT_NAME not set (sender name)")
+  if cfg.strasse == "":
+    result.add("DATENLIEFERANT_STRASSE not set (sender street)")
+  if cfg.plz == "":
+    result.add("DATENLIEFERANT_PLZ not set (sender postal code)")
+  if cfg.ort == "":
+    result.add("DATENLIEFERANT_ORT not set (sender city)")
 
 proc validateForValidateOnly*(cfg: Config): seq[string] =
   ## Minimal validation for validate-only mode (no cert needed)

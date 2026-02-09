@@ -76,6 +76,11 @@ proc submit(
     kz81 = amount19,
     kz86 = amount7,
     herstellerId = cfg.herstellerId,
+    produktName = cfg.produktName,
+    name = cfg.name,
+    strasse = cfg.strasse,
+    plz = cfg.plz,
+    ort = cfg.ort,
   )
 
   # Load ERiC library
