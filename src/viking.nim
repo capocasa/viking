@@ -4,7 +4,7 @@
 import std/[strutils, strformat, times, options, os]
 import cligen, cligen/argcvt
 import dotenv
-import config, eric_ffi, ustva_xml, eric_setup
+import config, eric_ffi, ustva_xml, eric_setup, invoices
 
 # Custom cligen converters for Option[float]
 proc argParse(dst: var Option[float], dfl: Option[float], a: var ArgcvtParams): bool =
@@ -21,6 +21,7 @@ proc argHelp(dfl: Option[float], a: var ArgcvtParams): seq[string] =
 proc submit(
   amount19: Option[float] = none(float),
   amount7: Option[float] = none(float),
+  invoiceFile: string = "",
   period: string = "",
   year: int = 0,
   validateOnly: bool = false,
@@ -47,10 +48,40 @@ proc submit(
     echo &"Error: Invalid period '{period}'. Use 01-12 for monthly or 41-44 for quarterly."
     return 1
 
-  # At least one amount should be specified
-  if amount19.isNone and amount7.isNone:
-    echo "Error: At least one of --amount19 or --amount7 must be specified"
+  # Determine input mode: --invoices XOR --amount19/--amount7
+  let hasAmounts = amount19.isSome or amount7.isSome
+  let hasInvoices = invoiceFile != ""
+
+  if hasAmounts and hasInvoices:
+    echo "Error: --invoice-file and --amount19/--amount7 are mutually exclusive"
     return 1
+
+  if not hasAmounts and not hasInvoices:
+    echo "Error: Specify --amount19/--amount7 or --invoice-file"
+    return 1
+
+  # Resolve final amounts
+  var finalAmount19 = amount19
+  var finalAmount7 = amount7
+
+  if hasInvoices:
+    let (agg, ok) = loadAndAggregateInvoices(invoiceFile)
+    if not ok:
+      return 1
+    finalAmount19 = agg.amount19
+    finalAmount7 = agg.amount7
+    # If no invoices at all, both are none - that's a zero submission
+    if finalAmount19.isNone and finalAmount7.isNone:
+      finalAmount19 = some(0.0)
+    # Print invoice summary
+    echo &"=== Invoices ==="
+    echo &"File:     {invoiceFile}"
+    echo &"Count:    {agg.count}"
+    if agg.amount19.isSome:
+      echo &"Sum 19%:  {agg.amount19.get:.2f} EUR"
+    if agg.amount7.isSome:
+      echo &"Sum 7%:   {agg.amount7.get:.2f} EUR"
+    echo ""
 
   # Load and validate configuration
   var cfg: Config
@@ -72,16 +103,16 @@ proc submit(
     return 1
 
   # Extract amounts (default to 0 if provided but for XML generation)
-  let amt19 = amount19.get(0.0)
-  let amt7 = amount7.get(0.0)
+  let amt19 = finalAmount19.get(0.0)
+  let amt7 = finalAmount7.get(0.0)
 
   # Generate XML
   let xml = generateUstva(
     steuernummer = cfg.steuernummer,
     jahr = actualYear,
     zeitraum = period,
-    kz81 = amount19,
-    kz86 = amount7,
+    kz81 = finalAmount19,
+    kz86 = finalAmount7,
     herstellerId = cfg.herstellerId,
     produktName = cfg.produktName,
     name = cfg.name,
@@ -166,9 +197,9 @@ proc submit(
   echo &"Period:      {period} ({periodDescription(period)})"
   echo &"Tax number:  {cfg.steuernummer}"
   echo ""
-  if amount19.isSome:
+  if finalAmount19.isSome:
     echo &"Kz81 (19%):  {amt19:.2f} EUR (base) -> {vat19:.2f} EUR VAT"
-  if amount7.isSome:
+  if finalAmount7.isSome:
     echo &"Kz86 (7%):   {amt7:.2f} EUR (base) -> {vat7:.2f} EUR VAT"
   echo &"Kz83 (total): {totalVat:.2f} EUR"
   echo ""
@@ -338,6 +369,7 @@ when isMainModule:
       help = {
         "amount19": "Net amount at 19% VAT rate (Kz81)",
         "amount7": "Net amount at 7% VAT rate (Kz86)",
+        "invoiceFile": "CSV/TSV invoice file (- for stdin)",
         "period": "Period: 01-12 (monthly) or 41-44 (quarterly)",
         "year": "Tax year (default: current year)",
         "validateOnly": "Only validate, don't send",
@@ -348,6 +380,7 @@ when isMainModule:
       short = {
         "amount19": '1',
         "amount7": '7',
+        "invoiceFile": 'i',
         "period": 'p',
         "year": 'y',
         "validateOnly": 'v',

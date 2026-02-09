@@ -169,11 +169,94 @@ check("missing --period shows error", noperiod.contains("--period is required"))
 
 let (noamt, noamtRc) = run("./viking submit --p 41")
 check("missing amounts is rejected", noamtRc != 0)
-check("missing amounts shows error", noamt.toLowerAscii.contains("at least one"))
+check("missing amounts shows error", noamt.contains("--amount19") or noamt.contains("--invoice-file"))
 
 let (badperiod, badperiodRc) = run("./viking submit --p 99 --amount19 100")
 check("invalid period is rejected", badperiodRc != 0)
 check("invalid period shows error", badperiod.contains("Invalid period"))
+echo ""
+
+# --- Invoice input ---
+echo "--- invoice input (CSV) ---"
+let invCsv = projectRoot / "tests" / "tmp_invoices.csv"
+
+# Test 1: CSV with header + mixed rates + negative amount
+writeFile(invCsv, "amount,rate,date,invoice-id,description\n1000,19,2026-01-15,INV-001,January sales\n500,7,2026-01-20,INV-002,Reduced rate\n-200,19,2026-01-25,CR-001,Credit note\n")
+let (csvOut, csvRc) = run("./viking submit -i " & invCsv & " --p 01 --dry-run")
+check("CSV mixed rates exits 0", csvRc == 0, csvOut)
+check("CSV shows invoice count", csvOut.contains("Count:    3"))
+check("CSV Kz81 = 800 (1000-200)", csvOut.contains("<Kz81>800</Kz81>"))
+check("CSV Kz86 = 500", csvOut.contains("<Kz86>500</Kz86>"))
+# 800*0.19 + 500*0.07 = 152 + 35 = 187
+check("CSV Kz83 = 187.00", csvOut.contains("<Kz83>187.00</Kz83>"))
+check("CSV shows sum 19%", csvOut.contains("Sum 19%:  800.00 EUR"))
+check("CSV shows sum 7%", csvOut.contains("Sum 7%:   500.00 EUR"))
+echo ""
+
+# Test 2: TSV without header (auto-detect)
+echo "--- invoice input (TSV) ---"
+let invTsv = projectRoot / "tests" / "tmp_invoices.tsv"
+writeFile(invTsv, "750\t19\n250\t7\n")
+let (tsvOut, tsvRc) = run("./viking submit -i " & invTsv & " --p 01 --dry-run")
+check("TSV auto-detect exits 0", tsvRc == 0, tsvOut)
+check("TSV Kz81 = 750", tsvOut.contains("<Kz81>750</Kz81>"))
+check("TSV Kz86 = 250", tsvOut.contains("<Kz86>250</Kz86>"))
+removeFile(invTsv)
+echo ""
+
+# Test 3: Amount-only (single column, default rate 19%)
+echo "--- invoice input (amount-only) ---"
+writeFile(invCsv, "100\n200\n300\n")
+let (amtOut, amtRc) = run("./viking submit -i " & invCsv & " --p 01 --dry-run")
+check("amount-only exits 0", amtRc == 0, amtOut)
+check("amount-only Kz81 = 600", amtOut.contains("<Kz81>600</Kz81>"))
+check("amount-only no Kz86", not amtOut.contains("<Kz86>"))
+echo ""
+
+# Test 4: Mutual exclusivity (--invoices + --amount19 rejected)
+echo "--- invoice mutual exclusivity ---"
+writeFile(invCsv, "100\n")
+let (mutexOut, mutexRc) = run("./viking submit -i " & invCsv & " --amount19 100 --p 01 --dry-run")
+check("mutex rejected", mutexRc != 0)
+check("mutex shows error", mutexOut.contains("mutually exclusive"))
+echo ""
+
+# Test 5: Empty file -> zero submission
+echo "--- invoice empty file ---"
+writeFile(invCsv, "")
+let (emptyOut, emptyRc) = run("./viking submit -i " & invCsv & " --p 01 --dry-run")
+check("empty file exits 0", emptyRc == 0, emptyOut)
+check("empty file count 0", emptyOut.contains("Count:    0"))
+check("empty file has Kz81 = 0", emptyOut.contains("<Kz81>0</Kz81>"))
+echo ""
+
+# Test 6: Validation errors (bad amount, bad rate)
+echo "--- invoice validation errors ---"
+writeFile(invCsv, "100,19\nabc,19\n100,99\n")
+let (valErrOut, valErrRc) = run("./viking submit -i " & invCsv & " --p 01 --dry-run")
+check("validation errors rejected", valErrRc != 0)
+check("bad amount reported", valErrOut.contains("line 2") and valErrOut.contains("invalid amount"))
+check("bad rate reported", valErrOut.contains("line 3") and valErrOut.contains("invalid rate"))
+echo ""
+
+# Test 7: Header-only file -> zero submission
+echo "--- invoice header-only ---"
+writeFile(invCsv, "amount,rate,date\n")
+let (hdrOut, hdrRc) = run("./viking submit -i " & invCsv & " --p 01 --dry-run")
+check("header-only exits 0", hdrRc == 0, hdrOut)
+check("header-only count 0", hdrOut.contains("Count:    0"))
+echo ""
+
+# Test 8: Comment lines skipped
+echo "--- invoice comments ---"
+writeFile(invCsv, "# This is a comment\n100,19\n# Another comment\n200,7\n")
+let (cmtOut, cmtRc) = run("./viking submit -i " & invCsv & " --p 01 --dry-run")
+check("comments exits 0", cmtRc == 0, cmtOut)
+check("comments count 2", cmtOut.contains("Count:    2"))
+check("comments Kz81 = 100", cmtOut.contains("<Kz81>100</Kz81>"))
+check("comments Kz86 = 200", cmtOut.contains("<Kz86>200</Kz86>"))
+
+removeFile(invCsv)
 echo ""
 
 # --- Summary ---
