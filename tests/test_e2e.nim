@@ -67,6 +67,21 @@ check("dry-run XML has Testmerker 700000004", dryOut.contains("<Testmerker>70000
 check("dry-run XML has Empfaenger", dryOut.contains("""<Empfaenger id="F">9198</Empfaenger>"""))
 echo ""
 
+# --- Testmerker presence based on TEST flag ---
+echo "--- TEST flag ---"
+# Create a minimal env with TEST=0 (production)
+let prodEnv = projectRoot / "tests" / ".env.test_prod"
+writeFile(prodEnv, readFile(projectRoot / ".env").replace("TEST=1", "TEST=0"))
+let (prodOut, prodRc) = run("./viking submit --p 41 --amount19 0 --dry-run --env " & prodEnv)
+check("TEST=0 dry-run exits 0", prodRc == 0, prodOut)
+check("TEST=0 no Testmerker", not prodOut.contains("Testmerker"), prodOut)
+
+let (testOut, testRc) = run("./viking submit --p 41 --amount19 0 --dry-run")
+check("TEST=1 dry-run exits 0", testRc == 0, testOut)
+check("TEST=1 has Testmerker", testOut.contains("<Testmerker>700000004</Testmerker>"))
+removeFile(prodEnv)
+echo ""
+
 # --- Submit: dry-run with both rates ---
 echo "--- submit --dry-run (19% + 7%) ---"
 let (dryBoth, dryBothRc) = run("./viking submit --p 01 --amount19 500 --amount7 200 --dry-run")
