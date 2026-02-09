@@ -201,6 +201,22 @@ proc submit(
     echo &"Error: Operation failed with code {rc}"
     echo &"  {ericHoleFehlerText(rc)}"
 
+    # Actionable hints for known error codes
+    case rc
+    of 610301202:
+      echo ""
+      echo "Hint: The demo HerstellerID (74931) is blocked."
+      echo "  Register at https://www.elster.de/elsterweb/entwickler"
+      echo "  and set HERSTELLER_ID in your .env file."
+    of 610301200:
+      echo ""
+      echo "Hint: XML schema validation failed. Check /tmp/eric_logs/eric.log for details."
+    of 610001050:
+      echo ""
+      echo "Hint: Buffer instance mismatch - this is likely a bug in the FFI bindings."
+    else:
+      discard
+
     if response.len > 0:
       echo ""
       echo "Details:"

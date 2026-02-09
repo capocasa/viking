@@ -1,7 +1,7 @@
 ## End-to-end sandbox tests for viking
 ## Requires: ERiC library + test certificates in test/cache (run `viking fetch` first)
 
-import std/[osproc, strutils, os]
+import std/[osproc, strutils, os, algorithm]
 
 var failures = 0
 var passes = 0
@@ -95,6 +95,55 @@ elif herstellerIdBlocked:
   check("validate-only: only HerstellerID issue (expected with demo ID)", true)
 else:
   check("validate-only: unexpected error", false, valOut)
+echo ""
+
+# --- Submit: full send path ---
+echo "--- submit (send) ---"
+let (sendOut, sendRc) = run("./viking submit --p 41 --amount19 0")
+let sendSchemaOk = not sendOut.contains("610301200")
+let sendCertOk = not sendOut.contains("610001050")
+check("send: no XML schema errors", sendSchemaOk, sendOut)
+check("send: no certificate errors", sendCertOk, sendOut)
+let sendHidBlocked = sendOut.contains("610301202")
+if sendRc == 0:
+  check("send: succeeds", true)
+elif sendHidBlocked:
+  check("send: only HerstellerID issue (expected with demo ID)", true)
+  check("send: shows actionable hint", sendOut.contains("HERSTELLER_ID"))
+else:
+  check("send: unexpected error", false, sendOut)
+echo ""
+
+# --- Per-year validation ---
+echo "--- per-year validation (2025+) ---"
+# Discover available UStVA years from plugin files
+let pluginPath = getEnv("ERIC_PLUGIN_PATH", "test/cache/eric/ERiC-43.3.2.0/Linux-x86_64/lib/plugins")
+var years: seq[int] = @[]
+for kind, path in walkDir(pluginPath):
+  if kind == pcFile:
+    let name = path.extractFilename
+    if name.startsWith("libcheckUStVA_") and name.endsWith(".so"):
+      try:
+        let y = parseInt(name[14..^4])
+        if y >= 2025:
+          years.add(y)
+      except ValueError:
+        discard
+years.sort()
+
+check("found UStVA plugins for 2025+", years.len > 0, "plugins in: " & pluginPath)
+for year in years:
+  let (yearOut, yearRc) = run("./viking submit --p 41 --amount19 1000 --year " & $year & " --validate-only")
+  let yearSchemaOk = not yearOut.contains("610301200")
+  let yearCertOk = not yearOut.contains("610001050")
+  let yearHidBlocked = yearOut.contains("610301202")
+  let yearOk = yearRc == 0 or yearHidBlocked
+  check($year & " schema valid", yearSchemaOk, yearOut)
+  check($year & " no cert errors", yearCertOk, yearOut)
+  if yearOk:
+    check($year & " passes validation", true)
+  else:
+    check($year & " passes validation", false, yearOut)
 echo ""
 
 # --- Submit: input validation ---
