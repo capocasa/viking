@@ -1,4 +1,7 @@
 .env
 viking
 tags
-.cache/
+test/cache/
+nimble.develop
+nimble.paths
+nimbledeps

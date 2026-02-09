@@ -3,6 +3,7 @@
 
 import std/[strutils, strformat, times, options, os]
 import cligen, cligen/argcvt
+import dotenv
 import config, eric_ffi, ustva_xml, eric_setup
 
 # Custom cligen converters for Option[float]
@@ -74,6 +75,7 @@ proc submit(
     zeitraum = period,
     kz81 = amount19,
     kz86 = amount7,
+    herstellerId = cfg.herstellerId,
   )
 
   # Load ERiC library
@@ -124,7 +126,7 @@ proc submit(
 
   if not validateOnly:
     # Open certificate
-    let (certRc, handle) = ericCreateTH(cfg.certPath, cfg.certPin)
+    let (certRc, handle) = ericGetHandleToCertificate(cfg.certPath)
     if certRc != 0:
       echo &"Error: Failed to open certificate with code {certRc}"
       echo &"  {ericHoleFehlerText(certRc)}"
@@ -138,7 +140,7 @@ proc submit(
 
   defer:
     if certHandle != 0:
-      discard ericCloseHandleTH(certHandle)
+      discard ericCloseHandleToCertificate(certHandle)
 
   # Calculate VAT for display
   let vat19 = amt19 * 0.19
@@ -223,6 +225,10 @@ proc fetch(file: string = "", check: bool = false): int =
   ##   viking fetch                      # Auto-download ERiC + test certs
   ##   viking fetch --file=ERiC.jar      # Install from local archive
   ##   viking fetch --check              # Check existing installation
+
+  # Load .env so VIKING_CACHE_DIR is available
+  if fileExists(getCurrentDir() / ".env"):
+    load()
 
   echo &"Cache directory: {getAppCacheDir()}"
   echo ""

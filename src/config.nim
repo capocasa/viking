@@ -12,6 +12,7 @@ type
     certPath*: string
     certPin*: string
     steuernummer*: string
+    herstellerId*: string
 
 proc loadConfig*(): Config =
   ## Load configuration from .env file
@@ -27,6 +28,7 @@ proc loadConfig*(): Config =
   result.certPath = getEnv("CERT_PATH", "")
   result.certPin = getEnv("CERT_PIN", "")
   result.steuernummer = getEnv("STEUERNUMMER", "")
+  result.herstellerId = getEnv("HERSTELLER_ID", "74931")
 
 proc validate*(cfg: Config): seq[string] =
   ## Validate configuration and return list of errors

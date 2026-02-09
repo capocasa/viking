@@ -45,12 +45,12 @@ type
   EricRueckgabepufferInhaltProc = proc(buf: EricRueckgabepuffer): cstring {.cdecl.}
   EricRueckgabepufferFreigabeProc = proc(buf: EricRueckgabepuffer): cint {.cdecl.}
   EricHoleFehlerTextProc = proc(code: cint, buf: EricRueckgabepuffer): cint {.cdecl.}
-  EricCreateTH_Proc = proc(
-    zertifikatPfad: cstring,
-    passwort: cstring,
-    zertifikatHandle: ptr EricZertifikatHandle
+  EricGetHandleToCertificateProc = proc(
+    hToken: ptr EricZertifikatHandle,
+    iInfoPinSupport: ptr uint32,
+    pathToKeystore: cstring
   ): cint {.cdecl.}
-  EricCloseHandleTH_Proc = proc(zertifikatHandle: EricZertifikatHandle): cint {.cdecl.}
+  EricCloseHandleToCertificateProc = proc(hToken: EricZertifikatHandle): cint {.cdecl.}
 
 # Function pointers
 var
@@ -61,8 +61,8 @@ var
   pEricRueckgabepufferInhalt: EricRueckgabepufferInhaltProc = nil
   pEricRueckgabepufferFreigabe: EricRueckgabepufferFreigabeProc = nil
   pEricHoleFehlerText: EricHoleFehlerTextProc = nil
-  pEricCreateTH: EricCreateTH_Proc = nil
-  pEricCloseHandleTH: EricCloseHandleTH_Proc = nil
+  pEricGetHandleToCertificate: EricGetHandleToCertificateProc = nil
+  pEricCloseHandleToCertificate: EricCloseHandleToCertificateProc = nil
 
 # Dynamic library loading
 when defined(windows):
@@ -80,8 +80,8 @@ when defined(windows):
     pEricRueckgabepufferInhalt = cast[EricRueckgabepufferInhaltProc](symAddr(ericLibHandle, "EricRueckgabepufferInhalt"))
     pEricRueckgabepufferFreigabe = cast[EricRueckgabepufferFreigabeProc](symAddr(ericLibHandle, "EricRueckgabepufferFreigabe"))
     pEricHoleFehlerText = cast[EricHoleFehlerTextProc](symAddr(ericLibHandle, "EricHoleFehlerText"))
-    pEricCreateTH = cast[EricCreateTH_Proc](symAddr(ericLibHandle, "EricCreateTH"))
-    pEricCloseHandleTH = cast[EricCloseHandleTH_Proc](symAddr(ericLibHandle, "EricCloseHandleTH"))
+    pEricGetHandleToCertificate = cast[EricGetHandleToCertificateProc](symAddr(ericLibHandle, "EricGetHandleToCertificate"))
+    pEricCloseHandleToCertificate = cast[EricCloseHandleToCertificateProc](symAddr(ericLibHandle, "EricCloseHandleToCertificate"))
 
     return pEricInitialisiere != nil and pEricBeende != nil
 else:
@@ -99,8 +99,8 @@ else:
     pEricRueckgabepufferInhalt = cast[EricRueckgabepufferInhaltProc](symAddr(ericLibHandle, "EricRueckgabepufferInhalt"))
     pEricRueckgabepufferFreigabe = cast[EricRueckgabepufferFreigabeProc](symAddr(ericLibHandle, "EricRueckgabepufferFreigabe"))
     pEricHoleFehlerText = cast[EricHoleFehlerTextProc](symAddr(ericLibHandle, "EricHoleFehlerText"))
-    pEricCreateTH = cast[EricCreateTH_Proc](symAddr(ericLibHandle, "EricCreateTH"))
-    pEricCloseHandleTH = cast[EricCloseHandleTH_Proc](symAddr(ericLibHandle, "EricCloseHandleTH"))
+    pEricGetHandleToCertificate = cast[EricGetHandleToCertificateProc](symAddr(ericLibHandle, "EricGetHandleToCertificate"))
+    pEricCloseHandleToCertificate = cast[EricCloseHandleToCertificateProc](symAddr(ericLibHandle, "EricCloseHandleToCertificate"))
 
     return pEricInitialisiere != nil and pEricBeende != nil
 
@@ -173,14 +173,15 @@ proc ericHoleFehlerText*(code: int): string =
     return "Unknown error code: " & $code
   result = ericRueckgabepufferInhalt(buf)
 
-proc ericCreateTH*(zertifikatPfad: string, passwort: string): tuple[rc: int, handle: EricZertifikatHandle] =
-  if pEricCreateTH == nil:
+proc ericGetHandleToCertificate*(pathToKeystore: string): tuple[rc: int, handle: EricZertifikatHandle] =
+  if pEricGetHandleToCertificate == nil:
     return (-1, 0)
   var handle: EricZertifikatHandle = 0
-  let rc = pEricCreateTH(zertifikatPfad.cstring, passwort.cstring, addr handle)
+  var pinSupport: uint32 = 0
+  let rc = pEricGetHandleToCertificate(addr handle, addr pinSupport, pathToKeystore.cstring)
   result = (rc.int, handle)
 
-proc ericCloseHandleTH*(handle: EricZertifikatHandle): int =
-  if pEricCloseHandleTH == nil:
+proc ericCloseHandleToCertificate*(handle: EricZertifikatHandle): int =
+  if pEricCloseHandleToCertificate == nil:
     return -1
-  result = pEricCloseHandleTH(handle).int
+  result = pEricCloseHandleToCertificate(handle).int

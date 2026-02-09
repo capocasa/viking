@@ -21,6 +21,7 @@ proc generateUstva*(
   zeitraum: string,
   kz81: Option[float] = none(float),
   kz86: Option[float] = none(float),
+  herstellerId: string = "74931",
 ): string =
   ## Generate ELSTER XML for Umsatzsteuervoranmeldung
   ##
@@ -62,40 +63,29 @@ proc generateUstva*(
   if kennzahlen.len > 0 and kennzahlen[^1] == '\n':
     kennzahlen = kennzahlen[0..^2]
 
+  # Extract Finanzamt number (first 4 digits of Steuernummer)
+  let finanzamt = steuernummer[0..3]
+
   let xml = &"""<?xml version="1.0" encoding="UTF-8"?>
 <Elster xmlns="http://www.elster.de/elsterxml/schema/v11">
   <TransferHeader version="11">
     <Verfahren>ElsterAnmeldung</Verfahren>
     <DatenArt>UStVA</DatenArt>
     <Vorgang>send-NoSig</Vorgang>
-    <Testmerker>000000000</Testmerker>
-    <HerstellerID>74931</HerstellerID>
+    <Testmerker>700000004</Testmerker>
+    <HerstellerID>{herstellerId}</HerstellerID>
     <DatenLieferant>viking</DatenLieferant>
-    <Eingangsdatum></Eingangsdatum>
     <Datei>
       <Verschluesselung>PKCS#7v1.5</Verschluesselung>
       <Kompression>GZIP</Kompression>
-      <DatenGroesse></DatenGroesse>
       <TransportSchluessel></TransportSchluessel>
     </Datei>
-    <RC>
-      <Rueckgabe>
-        <Code></Code>
-        <Text></Text>
-      </Rueckgabe>
-    </RC>
-    <VersionClient></VersionClient>
-    <Zusatz>
-      <Info></Info>
-    </Zusatz>
   </TransferHeader>
   <DatenTeil>
     <Nutzdatenblock>
       <NutzdatenHeader version="11">
         <NutzdatenTicket>1</NutzdatenTicket>
-        <Empfaenger id="F">
-          <Ziel></Ziel>
-        </Empfaenger>
+        <Empfaenger id="F">{finanzamt}</Empfaenger>
         <Hersteller>
           <ProduktName>viking</ProduktName>
           <ProduktVersion>0.1.0</ProduktVersion>
@@ -115,7 +105,7 @@ proc generateUstva*(
               <Jahr>{jahr}</Jahr>
               <Zeitraum>{zeitraum}</Zeitraum>
               <Steuernummer>{steuernummer}</Steuernummer>
-              <Kz09>74931</Kz09>
+              <Kz09>{herstellerId}</Kz09>
 {kennzahlen}
             </Umsatzsteuervoranmeldung>
           </Steuerfall>
