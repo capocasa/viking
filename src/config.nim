@@ -18,14 +18,18 @@ type
     strasse*: string
     plz*: string
     ort*: string
+    test*: bool
 
-proc loadConfig*(): Config =
-  ## Load configuration from .env file
+proc loadConfig*(envFile: string = ".env"): Config =
+  ## Load configuration from env file
 
-  # Try to load .env file from current directory
-  let envPath = getCurrentDir() / ".env"
-  if fileExists(envPath):
-    load()
+  let path = if envFile.isAbsolute: envFile
+             else: getCurrentDir() / envFile
+  if fileExists(path):
+    load(path.parentDir, path.extractFilename)
+  else:
+    if envFile != ".env":
+      raise newException(IOError, "Config file not found: " & path)
 
   result.ericLibPath = getEnv("ERIC_LIB_PATH", "")
   result.ericPluginPath = getEnv("ERIC_PLUGIN_PATH", "")
@@ -39,6 +43,7 @@ proc loadConfig*(): Config =
   result.strasse = getEnv("DATENLIEFERANT_STRASSE", "")
   result.plz = getEnv("DATENLIEFERANT_PLZ", "")
   result.ort = getEnv("DATENLIEFERANT_ORT", "")
+  result.test = getEnv("TEST", "0") == "1"
 
 proc validate*(cfg: Config): seq[string] =
   ## Validate configuration and return list of errors

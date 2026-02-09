@@ -27,6 +27,7 @@ proc generateUstva*(
   strasse: string,
   plz: string,
   ort: string,
+  test: bool,
 ): string =
   ## Generate ELSTER XML for Umsatzsteuervoranmeldung
   ##
@@ -70,14 +71,14 @@ proc generateUstva*(
 
   # Extract Finanzamt number (first 4 digits of Steuernummer)
   let finanzamt = steuernummer[0..3]
+  let testmerkerLine = if test: "\n    <Testmerker>700000004</Testmerker>" else: ""
 
   let xml = &"""<?xml version="1.0" encoding="UTF-8"?>
 <Elster xmlns="http://www.elster.de/elsterxml/schema/v11">
   <TransferHeader version="11">
     <Verfahren>ElsterAnmeldung</Verfahren>
     <DatenArt>UStVA</DatenArt>
-    <Vorgang>send-Auth</Vorgang>
-    <Testmerker>700000004</Testmerker>
+    <Vorgang>send-Auth</Vorgang>{testmerkerLine}
     <HerstellerID>{herstellerId}</HerstellerID>
     <DatenLieferant>{name}</DatenLieferant>
     <Datei>

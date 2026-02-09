@@ -26,6 +26,7 @@ proc submit(
   validateOnly: bool = false,
   dryRun: bool = false,
   verbose: bool = false,
+  env: string = ".env",
 ): int =
   ## Submit a German VAT advance return (Umsatzsteuervoranmeldung)
   ##
@@ -52,7 +53,12 @@ proc submit(
     return 1
 
   # Load and validate configuration
-  let cfg = loadConfig()
+  var cfg: Config
+  try:
+    cfg = loadConfig(env)
+  except IOError as e:
+    echo &"Error: {e.msg}"
+    return 1
   # Dry-run validates everything to ensure setup is correct
   let errors = if validateOnly and not dryRun: cfg.validateForValidateOnly()
                else: cfg.validateForSubmission()
@@ -82,6 +88,7 @@ proc submit(
     strasse = cfg.strasse,
     plz = cfg.plz,
     ort = cfg.ort,
+    test = cfg.test,
   )
 
   # Load ERiC library
@@ -166,10 +173,11 @@ proc submit(
   echo &"Kz83 (total): {totalVat:.2f} EUR"
   echo ""
 
+  let modeStr = if cfg.test: " (TEST)" else: ""
   if validateOnly:
-    echo "Mode: Validate only"
+    echo &"Mode: Validate only{modeStr}"
   else:
-    echo "Mode: Send to ELSTER"
+    echo &"Mode: Send to ELSTER{modeStr}"
   echo ""
 
   # Process
@@ -234,7 +242,7 @@ proc submit(
 
     return 1
 
-proc fetch(file: string = "", check: bool = false): int =
+proc fetch(file: string = "", check: bool = false, env: string = ".env"): int =
   ## Fetch ERiC library and test certificates
   ##
   ## Downloads ERiC from the ELSTER developer portal and sets up test
@@ -247,9 +255,10 @@ proc fetch(file: string = "", check: bool = false): int =
   ##   viking fetch --file=ERiC.jar      # Install from local archive
   ##   viking fetch --check              # Check existing installation
 
-  # Load .env so VIKING_CACHE_DIR is available
-  if fileExists(getCurrentDir() / ".env"):
-    load()
+  # Load env file so VIKING_CACHE_DIR is available
+  let envPath = if env.isAbsolute: env else: getCurrentDir() / env
+  if fileExists(envPath):
+    load(envPath.parentDir, envPath.extractFilename)
 
   echo &"Cache directory: {getAppCacheDir()}"
   echo ""
@@ -334,6 +343,7 @@ when isMainModule:
         "validateOnly": "Only validate, don't send",
         "dryRun": "Show generated XML without processing",
         "verbose": "Show full server response XML",
+        "env": "Path to env file (default: .env)",
       },
       short = {
         "amount19": '1',
@@ -343,16 +353,19 @@ when isMainModule:
         "validateOnly": 'v',
         "dryRun": 'd',
         "verbose": 'V',
+        "env": 'e',
       }
     ],
     [fetch,
       help = {
         "file": "Path to local ERiC archive (JAR/ZIP/tar.gz)",
         "check": "Check existing ERiC installation in cache",
+        "env": "Path to env file (default: .env)",
       },
       short = {
         "file": 'f',
         "check": 'c',
+        "env": 'e',
       }
     ]
   )
