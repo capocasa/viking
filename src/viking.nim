@@ -25,6 +25,7 @@ proc submit(
   year: int = 0,
   validateOnly: bool = false,
   dryRun: bool = false,
+  verbose: bool = false,
 ): int =
   ## Submit a German VAT advance return (Umsatzsteuervoranmeldung)
   ##
@@ -194,9 +195,8 @@ proc submit(
       echo "Validation successful!"
     else:
       echo "Submission successful!"
-      echo &"Transfer handle: {transferHandle}"
 
-    if serverResponse.len > 0:
+    if verbose and serverResponse.len > 0:
       echo ""
       echo "Server response:"
       echo serverResponse
@@ -333,6 +333,7 @@ when isMainModule:
         "year": "Tax year (default: current year)",
         "validateOnly": "Only validate, don't send",
         "dryRun": "Show generated XML without processing",
+        "verbose": "Show full server response XML",
       },
       short = {
         "amount19": '1',
@@ -341,6 +342,7 @@ when isMainModule:
         "year": 'y',
         "validateOnly": 'v',
         "dryRun": 'd',
+        "verbose": 'V',
       }
     ],
     [fetch,
