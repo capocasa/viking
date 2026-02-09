@@ -62,7 +62,7 @@ proc generateUstva*(
   if kennzahlen.len > 0 and kennzahlen[^1] == '\n':
     kennzahlen = kennzahlen[0..^2]
 
-  let xml = &"""<?xml version="1.0" encoding="ISO-8859-15"?>
+  let xml = &"""<?xml version="1.0" encoding="UTF-8"?>
 <Elster xmlns="http://www.elster.de/elsterxml/schema/v11">
   <TransferHeader version="11">
     <Verfahren>ElsterAnmeldung</Verfahren>
@@ -70,7 +70,7 @@ proc generateUstva*(
     <Vorgang>send-NoSig</Vorgang>
     <Testmerker>000000000</Testmerker>
     <HerstellerID>74931</HerstellerID>
-    <DatenLieferant>taxmeklaus</DatenLieferant>
+    <DatenLieferant>viking</DatenLieferant>
     <Eingangsdatum></Eingangsdatum>
     <Datei>
       <Verschluesselung>PKCS#7v1.5</Verschluesselung>
@@ -97,14 +97,14 @@ proc generateUstva*(
           <Ziel></Ziel>
         </Empfaenger>
         <Hersteller>
-          <ProduktName>taxmeklaus</ProduktName>
+          <ProduktName>viking</ProduktName>
           <ProduktVersion>0.1.0</ProduktVersion>
         </Hersteller>
       </NutzdatenHeader>
       <Nutzdaten>
         <Anmeldungssteuern art="UStVA" version="{jahr}01">
           <DatenLieferant>
-            <Name>taxmeklaus</Name>
+            <Name>viking</Name>
             <Strasse></Strasse>
             <PLZ></PLZ>
             <Ort></Ort>

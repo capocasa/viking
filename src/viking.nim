@@ -1,9 +1,9 @@
-## taxmeklaus - German VAT advance return (Umsatzsteuervoranmeldung) CLI
+## viking - German VAT advance return (Umsatzsteuervoranmeldung) CLI
 ## Submit UStVA via ERiC library
 
-import std/[strutils, strformat, times, options]
+import std/[strutils, strformat, times, options, os]
 import cligen, cligen/argcvt
-import config, eric_ffi, ustva_xml
+import config, eric_ffi, ustva_xml, eric_setup
 
 # Custom cligen converters for Option[float]
 proc argParse(dst: var Option[float], dfl: Option[float], a: var ArgcvtParams): bool =
@@ -28,9 +28,9 @@ proc submit(
   ## Submit a German VAT advance return (Umsatzsteuervoranmeldung)
   ##
   ## Examples:
-  ##   taxmeklaus --amount19=1000.00 --period=01 --year=2025
-  ##   taxmeklaus --amount19=1000 --amount7=500 --period=41 --year=2025
-  ##   taxmeklaus --amount19=100 --period=01 --validate-only
+  ##   viking --amount19=1000.00 --period=01 --year=2025
+  ##   viking --amount19=1000 --amount7=500 --period=41 --year=2025
+  ##   viking --amount19=100 --period=01 --validate-only
 
   # Determine year
   let actualYear = if year == 0: now().year else: year
@@ -81,6 +81,9 @@ proc submit(
     echo &"Error: Failed to load ERiC library from {cfg.ericLibPath}"
     return 1
   defer: unloadEricLib()
+
+  # Ensure log directory exists
+  createDir(cfg.ericLogPath)
 
   # Initialize ERiC
   let initRc = ericInitialisiere(cfg.ericPluginPath, cfg.ericLogPath)
@@ -163,9 +166,10 @@ proc submit(
 
   # Process
   var transferHandle: uint32 = 0
+  let datenartVersion = &"UStVA_{actualYear}"
   let rc = ericBearbeiteVorgang(
     xml,
-    "",  # datenartVersion - empty for auto-detection
+    datenartVersion,
     flags,
     nil,  # druckParam - no printing
     cryptParamPtr,
@@ -207,23 +211,119 @@ proc submit(
 
     return 1
 
+proc fetch(file: string = "", check: bool = false): int =
+  ## Fetch ERiC library and test certificates
+  ##
+  ## Downloads ERiC from the ELSTER developer portal and sets up test
+  ## certificates automatically. Use --file to install from a local archive.
+  ##
+  ## Cache location: ~/.cache/viking/ (or XDG_CACHE_HOME)
+  ##
+  ## Examples:
+  ##   viking fetch                      # Auto-download ERiC + test certs
+  ##   viking fetch --file=ERiC.jar      # Install from local archive
+  ##   viking fetch --check              # Check existing installation
+
+  echo &"Cache directory: {getAppCacheDir()}"
+  echo ""
+
+  if check:
+    # Check existing installation
+    let existing = findExistingEric()
+    if existing.valid:
+      printStatus(existing)
+      let years = listAvailableYears(existing)
+      if years.len > 0:
+        echo &"  UStVA years: {years.join(\", \")}"
+      return 0
+    else:
+      echo "No ERiC installation found in cache."
+      printDownloadInstructions()
+      return 1
+
+  # Download test certificates
+  echo "=== Test Certificates ==="
+  let (certPath, certPin, certSuccess) = downloadTestCertificates()
+  echo ""
+
+  # Get ERiC installation
+  var installation: EricInstallation
+  if file != "":
+    # Install from local archive
+    echo "=== ERiC Library ==="
+    installation = setupEric(file)
+    echo ""
+  else:
+    # Check for existing installation first
+    installation = findExistingEric()
+    if installation.valid:
+      echo "=== ERiC Library ==="
+      echo "Using existing installation."
+      echo ""
+    else:
+      # Auto-download from portal
+      let (inst, success) = fetchEric()
+      if success:
+        installation = inst
+      else:
+        return 1
+      echo ""
+
+  if installation.valid:
+    # Update .env with all paths
+    if certSuccess:
+      updateEnvFile(installation, certPath, certPin)
+    else:
+      updateEnvFile(installation)
+
+    echo ""
+    echo "=== Summary ==="
+    printStatus(installation)
+    let years = listAvailableYears(installation)
+    if years.len > 0:
+      echo &"  UStVA years: {years.join(\", \")}"
+
+    if certSuccess:
+      echo ""
+      echo &"Test certificate: {certPath}"
+      echo &"Test PIN: {certPin}"
+
+    echo ""
+    echo "Setup complete! Run 'viking submit --help' for usage."
+    return 0
+  else:
+    echo "ERiC setup incomplete. Use 'viking fetch --file=<path>' with a local archive."
+    return 1
+
 when isMainModule:
   import cligen
-  dispatch(submit,
-    help = {
-      "amount19": "Net amount at 19% VAT rate (Kz81)",
-      "amount7": "Net amount at 7% VAT rate (Kz86)",
-      "period": "Period: 01-12 (monthly) or 41-44 (quarterly)",
-      "year": "Tax year (default: current year)",
-      "validateOnly": "Only validate, don't send",
-      "dryRun": "Show generated XML without processing",
-    },
-    short = {
-      "amount19": '1',
-      "amount7": '7',
-      "period": 'p',
-      "year": 'y',
-      "validateOnly": 'v',
-      "dryRun": 'd',
-    }
+  dispatchMulti(
+    [submit,
+      help = {
+        "amount19": "Net amount at 19% VAT rate (Kz81)",
+        "amount7": "Net amount at 7% VAT rate (Kz86)",
+        "period": "Period: 01-12 (monthly) or 41-44 (quarterly)",
+        "year": "Tax year (default: current year)",
+        "validateOnly": "Only validate, don't send",
+        "dryRun": "Show generated XML without processing",
+      },
+      short = {
+        "amount19": '1',
+        "amount7": '7',
+        "period": 'p',
+        "year": 'y',
+        "validateOnly": 'v',
+        "dryRun": 'd',
+      }
+    ],
+    [fetch,
+      help = {
+        "file": "Path to local ERiC archive (JAR/ZIP/tar.gz)",
+        "check": "Check existing ERiC installation in cache",
+      },
+      short = {
+        "file": 'f',
+        "check": 'c',
+      }
+    ]
   )

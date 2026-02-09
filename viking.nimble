@@ -5,7 +5,7 @@ author        = "Carlo"
 description   = "CLI tool to submit German VAT advance returns (Umsatzsteuervoranmeldung) via ERiC"
 license       = "MIT"
 srcDir        = "src"
-bin           = @["taxmeklaus"]
+bin           = @["viking"]
 
 # Dependencies
 
