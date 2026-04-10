@@ -1,7 +1,7 @@
 ## Configuration module
 ## Loads configuration from .env file
 
-import std/[os, tables]
+import std/[os, osproc, strutils, tables]
 import dotenv
 
 type
@@ -37,7 +37,14 @@ proc loadConfig*(envFile: string = ".env"): Config =
   result.ericPluginPath = getEnv("ERIC_PLUGIN_PATH", "")
   result.ericLogPath = getEnv("ERIC_LOG_PATH", "/tmp/eric_logs")
   result.certPath = getEnv("CERT_PATH", "")
-  result.certPin = getEnv("CERT_PIN", "")
+  let certPinCmd = getEnv("CERT_PIN_CMD", "")
+  if certPinCmd != "":
+    let (output, exitCode) = execCmdEx(certPinCmd)
+    if exitCode != 0:
+      raise newException(IOError, "CERT_PIN_CMD failed (exit " & $exitCode & "): " & output.strip)
+    result.certPin = output.strip
+  else:
+    result.certPin = getEnv("CERT_PIN", "")
   result.steuernummer = getEnv("STEUERNUMMER", "")
   result.herstellerId = getEnv("HERSTELLER_ID", "40036")
   result.produktName = getEnv("PRODUKT_NAME", "Viking")

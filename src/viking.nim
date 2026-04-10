@@ -67,7 +67,7 @@ proc submit(
   var finalAmount0 = amount0
 
   if hasInvoices:
-    let (agg, ok) = loadAndAggregateInvoices(invoiceFile)
+    let (agg, totalParsed, ok) = loadAndAggregateInvoices(invoiceFile, actualYear, period)
     if not ok:
       return 1
     finalAmount19 = agg.amount19
@@ -79,7 +79,10 @@ proc submit(
     # Print invoice summary
     echo &"=== Invoices ==="
     echo &"File:     {invoiceFile}"
-    echo &"Count:    {agg.count}"
+    if totalParsed != agg.count:
+      echo &"Total:    {totalParsed} (filtered to {agg.count} for {periodDescription(period)} {actualYear})"
+    else:
+      echo &"Count:    {agg.count}"
     if agg.amount19.isSome:
       echo &"Sum 19%:  {agg.amount19.get:.2f} EUR"
     if agg.amount7.isSome:
@@ -263,7 +266,14 @@ proc submit(
       echo "  and set HERSTELLER_ID in your .env file."
     of 610301200:
       echo ""
-      echo "Hint: XML schema validation failed. Check /tmp/eric_logs/eric.log for details."
+      echo "Hint: XML schema validation failed."
+      let logFile = cfg.ericLogPath / "eric.log"
+      if fileExists(logFile):
+        let logContent = readFile(logFile).strip
+        if logContent.len > 0:
+          echo ""
+          echo "ERiC log:"
+          echo logContent
     of 610001050:
       echo ""
       echo "Hint: Buffer instance mismatch - this is likely a bug in the FFI bindings."
@@ -483,7 +493,14 @@ proc euer(
       echo "  and set HERSTELLER_ID in your .env file."
     of 610301200:
       echo ""
-      echo "Hint: XML schema validation failed. Check /tmp/eric_logs/eric.log for details."
+      echo "Hint: XML schema validation failed."
+      let logFile = cfg.ericLogPath / "eric.log"
+      if fileExists(logFile):
+        let logContent = readFile(logFile).strip
+        if logContent.len > 0:
+          echo ""
+          echo "ERiC log:"
+          echo logContent
     of 610001050:
       echo ""
       echo "Hint: Buffer instance mismatch - this is likely a bug in the FFI bindings."

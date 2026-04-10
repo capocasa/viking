@@ -63,12 +63,12 @@ proc generateUstva*(
   if kz81.isSome:
     kennzahlen.add(&"              <Kz81>{formatAmountInt(amt81)}</Kz81>\n")
 
+  # Kz83 is mandatory per ELSTER schema, must come before Kz86 per XSD sequence
+  if kz81.isSome or kz86.isSome or kz45.isSome:
+    kennzahlen.add(&"              <Kz83>{formatAmount(kz83)}</Kz83>\n")
+
   if kz86.isSome:
     kennzahlen.add(&"              <Kz86>{formatAmountInt(amt86)}</Kz86>\n")
-
-  # Always include Kz83 (total VAT) if any amount was specified
-  if kz81.isSome or kz86.isSome:
-    kennzahlen.add(&"              <Kz83>{formatAmount(kz83)}</Kz83>\n")
 
   # Remove trailing newline from kennzahlen
   if kennzahlen.len > 0 and kennzahlen[^1] == '\n':

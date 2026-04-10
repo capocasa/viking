@@ -186,6 +186,29 @@ proc aggregate*(invoices: seq[Invoice]): InvoiceAggregation =
   result.amount0 = if has0: some(sum0) else: none(float)
   result.count = invoices.len
 
+proc monthsForPeriod*(period: string): seq[int] =
+  ## Return which months (1-12) a period covers.
+  let p = parseInt(period)
+  if p >= 1 and p <= 12:
+    result = @[p]
+  else:
+    # Quarterly: 41=Q1(1-3), 42=Q2(4-6), 43=Q3(7-9), 44=Q4(10-12)
+    let startMonth = (p - 41) * 3 + 1
+    result = @[startMonth, startMonth + 1, startMonth + 2]
+
+proc filterByPeriod*(invoices: seq[Invoice], year: int, period: string): seq[Invoice] =
+  ## Filter invoices to those matching the given year and period.
+  ## Invoices without a date are excluded.
+  let months = monthsForPeriod(period)
+  let yearStr = $year
+  for inv in invoices:
+    if inv.date.len == 0:
+      continue
+    # date is YYYY-MM-DD, already validated
+    let parts = inv.date.split('-')
+    if parts[0] == yearStr and parseInt(parts[1]) in months:
+      result.add(inv)
+
 proc readInvoiceInput*(path: string): string =
   ## Read invoice data from file or stdin (path "-")
   if path == "-":
@@ -207,15 +230,15 @@ proc aggregateForEuer*(invoices: seq[Invoice]): EuerAggregation =
       result.expenseVorsteuer += abs(inv.amount) * rate
       inc result.expenseCount
 
-proc loadAndAggregateInvoices*(path: string): (InvoiceAggregation, bool) =
-  ## Top-level entry point: read, parse, aggregate. Prints errors to stderr.
-  ## Returns (aggregation, success).
+proc loadAndAggregateInvoices*(path: string, year: int = 0, period: string = ""): (InvoiceAggregation, int, bool) =
+  ## Top-level entry point: read, parse, optionally filter by period, aggregate.
+  ## Prints errors to stderr. Returns (aggregation, totalParsed, success).
   var input: string
   try:
     input = readInvoiceInput(path)
   except IOError as e:
     stderr.writeLine("Error: Cannot read invoice file: " & e.msg)
-    return (InvoiceAggregation(), false)
+    return (InvoiceAggregation(), 0, false)
 
   let (invoices, errors) = parseInvoices(input)
 
@@ -223,14 +246,26 @@ proc loadAndAggregateInvoices*(path: string): (InvoiceAggregation, bool) =
     stderr.writeLine("Invoice parsing errors:")
     for e in errors:
       stderr.writeLine("  line " & $e.line & ": " & e.msg)
-    return (InvoiceAggregation(), false)
+    return (InvoiceAggregation(), 0, false)
 
   if invoices.len == 0:
-    # Empty file or header-only is valid: zero amounts
-    return (InvoiceAggregation(amount19: none(float), amount7: none(float), amount0: none(float), count: 0), true)
+    return (InvoiceAggregation(amount19: none(float), amount7: none(float), amount0: none(float), count: 0), 0, true)
 
-  let agg = aggregate(invoices)
-  return (agg, true)
+  var filtered = invoices
+  if year > 0 and period != "":
+    # Check if any invoices have dates - only filter if at least one does
+    var dated = 0
+    var undated = 0
+    for inv in invoices:
+      if inv.date.len > 0: inc dated
+      else: inc undated
+    if dated > 0:
+      if undated > 0:
+        stderr.writeLine("Warning: " & $undated & " invoice(s) without date excluded from period filter")
+      filtered = filterByPeriod(invoices, year, period)
+
+  let agg = aggregate(filtered)
+  return (agg, invoices.len, true)
 
 proc loadAndAggregateForEuer*(path: string): (EuerAggregation, bool) =
   ## Top-level entry point for EÜR: read, parse, aggregate by income/expense.

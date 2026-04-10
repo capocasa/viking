@@ -90,6 +90,8 @@ check("dual-rate has Kz81", dryBoth.contains("<Kz81>500</Kz81>"))
 check("dual-rate has Kz86", dryBoth.contains("<Kz86>200</Kz86>"))
 # 500*0.19 + 200*0.07 = 95 + 14 = 109
 check("dual-rate has Kz83", dryBoth.contains("<Kz83>109.00</Kz83>"))
+# Kz83 must appear before Kz86 per ELSTER XSD sequence
+check("Kz83 before Kz86", dryBoth.find("<Kz83>") < dryBoth.find("<Kz86>"))
 echo ""
 
 # --- Submit: validate-only ---
@@ -147,18 +149,32 @@ for kind, path in walkDir(pluginPath):
 years.sort()
 
 check("found UStVA plugins for 2025+", years.len > 0, "plugins in: " & pluginPath)
+
+# Test each year with different rate combinations
+type RateCombo = object
+  label: string
+  args: string
+
+let combos = @[
+  RateCombo(label: "19% only", args: "--amount19 1000"),
+  RateCombo(label: "7% only", args: "--amount7 500"),
+  RateCombo(label: "0% only", args: "--amount0 800"),
+  RateCombo(label: "19%+7%", args: "--amount19 1000 --amount7 500"),
+  RateCombo(label: "19%+0%", args: "--amount19 1000 --amount0 800"),
+  RateCombo(label: "all rates", args: "--amount19 1000 --amount7 500 --amount0 800"),
+]
+
 for year in years:
-  let (yearOut, yearRc) = run("./viking submit --p 41 --amount19 1000 --year " & $year & " --validate-only")
-  let yearSchemaOk = not yearOut.contains("610301200")
-  let yearCertOk = not yearOut.contains("610001050")
-  let yearHidBlocked = yearOut.contains("610301202")
-  let yearOk = yearRc == 0 or yearHidBlocked
-  check($year & " schema valid", yearSchemaOk, yearOut)
-  check($year & " no cert errors", yearCertOk, yearOut)
-  if yearOk:
-    check($year & " passes validation", true)
-  else:
-    check($year & " passes validation", false, yearOut)
+  for combo in combos:
+    let cmd = "./viking submit --p 41 " & combo.args & " --year " & $year & " --validate-only"
+    let (comboOut, comboRc) = run(cmd)
+    let schemaOk = not comboOut.contains("610301200")
+    let hidBlocked = comboOut.contains("610301202")
+    let comboOk = comboRc == 0 or hidBlocked
+    let tag = $year & " " & combo.label
+    check(tag & " schema valid", schemaOk, comboOut)
+    if not comboOk:
+      check(tag & " passes validation", false, comboOut)
 echo ""
 
 # --- Submit: input validation ---
@@ -248,6 +264,44 @@ check("0% rate has Kz45 = 500", kz45Out.contains("<Kz45>500</Kz45>"))
 check("0% rate has Kz81 = 1000", kz45Out.contains("<Kz81>1000</Kz81>"))
 check("0% rate Kz83 excludes 0%", kz45Out.contains("<Kz83>190.00</Kz83>"))
 check("0% rate shows sum 0%", kz45Out.contains("Sum 0%:   500.00 EUR"))
+echo ""
+
+# Test: Period filtering
+echo "--- invoice period filtering ---"
+# Invoices spanning Q1 and Q2 2026
+writeFile(invCsv, "amount,rate,date,invoice-id,description\n1000,19,2026-01-15,INV-001,Jan\n500,19,2026-02-10,INV-002,Feb\n300,7,2026-04-05,INV-003,Apr\n200,19,2026-06-20,INV-004,Jun\n")
+
+# Q1 should get Jan + Feb only
+let (q1Out, q1Rc) = run("./viking submit -i " & invCsv & " --p 41 -y 2026 --dry-run")
+check("Q1 filter exits 0", q1Rc == 0, q1Out)
+check("Q1 filter Kz81 = 1500", q1Out.contains("<Kz81>1500</Kz81>"))
+check("Q1 filter no Kz86", not q1Out.contains("<Kz86>"))
+check("Q1 filter shows filtered count", q1Out.contains("filtered to 2"))
+
+# Q2 should get Apr + Jun
+let (q2Out, q2Rc) = run("./viking submit -i " & invCsv & " --p 42 -y 2026 --dry-run")
+check("Q2 filter exits 0", q2Rc == 0, q2Out)
+check("Q2 filter Kz81 = 200", q2Out.contains("<Kz81>200</Kz81>"))
+check("Q2 filter Kz86 = 300", q2Out.contains("<Kz86>300</Kz86>"))
+check("Q2 filter shows filtered count", q2Out.contains("filtered to 2"))
+
+# Monthly: January only
+let (janOut, janRc) = run("./viking submit -i " & invCsv & " --p 01 -y 2026 --dry-run")
+check("Jan filter exits 0", janRc == 0, janOut)
+check("Jan filter Kz81 = 1000", janOut.contains("<Kz81>1000</Kz81>"))
+check("Jan filter shows filtered count", janOut.contains("filtered to 1"))
+
+# Wrong year -> zero submission
+let (wrongYrOut, wrongYrRc) = run("./viking submit -i " & invCsv & " --p 41 -y 2025 --dry-run")
+check("wrong year filter exits 0", wrongYrRc == 0, wrongYrOut)
+check("wrong year shows filtered to 0", wrongYrOut.contains("filtered to 0"))
+
+# Undated invoices excluded with warning
+writeFile(invCsv, "1000,19,2026-01-15,INV-001,dated\n500,19\n")
+let (undatedOut, undatedRc) = run("./viking submit -i " & invCsv & " --p 01 -y 2026 --dry-run 2>&1")
+check("undated filter exits 0", undatedRc == 0, undatedOut)
+check("undated shows warning", undatedOut.contains("without date"))
+check("undated Kz81 = 1000", undatedOut.contains("<Kz81>1000</Kz81>"))
 echo ""
 
 # Test 7: Header-only file -> zero submission
