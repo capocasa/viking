@@ -239,6 +239,17 @@ check("bad amount reported", valErrOut.contains("line 2") and valErrOut.contains
 check("bad rate reported", valErrOut.contains("line 3") and valErrOut.contains("invalid rate"))
 echo ""
 
+# Test: 0% rate (Kz45 - non-taxable)
+echo "--- invoice 0% rate (Kz45) ---"
+writeFile(invCsv, "1000,19\n500,0\n")
+let (kz45Out, kz45Rc) = run("./viking submit -i " & invCsv & " --p 01 --dry-run")
+check("0% rate exits 0", kz45Rc == 0, kz45Out)
+check("0% rate has Kz45 = 500", kz45Out.contains("<Kz45>500</Kz45>"))
+check("0% rate has Kz81 = 1000", kz45Out.contains("<Kz81>1000</Kz81>"))
+check("0% rate Kz83 excludes 0%", kz45Out.contains("<Kz83>190.00</Kz83>"))
+check("0% rate shows sum 0%", kz45Out.contains("Sum 0%:   500.00 EUR"))
+echo ""
+
 # Test 7: Header-only file -> zero submission
 echo "--- invoice header-only ---"
 writeFile(invCsv, "amount,rate,date\n")
@@ -257,6 +268,113 @@ check("comments Kz81 = 100", cmtOut.contains("<Kz81>100</Kz81>"))
 check("comments Kz86 = 200", cmtOut.contains("<Kz86>200</Kz86>"))
 
 removeFile(invCsv)
+echo ""
+
+# =================================================================
+# EÜR (Einnahmenüberschussrechnung) tests
+# =================================================================
+
+# --- EÜR: dry-run with income only ---
+echo "--- euer --dry-run (income only) ---"
+let euerCsv = projectRoot / "tests" / "tmp_euer.csv"
+writeFile(euerCsv, "1000,19\n500,7\n")
+let (euerDryOut, euerDryRc) = run("./viking euer -i " & euerCsv & " -y 2025 --dry-run")
+check("euer dry-run exits 0", euerDryRc == 0, euerDryOut)
+check("euer dry-run loads ERiC", euerDryOut.contains("ERiC library loaded"))
+check("euer dry-run has E77 root", euerDryOut.contains("<E77"))
+check("euer dry-run has EUER element", euerDryOut.contains("<EUER>"))
+check("euer dry-run has Vorsatz", euerDryOut.contains("<Vorsatz>"))
+check("euer dry-run has ElsterErklaerung", euerDryOut.contains("<Verfahren>ElsterErklaerung</Verfahren>"))
+check("euer dry-run has DatenArt EUER", euerDryOut.contains("<DatenArt>EUER</DatenArt>"))
+check("euer dry-run has Empfaenger Ziel", euerDryOut.contains("<Ziel>BY</Ziel>"))
+check("euer dry-run has Unterfallart 77", euerDryOut.contains("<Unterfallart>77</Unterfallart>"))
+check("euer dry-run has BEin", euerDryOut.contains("<BEin>"))
+check("euer dry-run has BAus", euerDryOut.contains("<BAus>"))
+check("euer dry-run has Ermittlung_Gewinn", euerDryOut.contains("<Ermittlung_Gewinn>"))
+echo ""
+
+# --- EÜR: income/expense split ---
+echo "--- euer income/expense split ---"
+# 1000 at 19% (income), -300 at 19% (expense)
+writeFile(euerCsv, "1000,19\n-300,19\n")
+let (splitOut, splitRc) = run("./viking euer -i " & euerCsv & " -y 2025 --dry-run")
+check("split exits 0", splitRc == 0, splitOut)
+# Income: 1000 net, 190 VAT -> total 1190 (German comma format)
+check("split income net 1000", splitOut.contains("<E6000401>1000,00</E6000401>"))
+check("split income VAT 190", splitOut.contains("<E6000601>190,00</E6000601>"))
+check("split income total 1190", splitOut.contains("<E6001201>1190,00</E6001201>"))
+# Expense: 300 net, 57 Vorsteuer -> total 357
+check("split expense net 300", splitOut.contains("<E6004901>300,00</E6004901>"))
+check("split expense Vorsteuer 57", splitOut.contains("<E6005001>57,00</E6005001>"))
+check("split expense total 357", splitOut.contains("<E6005301>357,00</E6005301>"))
+# Profit: 1190 - 357 = 833
+check("split profit 833", splitOut.contains("<E6007202>833,00</E6007202>"))
+check("split shows income count", splitOut.contains("Income:    1 invoices"))
+check("split shows expense count", splitOut.contains("Expenses:  1 invoices"))
+echo ""
+
+# --- EÜR: empty file (zero submission) ---
+echo "--- euer empty file ---"
+writeFile(euerCsv, "")
+let (euerEmptyOut, euerEmptyRc) = run("./viking euer -i " & euerCsv & " -y 2025 --dry-run")
+check("euer empty exits 0", euerEmptyRc == 0, euerEmptyOut)
+check("euer empty income 0", euerEmptyOut.contains("<E6000401>0,00</E6000401>"))
+check("euer empty profit 0", euerEmptyOut.contains("<E6007202>0,00</E6007202>"))
+echo ""
+
+# --- EÜR: missing invoice file ---
+echo "--- euer input validation ---"
+let (euerNoFile, euerNoFileRc) = run("./viking euer -y 2025 --dry-run")
+check("euer missing invoice rejected", euerNoFileRc != 0)
+check("euer missing invoice error", euerNoFile.contains("--invoice-file is required"))
+echo ""
+
+# --- EÜR: Testmerker ---
+echo "--- euer Testmerker ---"
+writeFile(euerCsv, "100,19\n")
+let (euerTestOut, euerTestRc) = run("./viking euer -i " & euerCsv & " -y 2025 --dry-run")
+check("euer TEST=1 has Testmerker", euerTestOut.contains("<Testmerker>700000004</Testmerker>"))
+
+# TEST=0
+let euerProdEnv = projectRoot / "tests" / ".env.euer_prod"
+writeFile(euerProdEnv, readFile(projectRoot / ".env").replace("TEST=1", "TEST=0"))
+let (euerProdOut, euerProdRc) = run("./viking euer -i " & euerCsv & " -y 2025 --dry-run --env " & euerProdEnv)
+check("euer TEST=0 exits 0", euerProdRc == 0, euerProdOut)
+check("euer TEST=0 no Testmerker", not euerProdOut.contains("Testmerker"), euerProdOut)
+removeFile(euerProdEnv)
+echo ""
+
+# --- EÜR: per-year validation ---
+echo "--- euer per-year validation ---"
+var euerYears: seq[int] = @[]
+for kind, path in walkDir(pluginPath):
+  if kind == pcFile:
+    let name = path.extractFilename
+    if name.startsWith("libcheckEUER_") and name.endsWith(".so"):
+      try:
+        let y = parseInt(name[13..^4])
+        if y >= 2025:
+          euerYears.add(y)
+      except ValueError:
+        discard
+euerYears.sort()
+
+check("found EUER plugins for 2025+", euerYears.len > 0, "plugins in: " & pluginPath)
+writeFile(euerCsv, "1000,19\n-500,19\n")
+for year in euerYears:
+  let (eyOut, eyRc) = run("./viking euer -i " & euerCsv & " -y " & $year & " --validate-only")
+  let eySchemaOk = not eyOut.contains("610301200")
+  let eyCertOk = not eyOut.contains("610001050")
+  let eyHidBlocked = eyOut.contains("610301202")
+  let eyOk = eyRc == 0 or eyHidBlocked
+  check("euer " & $year & " schema valid", eySchemaOk, eyOut)
+  check("euer " & $year & " no cert errors", eyCertOk, eyOut)
+  if eyOk:
+    check("euer " & $year & " passes validation", true)
+  else:
+    check("euer " & $year & " passes validation", false, eyOut)
+
+removeFile(euerCsv)
 echo ""
 
 # --- Summary ---

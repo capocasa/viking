@@ -4,7 +4,7 @@
 import std/[strutils, strformat, times, options, os]
 import cligen, cligen/argcvt
 import dotenv
-import config, eric_ffi, ustva_xml, eric_setup, invoices
+import config, eric_ffi, ustva_xml, euer_xml, eric_setup, invoices
 
 # Custom cligen converters for Option[float]
 proc argParse(dst: var Option[float], dfl: Option[float], a: var ArgcvtParams): bool =
@@ -21,6 +21,7 @@ proc argHelp(dfl: Option[float], a: var ArgcvtParams): seq[string] =
 proc submit(
   amount19: Option[float] = none(float),
   amount7: Option[float] = none(float),
+  amount0: Option[float] = none(float),
   invoiceFile: string = "",
   period: string = "",
   year: int = 0,
@@ -48,21 +49,22 @@ proc submit(
     echo &"Error: Invalid period '{period}'. Use 01-12 for monthly or 41-44 for quarterly."
     return 1
 
-  # Determine input mode: --invoices XOR --amount19/--amount7
-  let hasAmounts = amount19.isSome or amount7.isSome
+  # Determine input mode: --invoices XOR --amount flags
+  let hasAmounts = amount19.isSome or amount7.isSome or amount0.isSome
   let hasInvoices = invoiceFile != ""
 
   if hasAmounts and hasInvoices:
-    echo "Error: --invoice-file and --amount19/--amount7 are mutually exclusive"
+    echo "Error: --invoice-file and --amount19/--amount7/--amount0 are mutually exclusive"
     return 1
 
   if not hasAmounts and not hasInvoices:
-    echo "Error: Specify --amount19/--amount7 or --invoice-file"
+    echo "Error: Specify --amount19/--amount7/--amount0 or --invoice-file"
     return 1
 
   # Resolve final amounts
   var finalAmount19 = amount19
   var finalAmount7 = amount7
+  var finalAmount0 = amount0
 
   if hasInvoices:
     let (agg, ok) = loadAndAggregateInvoices(invoiceFile)
@@ -70,8 +72,9 @@ proc submit(
       return 1
     finalAmount19 = agg.amount19
     finalAmount7 = agg.amount7
-    # If no invoices at all, both are none - that's a zero submission
-    if finalAmount19.isNone and finalAmount7.isNone:
+    finalAmount0 = agg.amount0
+    # If no invoices at all, all are none - that's a zero submission
+    if finalAmount19.isNone and finalAmount7.isNone and finalAmount0.isNone:
       finalAmount19 = some(0.0)
     # Print invoice summary
     echo &"=== Invoices ==="
@@ -81,6 +84,8 @@ proc submit(
       echo &"Sum 19%:  {agg.amount19.get:.2f} EUR"
     if agg.amount7.isSome:
       echo &"Sum 7%:   {agg.amount7.get:.2f} EUR"
+    if agg.amount0.isSome:
+      echo &"Sum 0%:   {agg.amount0.get:.2f} EUR"
     echo ""
 
   # Load and validate configuration
@@ -105,6 +110,7 @@ proc submit(
   # Extract amounts (default to 0 if provided but for XML generation)
   let amt19 = finalAmount19.get(0.0)
   let amt7 = finalAmount7.get(0.0)
+  let amt0 = finalAmount0.get(0.0)
 
   # Generate XML
   let xml = generateUstva(
@@ -113,6 +119,7 @@ proc submit(
     zeitraum = period,
     kz81 = finalAmount19,
     kz86 = finalAmount7,
+    kz45 = finalAmount0,
     herstellerId = cfg.herstellerId,
     produktName = cfg.produktName,
     name = cfg.name,
@@ -197,6 +204,8 @@ proc submit(
   echo &"Period:      {period} ({periodDescription(period)})"
   echo &"Tax number:  {cfg.steuernummer}"
   echo ""
+  if finalAmount0.isSome:
+    echo &"Kz45 (0%):   {amt0:.2f} EUR (non-taxable)"
   if finalAmount19.isSome:
     echo &"Kz81 (19%):  {amt19:.2f} EUR (base) -> {vat19:.2f} EUR VAT"
   if finalAmount7.isSome:
@@ -273,6 +282,226 @@ proc submit(
 
     return 1
 
+proc euer(
+  invoiceFile: string = "",
+  year: int = 0,
+  validateOnly: bool = false,
+  dryRun: bool = false,
+  verbose: bool = false,
+  env: string = ".env",
+): int =
+  ## Submit an EÜR (Einnahmenüberschussrechnung / profit-loss statement)
+  ##
+  ## Positive invoice amounts = income, negative = expenses.
+  ##
+  ## Examples:
+  ##   viking euer -i invoices.csv -y 2025
+  ##   viking euer -i invoices.csv -y 2025 --validate-only
+  ##   viking euer -i invoices.csv --dry-run
+
+  let actualYear = if year == 0: now().year else: year
+
+  if invoiceFile == "":
+    echo "Error: --invoice-file is required for EÜR submission"
+    return 1
+
+  # Load and aggregate invoices
+  let (agg, ok) = loadAndAggregateForEuer(invoiceFile)
+  if not ok:
+    return 1
+
+  echo &"=== Invoices ==="
+  echo &"File:      {invoiceFile}"
+  echo &"Income:    {agg.incomeCount} invoices, {agg.incomeNet:.2f} EUR net + {agg.incomeVat:.2f} EUR VAT"
+  echo &"Expenses:  {agg.expenseCount} invoices, {agg.expenseNet:.2f} EUR net + {agg.expenseVorsteuer:.2f} EUR Vorsteuer"
+  echo ""
+
+  # Load and validate configuration
+  var cfg: Config
+  try:
+    cfg = loadConfig(env)
+  except IOError as e:
+    echo &"Error: {e.msg}"
+    return 1
+
+  let errors = if validateOnly and not dryRun: cfg.validateForEuerValidateOnly()
+               else: cfg.validateForEuerSubmission()
+
+  if errors.len > 0:
+    echo "Configuration errors:"
+    for e in errors:
+      echo &"  - {e}"
+    echo ""
+    echo "Please check your .env file. EÜR requires RECHTSFORM and EINKUNFTSART."
+    return 1
+
+  let bundesland = bundeslandFromSteuernummer(cfg.steuernummer)
+
+  # Generate XML
+  let xml = generateEuer(
+    steuernummer = cfg.steuernummer,
+    jahr = actualYear,
+    incomeNet = agg.incomeNet,
+    incomeVat = agg.incomeVat,
+    expenseNet = agg.expenseNet,
+    expenseVorsteuer = agg.expenseVorsteuer,
+    rechtsform = cfg.rechtsform,
+    einkunftsart = cfg.einkunftsart,
+    herstellerId = cfg.herstellerId,
+    produktName = cfg.produktName,
+    name = cfg.name,
+    strasse = cfg.strasse,
+    plz = cfg.plz,
+    ort = cfg.ort,
+    test = cfg.test,
+  )
+
+  # Load ERiC library
+  if not loadEricLib(cfg.ericLibPath):
+    echo &"Error: Failed to load ERiC library from {cfg.ericLibPath}"
+    return 1
+  defer: unloadEricLib()
+
+  # Ensure log directory exists
+  createDir(cfg.ericLogPath)
+
+  # Initialize ERiC
+  let initRc = ericInitialisiere(cfg.ericPluginPath, cfg.ericLogPath)
+  if initRc != 0:
+    echo &"Error: ERiC initialization failed with code {initRc}"
+    echo &"  {ericHoleFehlerText(initRc)}"
+    return 1
+  defer: discard ericBeende()
+
+  # Dry run mode
+  if dryRun:
+    echo "ERiC library loaded and initialized successfully."
+    echo ""
+    echo "=== Generated XML ==="
+    echo xml
+    echo "====================="
+    return 0
+
+  # Create return buffers
+  let responseBuf = ericRueckgabepufferErzeugen()
+  let serverBuf = ericRueckgabepufferErzeugen()
+  if responseBuf == nil or serverBuf == nil:
+    echo "Error: Failed to create return buffers"
+    return 1
+  defer:
+    discard ericRueckgabepufferFreigabe(responseBuf)
+    discard ericRueckgabepufferFreigabe(serverBuf)
+
+  # Determine flags
+  var flags: uint32 = ERIC_VALIDIERE
+  if not validateOnly:
+    flags = flags or ERIC_SENDE
+
+  # Set up encryption parameters if sending
+  var cryptParam: EricVerschluesselungsParameterT
+  var cryptParamPtr: ptr EricVerschluesselungsParameterT = nil
+  var certHandle: EricZertifikatHandle = 0
+
+  if not validateOnly:
+    let (certRc, handle) = ericGetHandleToCertificate(cfg.certPath)
+    if certRc != 0:
+      echo &"Error: Failed to open certificate with code {certRc}"
+      echo &"  {ericHoleFehlerText(certRc)}"
+      return 1
+    certHandle = handle
+
+    cryptParam.version = 3
+    cryptParam.zertifikatHandle = certHandle
+    cryptParam.pin = cfg.certPin.cstring
+    cryptParamPtr = addr cryptParam
+
+  defer:
+    if certHandle != 0:
+      discard ericCloseHandleToCertificate(certHandle)
+
+  # Compute totals for display
+  let totalIncome = agg.incomeNet + agg.incomeVat
+  let totalExpense = agg.expenseNet + agg.expenseVorsteuer
+  let profit = totalIncome - totalExpense
+
+  # Show summary
+  echo &"=== Einnahmenüberschussrechnung ==="
+  echo &"Year:        {actualYear}"
+  echo &"Tax number:  {cfg.steuernummer}"
+  echo &"Bundesland:  {bundesland}"
+  echo ""
+  echo &"Income:      {totalIncome:.2f} EUR ({agg.incomeNet:.2f} net + {agg.incomeVat:.2f} VAT)"
+  echo &"Expenses:    {totalExpense:.2f} EUR ({agg.expenseNet:.2f} net + {agg.expenseVorsteuer:.2f} Vorsteuer)"
+  echo &"Profit:      {profit:.2f} EUR"
+  echo ""
+
+  let modeStr = if cfg.test: " (TEST)" else: ""
+  if validateOnly:
+    echo &"Mode: Validate only{modeStr}"
+  else:
+    echo &"Mode: Send to ELSTER{modeStr}"
+  echo ""
+
+  # Process
+  var transferHandle: uint32 = 0
+  let datenartVersion = &"EUER_{actualYear}"
+  let rc = ericBearbeiteVorgang(
+    xml,
+    datenartVersion,
+    flags,
+    nil,
+    cryptParamPtr,
+    addr transferHandle,
+    responseBuf,
+    serverBuf,
+  )
+
+  let response = ericRueckgabepufferInhalt(responseBuf)
+  let serverResponse = ericRueckgabepufferInhalt(serverBuf)
+
+  if rc == 0:
+    if validateOnly:
+      echo "Validation successful!"
+    else:
+      echo "Submission successful!"
+
+    if verbose and serverResponse.len > 0:
+      echo ""
+      echo "Server response:"
+      echo serverResponse
+
+    return 0
+  else:
+    echo &"Error: Operation failed with code {rc}"
+    echo &"  {ericHoleFehlerText(rc)}"
+
+    case rc
+    of 610301202:
+      echo ""
+      echo "Hint: The demo HerstellerID (74931) is blocked."
+      echo "  Register at https://www.elster.de/elsterweb/entwickler"
+      echo "  and set HERSTELLER_ID in your .env file."
+    of 610301200:
+      echo ""
+      echo "Hint: XML schema validation failed. Check /tmp/eric_logs/eric.log for details."
+    of 610001050:
+      echo ""
+      echo "Hint: Buffer instance mismatch - this is likely a bug in the FFI bindings."
+    else:
+      discard
+
+    if response.len > 0:
+      echo ""
+      echo "Details:"
+      echo response
+
+    if serverResponse.len > 0:
+      echo ""
+      echo "Server response:"
+      echo serverResponse
+
+    return 1
+
 proc fetch(file: string = "", check: bool = false, env: string = ".env"): int =
   ## Fetch ERiC library and test certificates
   ##
@@ -302,6 +531,9 @@ proc fetch(file: string = "", check: bool = false, env: string = ".env"): int =
       let years = listAvailableYears(existing)
       if years.len > 0:
         echo &"  UStVA years: {years.join(\", \")}"
+      let euerYears = listAvailableEuerYears(existing)
+      if euerYears.len > 0:
+        echo &"  EUER years:  {euerYears.join(\", \")}"
       return 0
     else:
       echo "No ERiC installation found in cache."
@@ -349,6 +581,9 @@ proc fetch(file: string = "", check: bool = false, env: string = ".env"): int =
     let years = listAvailableYears(installation)
     if years.len > 0:
       echo &"  UStVA years: {years.join(\", \")}"
+    let euerYears = listAvailableEuerYears(installation)
+    if euerYears.len > 0:
+      echo &"  EUER years:  {euerYears.join(\", \")}"
 
     if certSuccess:
       echo ""
@@ -369,6 +604,7 @@ when isMainModule:
       help = {
         "amount19": "Net amount at 19% VAT rate (Kz81)",
         "amount7": "Net amount at 7% VAT rate (Kz86)",
+        "amount0": "Non-taxable amount at 0% (Kz45)",
         "invoiceFile": "CSV/TSV invoice file (- for stdin)",
         "period": "Period: 01-12 (monthly) or 41-44 (quarterly)",
         "year": "Tax year (default: current year)",
@@ -380,8 +616,27 @@ when isMainModule:
       short = {
         "amount19": '1',
         "amount7": '7',
+        "amount0": '0',
         "invoiceFile": 'i',
         "period": 'p',
+        "year": 'y',
+        "validateOnly": 'v',
+        "dryRun": 'd',
+        "verbose": 'V',
+        "env": 'e',
+      }
+    ],
+    [euer,
+      help = {
+        "invoiceFile": "CSV/TSV invoice file (positive=income, negative=expenses)",
+        "year": "Tax year (default: current year)",
+        "validateOnly": "Only validate, don't send",
+        "dryRun": "Show generated XML without processing",
+        "verbose": "Show full server response XML",
+        "env": "Path to env file (default: .env)",
+      },
+      short = {
+        "invoiceFile": 'i',
         "year": 'y',
         "validateOnly": 'v',
         "dryRun": 'd',

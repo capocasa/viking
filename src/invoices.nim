@@ -14,7 +14,16 @@ type
   InvoiceAggregation* = object
     amount19*: Option[float]
     amount7*: Option[float]
+    amount0*: Option[float]
     count*: int
+
+  EuerAggregation* = object
+    incomeNet*: float        ## Sum of positive amounts (net, excl. VAT)
+    incomeVat*: float        ## VAT collected on income
+    expenseNet*: float       ## Sum of abs(negative amounts) (net, excl. VAT)
+    expenseVorsteuer*: float ## Input VAT on expenses
+    incomeCount*: int
+    expenseCount*: int
 
   InvoiceError* = object
     line*: int
@@ -94,11 +103,11 @@ proc parseInvoices*(input: string): (seq[Invoice], seq[InvoiceError]) =
       let rateStr = fields[1].strip
       try:
         inv.rate = parseInt(rateStr)
-        if inv.rate != 7 and inv.rate != 19:
-          errors.add(InvoiceError(line: lineNum, msg: "invalid rate: " & rateStr & " (must be 7 or 19)"))
+        if inv.rate != 0 and inv.rate != 7 and inv.rate != 19:
+          errors.add(InvoiceError(line: lineNum, msg: "invalid rate: " & rateStr & " (must be 0, 7 or 19)"))
           continue
       except ValueError:
-        errors.add(InvoiceError(line: lineNum, msg: "invalid rate: " & rateStr & " (must be 7 or 19)"))
+        errors.add(InvoiceError(line: lineNum, msg: "invalid rate: " & rateStr & " (must be 0, 7 or 19)"))
         continue
     else:
       inv.rate = 19
@@ -153,8 +162,10 @@ proc aggregate*(invoices: seq[Invoice]): InvoiceAggregation =
   ## Sum amounts by rate. Returns Option[float] per rate (none if no invoices at that rate).
   var sum19 = 0.0
   var sum7 = 0.0
+  var sum0 = 0.0
   var has19 = false
   var has7 = false
+  var has0 = false
 
   for inv in invoices:
     case inv.rate
@@ -164,11 +175,15 @@ proc aggregate*(invoices: seq[Invoice]): InvoiceAggregation =
     of 7:
       sum7 += inv.amount
       has7 = true
+    of 0:
+      sum0 += inv.amount
+      has0 = true
     else:
       discard
 
   result.amount19 = if has19: some(sum19) else: none(float)
   result.amount7 = if has7: some(sum7) else: none(float)
+  result.amount0 = if has0: some(sum0) else: none(float)
   result.count = invoices.len
 
 proc readInvoiceInput*(path: string): string =
@@ -177,6 +192,20 @@ proc readInvoiceInput*(path: string): string =
     return stdin.readAll
   else:
     return readFile(path)
+
+proc aggregateForEuer*(invoices: seq[Invoice]): EuerAggregation =
+  ## Split invoices into income (positive) and expenses (negative) for EÜR.
+  ## Positive amounts = income, negative amounts = expenses.
+  for inv in invoices:
+    let rate = inv.rate.float / 100.0
+    if inv.amount >= 0:
+      result.incomeNet += inv.amount
+      result.incomeVat += inv.amount * rate
+      inc result.incomeCount
+    else:
+      result.expenseNet += abs(inv.amount)
+      result.expenseVorsteuer += abs(inv.amount) * rate
+      inc result.expenseCount
 
 proc loadAndAggregateInvoices*(path: string): (InvoiceAggregation, bool) =
   ## Top-level entry point: read, parse, aggregate. Prints errors to stderr.
@@ -198,7 +227,30 @@ proc loadAndAggregateInvoices*(path: string): (InvoiceAggregation, bool) =
 
   if invoices.len == 0:
     # Empty file or header-only is valid: zero amounts
-    return (InvoiceAggregation(amount19: none(float), amount7: none(float), count: 0), true)
+    return (InvoiceAggregation(amount19: none(float), amount7: none(float), amount0: none(float), count: 0), true)
 
   let agg = aggregate(invoices)
+  return (agg, true)
+
+proc loadAndAggregateForEuer*(path: string): (EuerAggregation, bool) =
+  ## Top-level entry point for EÜR: read, parse, aggregate by income/expense.
+  var input: string
+  try:
+    input = readInvoiceInput(path)
+  except IOError as e:
+    stderr.writeLine("Error: Cannot read invoice file: " & e.msg)
+    return (EuerAggregation(), false)
+
+  let (invoices, errors) = parseInvoices(input)
+
+  if errors.len > 0:
+    stderr.writeLine("Invoice parsing errors:")
+    for e in errors:
+      stderr.writeLine("  line " & $e.line & ": " & e.msg)
+    return (EuerAggregation(), false)
+
+  if invoices.len == 0:
+    return (EuerAggregation(), true)
+
+  let agg = aggregateForEuer(invoices)
   return (agg, true)

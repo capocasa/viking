@@ -21,6 +21,7 @@ proc generateUstva*(
   zeitraum: string,
   kz81: Option[float] = none(float),
   kz86: Option[float] = none(float),
+  kz45: Option[float] = none(float),
   herstellerId: string,
   produktName: string,
   name: string,
@@ -37,6 +38,7 @@ proc generateUstva*(
   ##   zeitraum: Period - "01"-"12" for monthly, "41"-"44" for quarterly
   ##   kz81: Net amount at 19% rate (Kennzahl 81), none if not specified
   ##   kz86: Net amount at 7% rate (Kennzahl 86), none if not specified
+  ##   kz45: Non-taxable amount at 0% (Kennzahl 45), none if not specified
   ##
   ## Returns:
   ##   Complete ELSTER XML document as string
@@ -54,6 +56,9 @@ proc generateUstva*(
 
   # Build Kennzahlen elements - include if explicitly provided (even if 0)
   var kennzahlen = ""
+
+  if kz45.isSome:
+    kennzahlen.add(&"              <Kz45>{formatAmountInt(kz45.get(0.0))}</Kz45>\n")
 
   if kz81.isSome:
     kennzahlen.add(&"              <Kz81>{formatAmountInt(amt81)}</Kz81>\n")

@@ -1,7 +1,7 @@
 ## Configuration module
 ## Loads configuration from .env file
 
-import std/os
+import std/[os, tables]
 import dotenv
 
 type
@@ -19,6 +19,8 @@ type
     plz*: string
     ort*: string
     test*: bool
+    rechtsform*: string
+    einkunftsart*: string
 
 proc loadConfig*(envFile: string = ".env"): Config =
   ## Load configuration from env file
@@ -44,6 +46,8 @@ proc loadConfig*(envFile: string = ".env"): Config =
   result.plz = getEnv("DATENLIEFERANT_PLZ", "")
   result.ort = getEnv("DATENLIEFERANT_ORT", "")
   result.test = getEnv("TEST", "0") == "1"
+  result.rechtsform = getEnv("RECHTSFORM", "")
+  result.einkunftsart = getEnv("EINKUNFTSART", "")
 
 proc validate*(cfg: Config): seq[string] =
   ## Validate configuration and return list of errors
@@ -99,4 +103,48 @@ proc validateForValidateOnly*(cfg: Config): seq[string] =
 
   if cfg.steuernummer == "":
     result.add("STEUERNUMMER not set")
+
+const BundeslandMap = {
+  "10": "BE", "11": "BB",
+  "21": "NI", "22": "SH", "23": "HH", "24": "HB",
+  "26": "MV", "27": "MV", "28": "ST",
+  "30": "SN", "31": "TH",
+  "32": "NW", "33": "NW",
+  "40": "HE", "41": "HE",
+  "42": "RP", "43": "RP", "44": "RP",
+  "45": "SL", "46": "SL",
+  "50": "BW", "51": "BW", "52": "BW", "53": "BW", "54": "BW", "55": "BW",
+  "91": "BY", "92": "BY",
+}.toTable
+
+proc bundeslandFromSteuernummer*(stnr: string): string =
+  ## Map the first 2 digits of a 13-digit Steuernummer to a Bundesland code.
+  if stnr.len < 2:
+    return ""
+  let prefix = stnr[0..1]
+  if prefix in BundeslandMap:
+    return BundeslandMap[prefix]
+  return ""
+
+proc validateForEuerSubmission*(cfg: Config): seq[string] =
+  ## Full validation for EÜR submission
+  result = cfg.validateForSubmission()
+
+  if cfg.rechtsform == "":
+    result.add("RECHTSFORM not set (legal form, e.g. 1=Einzelunternehmen)")
+  if cfg.einkunftsart == "":
+    result.add("EINKUNFTSART not set (income type, e.g. 1=Gewerbebetrieb)")
+  if cfg.steuernummer.len >= 2 and bundeslandFromSteuernummer(cfg.steuernummer) == "":
+    result.add("Cannot determine Bundesland from STEUERNUMMER prefix: " & cfg.steuernummer[0..1])
+
+proc validateForEuerValidateOnly*(cfg: Config): seq[string] =
+  ## Minimal validation for EÜR validate-only mode
+  result = cfg.validateForValidateOnly()
+
+  if cfg.rechtsform == "":
+    result.add("RECHTSFORM not set (legal form, e.g. 1=Einzelunternehmen)")
+  if cfg.einkunftsart == "":
+    result.add("EINKUNFTSART not set (income type, e.g. 1=Gewerbebetrieb)")
+  if cfg.steuernummer.len >= 2 and bundeslandFromSteuernummer(cfg.steuernummer) == "":
+    result.add("Cannot determine Bundesland from STEUERNUMMER prefix: " & cfg.steuernummer[0..1])
 

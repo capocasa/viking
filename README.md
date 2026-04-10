@@ -2,7 +2,7 @@
 
 CLI tool to submit German VAT advance returns (Umsatzsteuervoranmeldung/UStVA) via the ELSTER ERiC C library.
 
-> **Experimental software.** This project is under active development. Tax submissions are irreversible. Use at your own risk and verify all submissions independently. The authors accept no liability for incorrect tax filings.
+This is experimental — tax submissions are irreversible, so verify independently.
 
 ## Setup
 

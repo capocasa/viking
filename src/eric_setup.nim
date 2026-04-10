@@ -661,6 +661,24 @@ proc listAvailableYears*(installation: EricInstallation): seq[int] =
 
   result.sort()
 
+proc listAvailableEuerYears*(installation: EricInstallation): seq[int] =
+  ## List years for which EUER plugins are available
+  result = @[]
+  if not installation.valid:
+    return
+
+  for kind, path in walkDir(installation.pluginPath):
+    if kind == pcFile:
+      let name = path.extractFilename
+      if name.startsWith("libcheckEUER_") and name.endsWith(".so"):
+        let yearStr = name[13..^4]
+        try:
+          result.add(parseInt(yearStr))
+        except ValueError:
+          discard
+
+  result.sort()
+
 # ===========================================================================
 # Auto-download orchestrator
 # ===========================================================================
