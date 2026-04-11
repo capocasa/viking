@@ -1,10 +1,10 @@
 ## viking - German VAT advance return (Umsatzsteuervoranmeldung) CLI
 ## Submit UStVA via ERiC library
 
-import std/[strutils, strformat, times, options, os]
+import std/[strutils, strformat, times, options, os, xmltree, xmlparser]
 import cligen, cligen/argcvt
 import dotenv
-import config, eric_ffi, ustva_xml, euer_xml, eric_setup, invoices
+import config, eric_ffi, ustva_xml, euer_xml, est_xml, ust_xml, eric_setup, invoices, abholung_xml
 
 # Custom cligen converters for Option[float]
 proc argParse(dst: var Option[float], dfl: Option[float], a: var ArgcvtParams): bool =
@@ -519,6 +519,498 @@ proc euer(
 
     return 1
 
+proc est(
+  invoiceFile: string = "",
+  year: int = 0,
+  validateOnly: bool = false,
+  dryRun: bool = false,
+  verbose: bool = false,
+  env: string = ".env",
+): int =
+  ## Submit an ESt (Einkommensteuererklarung / income tax return)
+  ##
+  ## Uses the same invoice file as EUeR to compute profit from self-employment.
+  ## Positive amounts = income, negative = expenses.
+  ##
+  ## Requires: VORNAME, NACHNAME, GEBURTSDATUM, IBAN, EINKUNFTSART in .env
+  ##
+  ## Examples:
+  ##   viking est -i invoices.csv -y 2025
+  ##   viking est -i invoices.csv -y 2025 --validate-only
+  ##   viking est -i invoices.csv --dry-run
+
+  let actualYear = if year == 0: now().year else: year
+
+  if invoiceFile == "":
+    echo "Error: --invoice-file is required for ESt submission"
+    return 1
+
+  # Load and aggregate invoices (same as EUeR)
+  let (agg, ok) = loadAndAggregateForEuer(invoiceFile)
+  if not ok:
+    return 1
+
+  let totalIncome = agg.incomeNet + agg.incomeVat
+  let totalExpense = agg.expenseNet + agg.expenseVorsteuer
+  let profit = totalIncome - totalExpense
+
+  echo &"=== Invoices ==="
+  echo &"File:      {invoiceFile}"
+  echo &"Income:    {agg.incomeCount} invoices, {totalIncome:.2f} EUR"
+  echo &"Expenses:  {agg.expenseCount} invoices, {totalExpense:.2f} EUR"
+  echo &"Profit:    {profit:.2f} EUR"
+  echo ""
+
+  # Load and validate configuration
+  var cfg: Config
+  try:
+    cfg = loadConfig(env)
+  except IOError as e:
+    echo &"Error: {e.msg}"
+    return 1
+
+  let errors = if validateOnly and not dryRun: cfg.validateForEstValidateOnly()
+               else: cfg.validateForEstSubmission()
+
+  if errors.len > 0:
+    echo "Configuration errors:"
+    for e in errors:
+      echo &"  - {e}"
+    echo ""
+    echo "Please check your .env file. ESt requires VORNAME, NACHNAME, GEBURTSDATUM, IBAN, EINKUNFTSART."
+    return 1
+
+  let bundesland = bundeslandFromSteuernummer(cfg.steuernummer)
+
+  # Generate XML
+  let xml = generateEst(
+    steuernummer = cfg.steuernummer,
+    jahr = actualYear,
+    profit = profit,
+    einkunftsart = cfg.einkunftsart,
+    herstellerId = cfg.herstellerId,
+    produktName = cfg.produktName,
+    vorname = cfg.vorname,
+    nachname = cfg.nachname,
+    geburtsdatum = cfg.geburtsdatum,
+    strasse = cfg.strasse,
+    hausnummer = cfg.hausnummer,
+    plz = cfg.plz,
+    ort = cfg.ort,
+    iban = cfg.iban,
+    religion = cfg.religion,
+    beruf = cfg.beruf,
+    krankenversicherung = cfg.krankenversicherung,
+    pflegeversicherung = cfg.pflegeversicherung,
+    rentenversicherung = cfg.rentenversicherung,
+    kvArt = cfg.kvArt,
+    test = cfg.test,
+  )
+
+  # Load ERiC library
+  if not loadEricLib(cfg.ericLibPath):
+    echo &"Error: Failed to load ERiC library from {cfg.ericLibPath}"
+    return 1
+  defer: unloadEricLib()
+
+  # Ensure log directory exists
+  createDir(cfg.ericLogPath)
+
+  # Initialize ERiC
+  let initRc = ericInitialisiere(cfg.ericPluginPath, cfg.ericLogPath)
+  if initRc != 0:
+    echo &"Error: ERiC initialization failed with code {initRc}"
+    echo &"  {ericHoleFehlerText(initRc)}"
+    return 1
+  defer: discard ericBeende()
+
+  # Dry run mode
+  if dryRun:
+    echo "ERiC library loaded and initialized successfully."
+    echo ""
+    echo "=== Generated XML ==="
+    echo xml
+    echo "====================="
+    return 0
+
+  # Create return buffers
+  let responseBuf = ericRueckgabepufferErzeugen()
+  let serverBuf = ericRueckgabepufferErzeugen()
+  if responseBuf == nil or serverBuf == nil:
+    echo "Error: Failed to create return buffers"
+    return 1
+  defer:
+    discard ericRueckgabepufferFreigabe(responseBuf)
+    discard ericRueckgabepufferFreigabe(serverBuf)
+
+  # Determine flags
+  var flags: uint32 = ERIC_VALIDIERE
+  if not validateOnly:
+    flags = flags or ERIC_SENDE
+
+  # Set up encryption parameters if sending
+  var cryptParam: EricVerschluesselungsParameterT
+  var cryptParamPtr: ptr EricVerschluesselungsParameterT = nil
+  var certHandle: EricZertifikatHandle = 0
+
+  if not validateOnly:
+    let (certRc, handle) = ericGetHandleToCertificate(cfg.certPath)
+    if certRc != 0:
+      echo &"Error: Failed to open certificate with code {certRc}"
+      echo &"  {ericHoleFehlerText(certRc)}"
+      return 1
+    certHandle = handle
+
+    cryptParam.version = 3
+    cryptParam.zertifikatHandle = certHandle
+    cryptParam.pin = cfg.certPin.cstring
+    cryptParamPtr = addr cryptParam
+
+  defer:
+    if certHandle != 0:
+      discard ericCloseHandleToCertificate(certHandle)
+
+  # Determine Anlage type for display
+  let anlageStr = if cfg.einkunftsart == "2": "Anlage G (Gewerbebetrieb)"
+                  else: "Anlage S (Selbstaendige Arbeit)"
+
+  # Show summary
+  echo &"=== Einkommensteuererklarung ==="
+  echo &"Year:        {actualYear}"
+  echo &"Tax number:  {cfg.steuernummer}"
+  echo &"Bundesland:  {bundesland}"
+  echo &"Name:        {cfg.vorname} {cfg.nachname}"
+  echo &"Anlage:      {anlageStr}"
+  echo ""
+  echo &"Profit:      {profit:.2f} EUR"
+  if cfg.krankenversicherung > 0 or cfg.pflegeversicherung > 0 or cfg.rentenversicherung > 0:
+    echo ""
+    echo "Vorsorgeaufwand:"
+    if cfg.krankenversicherung > 0:
+      echo &"  KV ({cfg.kvArt}): {cfg.krankenversicherung:.2f} EUR"
+    if cfg.pflegeversicherung > 0:
+      echo &"  PV:          {cfg.pflegeversicherung:.2f} EUR"
+    if cfg.rentenversicherung > 0:
+      echo &"  RV:          {cfg.rentenversicherung:.2f} EUR"
+  echo ""
+
+  let modeStr = if cfg.test: " (TEST)" else: ""
+  if validateOnly:
+    echo &"Mode: Validate only{modeStr}"
+  else:
+    echo &"Mode: Send to ELSTER{modeStr}"
+  echo ""
+
+  # Process
+  var transferHandle: uint32 = 0
+  let datenartVersion = &"ESt_{actualYear}"
+  let rc = ericBearbeiteVorgang(
+    xml,
+    datenartVersion,
+    flags,
+    nil,
+    cryptParamPtr,
+    addr transferHandle,
+    responseBuf,
+    serverBuf,
+  )
+
+  let response = ericRueckgabepufferInhalt(responseBuf)
+  let serverResponse = ericRueckgabepufferInhalt(serverBuf)
+
+  if rc == 0:
+    if validateOnly:
+      echo "Validation successful!"
+    else:
+      echo "Submission successful!"
+
+    if verbose and serverResponse.len > 0:
+      echo ""
+      echo "Server response:"
+      echo serverResponse
+
+    return 0
+  else:
+    echo &"Error: Operation failed with code {rc}"
+    echo &"  {ericHoleFehlerText(rc)}"
+
+    case rc
+    of 610301202:
+      echo ""
+      echo "Hint: The demo HerstellerID (74931) is blocked."
+      echo "  Register at https://www.elster.de/elsterweb/entwickler"
+      echo "  and set HERSTELLER_ID in your .env file."
+    of 610301200:
+      echo ""
+      echo "Hint: XML schema validation failed."
+      let logFile = cfg.ericLogPath / "eric.log"
+      if fileExists(logFile):
+        let logContent = readFile(logFile).strip
+        if logContent.len > 0:
+          echo ""
+          echo "ERiC log:"
+          echo logContent
+    of 610001050:
+      echo ""
+      echo "Hint: Buffer instance mismatch - this is likely a bug in the FFI bindings."
+    else:
+      discard
+
+    if response.len > 0:
+      echo ""
+      echo "Details:"
+      echo response
+
+    if serverResponse.len > 0:
+      echo ""
+      echo "Server response:"
+      echo serverResponse
+
+    return 1
+
+proc ust(
+  invoiceFile: string = "",
+  vorauszahlungen: float = 0.0,
+  year: int = 0,
+  validateOnly: bool = false,
+  dryRun: bool = false,
+  verbose: bool = false,
+  env: string = ".env",
+): int =
+  ## Submit an annual VAT return (Umsatzsteuererklaerung)
+  ##
+  ## Uses the same invoice file format as other commands.
+  ## Positive amounts = revenue, negative = expenses (for Vorsteuer).
+  ## Provide --vorauszahlungen with the total UStVA advance payments made.
+  ##
+  ## Examples:
+  ##   viking ust -i invoices.csv -y 2025 --vorauszahlungen=1200
+  ##   viking ust -i invoices.csv -y 2025 --validate-only
+  ##   viking ust -i invoices.csv --dry-run
+
+  let actualYear = if year == 0: now().year else: year
+
+  if invoiceFile == "":
+    echo "Error: --invoice-file is required for USt submission"
+    return 1
+
+  # Load and aggregate invoices
+  let (agg, ok) = loadAndAggregateForUst(invoiceFile)
+  if not ok:
+    return 1
+
+  # Compute VAT amounts for display
+  let vat19 = agg.income19 * 0.19
+  let vat7 = agg.income7 * 0.07
+  let totalVat = vat19 + vat7
+  let remaining = totalVat - agg.vorsteuer - vorauszahlungen
+
+  echo &"=== Invoices ==="
+  echo &"File:      {invoiceFile}"
+  echo &"Revenue:   {agg.incomeCount} invoices"
+  if agg.has19:
+    echo &"  19%:     {agg.income19:.2f} EUR net -> {vat19:.2f} EUR VAT"
+  if agg.has7:
+    echo &"  7%:      {agg.income7:.2f} EUR net -> {vat7:.2f} EUR VAT"
+  if agg.has0:
+    echo &"  0%:      {agg.income0:.2f} EUR (non-taxable)"
+  if agg.expenseCount > 0:
+    echo &"Expenses:  {agg.expenseCount} invoices, {agg.vorsteuer:.2f} EUR Vorsteuer"
+  echo ""
+
+  # Load and validate configuration
+  var cfg: Config
+  try:
+    cfg = loadConfig(env)
+  except IOError as e:
+    echo &"Error: {e.msg}"
+    return 1
+
+  let errors = if validateOnly and not dryRun: cfg.validateForUstValidateOnly()
+               else: cfg.validateForUstSubmission()
+
+  if errors.len > 0:
+    echo "Configuration errors:"
+    for e in errors:
+      echo &"  - {e}"
+    echo ""
+    echo "Please check your .env file."
+    return 1
+
+  let bundesland = bundeslandFromSteuernummer(cfg.steuernummer)
+
+  # Generate XML
+  let xml = generateUst(
+    steuernummer = cfg.steuernummer,
+    jahr = actualYear,
+    income19 = agg.income19,
+    income7 = agg.income7,
+    income0 = agg.income0,
+    has19 = agg.has19,
+    has7 = agg.has7,
+    has0 = agg.has0,
+    vorsteuer = agg.vorsteuer,
+    vorauszahlungen = vorauszahlungen,
+    besteuerungsart = cfg.besteuerungsart,
+    herstellerId = cfg.herstellerId,
+    produktName = cfg.produktName,
+    name = cfg.name,
+    strasse = cfg.strasse,
+    plz = cfg.plz,
+    ort = cfg.ort,
+    test = cfg.test,
+  )
+
+  # Load ERiC library
+  if not loadEricLib(cfg.ericLibPath):
+    echo &"Error: Failed to load ERiC library from {cfg.ericLibPath}"
+    return 1
+  defer: unloadEricLib()
+
+  # Ensure log directory exists
+  createDir(cfg.ericLogPath)
+
+  # Initialize ERiC
+  let initRc = ericInitialisiere(cfg.ericPluginPath, cfg.ericLogPath)
+  if initRc != 0:
+    echo &"Error: ERiC initialization failed with code {initRc}"
+    echo &"  {ericHoleFehlerText(initRc)}"
+    return 1
+  defer: discard ericBeende()
+
+  # Dry run mode
+  if dryRun:
+    echo "ERiC library loaded and initialized successfully."
+    echo ""
+    echo "=== Generated XML ==="
+    echo xml
+    echo "====================="
+    return 0
+
+  # Create return buffers
+  let responseBuf = ericRueckgabepufferErzeugen()
+  let serverBuf = ericRueckgabepufferErzeugen()
+  if responseBuf == nil or serverBuf == nil:
+    echo "Error: Failed to create return buffers"
+    return 1
+  defer:
+    discard ericRueckgabepufferFreigabe(responseBuf)
+    discard ericRueckgabepufferFreigabe(serverBuf)
+
+  # Determine flags
+  var flags: uint32 = ERIC_VALIDIERE
+  if not validateOnly:
+    flags = flags or ERIC_SENDE
+
+  # Set up encryption parameters if sending
+  var cryptParam: EricVerschluesselungsParameterT
+  var cryptParamPtr: ptr EricVerschluesselungsParameterT = nil
+  var certHandle: EricZertifikatHandle = 0
+
+  if not validateOnly:
+    let (certRc, handle) = ericGetHandleToCertificate(cfg.certPath)
+    if certRc != 0:
+      echo &"Error: Failed to open certificate with code {certRc}"
+      echo &"  {ericHoleFehlerText(certRc)}"
+      return 1
+    certHandle = handle
+
+    cryptParam.version = 3
+    cryptParam.zertifikatHandle = certHandle
+    cryptParam.pin = cfg.certPin.cstring
+    cryptParamPtr = addr cryptParam
+
+  defer:
+    if certHandle != 0:
+      discard ericCloseHandleToCertificate(certHandle)
+
+  # Show summary
+  echo &"=== Umsatzsteuererklaerung ==="
+  echo &"Year:           {actualYear}"
+  echo &"Tax number:     {cfg.steuernummer}"
+  echo ""
+  echo &"VAT computed:   {totalVat:.2f} EUR"
+  if agg.vorsteuer > 0:
+    echo &"Vorsteuer:     -{agg.vorsteuer:.2f} EUR"
+  if vorauszahlungen != 0:
+    echo &"Advance paid:  -{vorauszahlungen:.2f} EUR"
+  echo &"Remaining:      {remaining:.2f} EUR"
+  echo ""
+
+  let modeStr = if cfg.test: " (TEST)" else: ""
+  if validateOnly:
+    echo &"Mode: Validate only{modeStr}"
+  else:
+    echo &"Mode: Send to ELSTER{modeStr}"
+  echo ""
+
+  # Process
+  var transferHandle: uint32 = 0
+  let datenartVersion = &"USt_{actualYear}"
+  let rc = ericBearbeiteVorgang(
+    xml,
+    datenartVersion,
+    flags,
+    nil,
+    cryptParamPtr,
+    addr transferHandle,
+    responseBuf,
+    serverBuf,
+  )
+
+  let response = ericRueckgabepufferInhalt(responseBuf)
+  let serverResponse = ericRueckgabepufferInhalt(serverBuf)
+
+  if rc == 0:
+    if validateOnly:
+      echo "Validation successful!"
+    else:
+      echo "Submission successful!"
+
+    if verbose and serverResponse.len > 0:
+      echo ""
+      echo "Server response:"
+      echo serverResponse
+
+    return 0
+  else:
+    echo &"Error: Operation failed with code {rc}"
+    echo &"  {ericHoleFehlerText(rc)}"
+
+    case rc
+    of 610301202:
+      echo ""
+      echo "Hint: The demo HerstellerID (74931) is blocked."
+      echo "  Register at https://www.elster.de/elsterweb/entwickler"
+      echo "  and set HERSTELLER_ID in your .env file."
+    of 610301200:
+      echo ""
+      echo "Hint: XML schema validation failed."
+      let logFile = cfg.ericLogPath / "eric.log"
+      if fileExists(logFile):
+        let logContent = readFile(logFile).strip
+        if logContent.len > 0:
+          echo ""
+          echo "ERiC log:"
+          echo logContent
+    of 610001050:
+      echo ""
+      echo "Hint: Buffer instance mismatch - this is likely a bug in the FFI bindings."
+    else:
+      discard
+
+    if response.len > 0:
+      echo ""
+      echo "Details:"
+      echo response
+
+    if serverResponse.len > 0:
+      echo ""
+      echo "Server response:"
+      echo serverResponse
+
+    return 1
+
 proc fetch(file: string = "", check: bool = false, env: string = ".env"): int =
   ## Fetch ERiC library and test certificates
   ##
@@ -551,6 +1043,12 @@ proc fetch(file: string = "", check: bool = false, env: string = ".env"): int =
       let euerYears = listAvailableEuerYears(existing)
       if euerYears.len > 0:
         echo &"  EUER years:  {euerYears.join(\", \")}"
+      let estYears = listAvailableEstYears(existing)
+      if estYears.len > 0:
+        echo &"  ESt years:   {estYears.join(\", \")}"
+      let ustYears = listAvailableUstYears(existing)
+      if ustYears.len > 0:
+        echo &"  USt years:   {ustYears.join(\", \")}"
       return 0
     else:
       echo "No ERiC installation found in cache."
@@ -601,6 +1099,12 @@ proc fetch(file: string = "", check: bool = false, env: string = ".env"): int =
     let euerYears = listAvailableEuerYears(installation)
     if euerYears.len > 0:
       echo &"  EUER years:  {euerYears.join(\", \")}"
+    let estYears = listAvailableEstYears(installation)
+    if estYears.len > 0:
+      echo &"  ESt years:   {estYears.join(\", \")}"
+    let ustYears = listAvailableUstYears(installation)
+    if ustYears.len > 0:
+      echo &"  USt years:   {ustYears.join(\", \")}"
 
     if certSuccess:
       echo ""
@@ -613,6 +1117,219 @@ proc fetch(file: string = "", check: bool = false, env: string = ".env"): int =
   else:
     echo "ERiC setup incomplete. Use 'viking fetch --file=<path>' with a local archive."
     return 1
+
+proc retrieve(
+  output: string = "",
+  dryRun: bool = false,
+  verbose: bool = false,
+  env: string = ".env",
+): int =
+  ## Retrieve data from the tax office (Datenabholung)
+  ##
+  ## Checks the ELSTER Postfach for available documents (tax assessments,
+  ## confirmations, etc.) and retrieves them.
+  ##
+  ## Examples:
+  ##   viking retrieve
+  ##   viking retrieve --output=data.xml
+  ##   viking retrieve --dry-run
+
+  # Load and validate configuration
+  var cfg: Config
+  try:
+    cfg = loadConfig(env)
+  except IOError as e:
+    echo &"Error: {e.msg}"
+    return 1
+
+  let errors = cfg.validate()
+  if errors.len > 0:
+    echo "Configuration errors:"
+    for e in errors:
+      echo &"  - {e}"
+    echo ""
+    echo "Please check your .env file."
+    return 1
+
+  # Load ERiC library
+  if not loadEricLib(cfg.ericLibPath):
+    echo &"Error: Failed to load ERiC library from {cfg.ericLibPath}"
+    return 1
+  defer: unloadEricLib()
+
+  createDir(cfg.ericLogPath)
+
+  let initRc = ericInitialisiere(cfg.ericPluginPath, cfg.ericLogPath)
+  if initRc != 0:
+    echo &"Error: ERiC initialization failed with code {initRc}"
+    echo &"  {ericHoleFehlerText(initRc)}"
+    return 1
+  defer: discard ericBeende()
+
+  # Build XML using EricCreateTH to generate proper TransferHeader
+  let datenTeil = generatePostfachAnfrageDatenTeil()
+  let testmerker = if cfg.test: "700000004" else: ""
+
+  let thBuf = ericRueckgabepufferErzeugen()
+  if thBuf == nil:
+    echo "Error: Failed to create buffer"
+    return 1
+  defer: discard ericRueckgabepufferFreigabe(thBuf)
+
+  let thRc = ericCreateTH(
+    datenTeil,
+    "ElsterDatenabholung",
+    "PostfachAnfrage",
+    "send-Auth",
+    testmerker,
+    cfg.herstellerId,
+    cfg.name,
+    "",
+    thBuf,
+  )
+  if thRc != 0:
+    echo &"Error: EricCreateTH failed with code {thRc}"
+    echo &"  {ericHoleFehlerText(thRc)}"
+    return 1
+
+  let anfragXml = ericRueckgabepufferInhalt(thBuf)
+
+  if dryRun:
+    echo "=== PostfachAnfrage XML ==="
+    echo anfragXml
+    echo "==========================="
+    return 0
+
+  # Open certificate
+  let (certRc, certHandle) = ericGetHandleToCertificate(cfg.certPath)
+  if certRc != 0:
+    echo &"Error: Failed to open certificate with code {certRc}"
+    echo &"  {ericHoleFehlerText(certRc)}"
+    return 1
+  defer: discard ericCloseHandleToCertificate(certHandle)
+
+  var cryptParam: EricVerschluesselungsParameterT
+  cryptParam.version = 3
+  cryptParam.zertifikatHandle = certHandle
+  cryptParam.pin = cfg.certPin.cstring
+
+  let modeStr = if cfg.test: " (TEST)" else: ""
+  echo &"=== Datenabholung{modeStr} ==="
+  echo ""
+
+  echo "Fetching Postfach..."
+
+  var transferHandle: uint32 = 0
+
+  let responseBuf = ericRueckgabepufferErzeugen()
+  let serverBuf = ericRueckgabepufferErzeugen()
+  if responseBuf == nil or serverBuf == nil:
+    echo "Error: Failed to create return buffers"
+    return 1
+  defer:
+    discard ericRueckgabepufferFreigabe(responseBuf)
+    discard ericRueckgabepufferFreigabe(serverBuf)
+
+  let rc = ericBearbeiteVorgang(
+    anfragXml,
+    "PostfachAnfrage_31",
+    ERIC_VALIDIERE or ERIC_SENDE,
+    nil,
+    addr cryptParam,
+    addr transferHandle,
+    responseBuf,
+    serverBuf,
+  )
+
+  let response = ericRueckgabepufferInhalt(responseBuf)
+  let serverResponse = ericRueckgabepufferInhalt(serverBuf)
+
+  if rc != 0:
+    echo &"Error: Postfach request failed with code {rc}"
+    echo &"  {ericHoleFehlerText(rc)}"
+    if response.len > 0:
+      echo ""
+      echo "Details:"
+      echo response
+    if serverResponse.len > 0:
+      echo ""
+      echo "Server response:"
+      echo serverResponse
+    return 1
+
+  echo "  OK"
+
+  if serverResponse.len > 0:
+    if output != "":
+      writeFile(output, serverResponse)
+      echo &"Server response written to: {output}"
+    else:
+      if verbose:
+        echo ""
+        echo "=== Server Response ==="
+        echo serverResponse
+        echo "======================="
+
+    # Try to decrypt any Datenpaket elements
+    try:
+      let xmlDoc = parseXml(serverResponse)
+      # Walk to find Datenpaket elements for decryption
+      var decrypted = false
+      for nb in xmlDoc:
+        if nb.kind != xnElement: continue
+        for child in nb:
+          if child.kind != xnElement: continue
+          for nutzdaten in child:
+            if nutzdaten.kind != xnElement: continue
+            for da in nutzdaten:
+              if da.kind != xnElement or da.tag != "Datenabholung": continue
+              for abh in da:
+                if abh.kind != xnElement or abh.tag != "Abholung": continue
+                for dp in abh:
+                  if dp.kind != xnElement or dp.tag != "Datenpaket": continue
+                  let encData = dp.innerText.strip
+                  if encData.len == 0: continue
+
+                  echo ""
+                  echo "Decrypting retrieved data..."
+                  let decodeBuf = ericRueckgabepufferErzeugen()
+                  if decodeBuf == nil:
+                    echo "Error: Failed to create decode buffer"
+                    continue
+                  defer: discard ericRueckgabepufferFreigabe(decodeBuf)
+
+                  let decRc = ericDekodiereDaten(certHandle, cfg.certPin, encData, decodeBuf)
+                  let decoded = ericRueckgabepufferInhalt(decodeBuf)
+
+                  if decRc != 0:
+                    echo &"  Decryption failed with code {decRc}: {ericHoleFehlerText(decRc)}"
+                  elif decoded.len > 0:
+                    decrypted = true
+                    echo "  Decryption successful."
+                    if output != "":
+                      let decFile = output.changeFileExt("") & "_decrypted" & output.splitFile.ext
+                      writeFile(decFile, decoded)
+                      echo &"  Decrypted data written to: {decFile}"
+                    else:
+                      echo ""
+                      echo "=== Decrypted Data ==="
+                      echo decoded
+                      echo "======================"
+
+      if not decrypted and not verbose:
+        echo ""
+        echo serverResponse
+    except:
+      if not verbose:
+        echo ""
+        echo serverResponse
+  else:
+    echo ""
+    echo "No data returned from server."
+
+  echo ""
+  echo "Retrieval complete."
+  return 0
 
 when isMainModule:
   import cligen
@@ -656,6 +1373,58 @@ when isMainModule:
         "invoiceFile": 'i',
         "year": 'y',
         "validateOnly": 'v',
+        "dryRun": 'd',
+        "verbose": 'V',
+        "env": 'e',
+      }
+    ],
+    [est,
+      help = {
+        "invoiceFile": "CSV/TSV invoice file (positive=income, negative=expenses)",
+        "year": "Tax year (default: current year)",
+        "validateOnly": "Only validate, don't send",
+        "dryRun": "Show generated XML without processing",
+        "verbose": "Show full server response XML",
+        "env": "Path to env file (default: .env)",
+      },
+      short = {
+        "invoiceFile": 'i',
+        "year": 'y',
+        "validateOnly": 'v',
+        "dryRun": 'd',
+        "verbose": 'V',
+        "env": 'e',
+      }
+    ],
+    [ust,
+      help = {
+        "invoiceFile": "CSV/TSV invoice file (positive=revenue, negative=expenses)",
+        "vorauszahlungen": "Total UStVA advance payments made during the year",
+        "year": "Tax year (default: current year)",
+        "validateOnly": "Only validate, don't send",
+        "dryRun": "Show generated XML without processing",
+        "verbose": "Show full server response XML",
+        "env": "Path to env file (default: .env)",
+      },
+      short = {
+        "invoiceFile": 'i',
+        "vorauszahlungen": 'a',
+        "year": 'y',
+        "validateOnly": 'v',
+        "dryRun": 'd',
+        "verbose": 'V',
+        "env": 'e',
+      }
+    ],
+    [retrieve,
+      help = {
+        "output": "Write retrieved data to file instead of stdout",
+        "dryRun": "Show generated XML without sending",
+        "verbose": "Show full server response XML",
+        "env": "Path to env file (default: .env)",
+      },
+      short = {
+        "output": 'o',
         "dryRun": 'd',
         "verbose": 'V',
         "env": 'e',

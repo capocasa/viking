@@ -431,6 +431,285 @@ for year in euerYears:
 removeFile(euerCsv)
 echo ""
 
+# =================================================================
+# ESt (Einkommensteuererklarung) tests
+# =================================================================
+
+let estCsv = projectRoot / "tests" / "tmp_est.csv"
+
+# --- ESt: dry-run with Anlage G ---
+echo "--- est --dry-run (Anlage G) ---"
+writeFile(estCsv, "1000,19\n-300,19\n")
+let (estDryOut, estDryRc) = run("./viking est -i " & estCsv & " -y 2025 --dry-run")
+check("est dry-run exits 0", estDryRc == 0, estDryOut)
+check("est dry-run loads ERiC", estDryOut.contains("ERiC library loaded"))
+check("est dry-run has E10 root", estDryOut.contains("<E10"))
+check("est dry-run has ESt1A", estDryOut.contains("<ESt1A>"))
+check("est dry-run has Vorsatz", estDryOut.contains("<Vorsatz>"))
+check("est dry-run has ElsterErklaerung", estDryOut.contains("<Verfahren>ElsterErklaerung</Verfahren>"))
+check("est dry-run has DatenArt ESt", estDryOut.contains("<DatenArt>ESt</DatenArt>"))
+check("est dry-run has Empfaenger Ziel", estDryOut.contains("<Ziel>BY</Ziel>"))
+check("est dry-run has Unterfallart 10", estDryOut.contains("<Unterfallart>10</Unterfallart>"))
+check("est dry-run has Anlage G", estDryOut.contains("<G>"))
+check("est dry-run has profit 833", estDryOut.contains("<E0800302>833</E0800302>"))
+check("est dry-run has IBAN", estDryOut.contains("<E0102102>"))
+check("est dry-run has Testmerker", estDryOut.contains("<Testmerker>700000004</Testmerker>"))
+echo ""
+
+# --- ESt: Anlage S ---
+echo "--- est Anlage S ---"
+let estSEnv = projectRoot / "tests" / ".env.est_s"
+writeFile(estSEnv, readFile(projectRoot / ".env").replace("EINKUNFTSART=2", "EINKUNFTSART=3"))
+let (estSOut, estSRc) = run("./viking est -i " & estCsv & " -y 2025 --dry-run --env " & estSEnv)
+check("est Anlage S exits 0", estSRc == 0, estSOut)
+check("est Anlage S has <S>", estSOut.contains("<S>"))
+check("est Anlage S has E0803202", estSOut.contains("<E0803202>833</E0803202>"))
+check("est Anlage S no <G>", not estSOut.contains("<G>"))
+removeFile(estSEnv)
+echo ""
+
+# --- ESt: Vorsorgeaufwand (privat) ---
+echo "--- est Vorsorgeaufwand (privat) ---"
+let estVorEnv = projectRoot / "tests" / ".env.est_vor"
+writeFile(estVorEnv, readFile(projectRoot / ".env") & "\nKRANKENVERSICHERUNG=5000\nPFLEGEVERSICHERUNG=600\nRENTENVERSICHERUNG=3000\nKV_ART=privat\n")
+let (estVorOut, estVorRc) = run("./viking est -i " & estCsv & " -y 2025 --validate-only --env " & estVorEnv)
+check("est Vorsorge privat exits 0 or HID", estVorRc == 0 or estVorOut.contains("610301202"), estVorOut)
+check("est Vorsorge no schema errors", not estVorOut.contains("610301200"), estVorOut)
+removeFile(estVorEnv)
+echo ""
+
+# --- ESt: Vorsorgeaufwand (gesetzlich) ---
+echo "--- est Vorsorgeaufwand (gesetzlich) ---"
+let estGkvEnv = projectRoot / "tests" / ".env.est_gkv"
+writeFile(estGkvEnv, readFile(projectRoot / ".env") & "\nKRANKENVERSICHERUNG=4800\nPFLEGEVERSICHERUNG=500\nKV_ART=gesetzlich\n")
+let (estGkvOut, estGkvRc) = run("./viking est -i " & estCsv & " -y 2025 --validate-only --env " & estGkvEnv)
+check("est Vorsorge gesetzlich exits 0 or HID", estGkvRc == 0 or estGkvOut.contains("610301202"), estGkvOut)
+check("est Vorsorge gesetzlich no schema errors", not estGkvOut.contains("610301200"), estGkvOut)
+removeFile(estGkvEnv)
+echo ""
+
+# --- ESt: empty file (zero profit) ---
+echo "--- est empty file ---"
+writeFile(estCsv, "")
+let (estEmptyOut, estEmptyRc) = run("./viking est -i " & estCsv & " -y 2025 --dry-run")
+check("est empty exits 0", estEmptyRc == 0, estEmptyOut)
+check("est empty profit 0", estEmptyOut.contains("Profit:    0.00 EUR"))
+echo ""
+
+# --- ESt: input validation ---
+echo "--- est input validation ---"
+let (estNoFile, estNoFileRc) = run("./viking est -y 2025 --dry-run")
+check("est missing invoice rejected", estNoFileRc != 0)
+check("est missing invoice error", estNoFile.contains("--invoice-file is required"))
+echo ""
+
+# --- ESt: Testmerker ---
+echo "--- est Testmerker ---"
+writeFile(estCsv, "100,19\n")
+let (estTestOut, estTestRc) = run("./viking est -i " & estCsv & " -y 2025 --dry-run")
+check("est TEST=1 has Testmerker", estTestOut.contains("<Testmerker>700000004</Testmerker>"))
+
+let estProdEnv = projectRoot / "tests" / ".env.est_prod"
+writeFile(estProdEnv, readFile(projectRoot / ".env").replace("TEST=1", "TEST=0"))
+let (estProdOut, estProdRc) = run("./viking est -i " & estCsv & " -y 2025 --dry-run --env " & estProdEnv)
+check("est TEST=0 exits 0", estProdRc == 0, estProdOut)
+check("est TEST=0 no Testmerker", not estProdOut.contains("Testmerker"), estProdOut)
+removeFile(estProdEnv)
+echo ""
+
+# --- ESt: per-year validation ---
+echo "--- est per-year validation ---"
+var estYears: seq[int] = @[]
+for kind, path in walkDir(pluginPath):
+  if kind == pcFile:
+    let name = path.extractFilename
+    if name.startsWith("libcheckESt_") and name.endsWith(".so"):
+      try:
+        let y = parseInt(name[12..^4])
+        if y >= 2024:
+          estYears.add(y)
+      except ValueError:
+        discard
+estYears.sort()
+
+check("found ESt plugins for 2024+", estYears.len > 0, "plugins in: " & pluginPath)
+writeFile(estCsv, "1000,19\n-500,19\n")
+for year in estYears:
+  let (eyOut, eyRc) = run("./viking est -i " & estCsv & " -y " & $year & " --validate-only")
+  let eySchemaOk = not eyOut.contains("610301200")
+  let eyCertOk = not eyOut.contains("610001050")
+  let eyHidBlocked = eyOut.contains("610301202")
+  let eyOk = eyRc == 0 or eyHidBlocked
+  check("est " & $year & " schema valid", eySchemaOk, eyOut)
+  check("est " & $year & " no cert errors", eyCertOk, eyOut)
+  if eyOk:
+    check("est " & $year & " passes validation", true)
+  else:
+    check("est " & $year & " passes validation", false, eyOut)
+
+# --- ESt: full send path ---
+echo "--- est (send) ---"
+let (estSendOut, estSendRc) = run("./viking est -i " & estCsv & " -y 2025")
+let estSendSchemaOk = not estSendOut.contains("610301200")
+let estSendCertOk = not estSendOut.contains("610001050")
+check("est send: no schema errors", estSendSchemaOk, estSendOut)
+check("est send: no cert errors", estSendCertOk, estSendOut)
+let estSendHidBlocked = estSendOut.contains("610301202")
+if estSendRc == 0:
+  check("est send: succeeds", true)
+elif estSendHidBlocked:
+  check("est send: only HerstellerID issue", true)
+else:
+  check("est send: unexpected error", false, estSendOut)
+
+removeFile(estCsv)
+echo ""
+
+# =================================================================
+# USt (Umsatzsteuererklaerung) tests
+# =================================================================
+
+let ustCsv = projectRoot / "tests" / "tmp_ust.csv"
+
+# --- USt: dry-run with mixed rates ---
+echo "--- ust --dry-run (mixed rates) ---"
+writeFile(ustCsv, "1000,19\n500,7\n-200,19\n")
+let (ustDryOut, ustDryRc) = run("./viking ust -i " & ustCsv & " -y 2025 --dry-run")
+check("ust dry-run exits 0", ustDryRc == 0, ustDryOut)
+check("ust dry-run loads ERiC", ustDryOut.contains("ERiC library loaded"))
+check("ust dry-run has E50 root", ustDryOut.contains("<E50"))
+check("ust dry-run has USt2A", ustDryOut.contains("<USt2A>"))
+check("ust dry-run has Vorsatz", ustDryOut.contains("<Vorsatz>"))
+check("ust dry-run has ElsterErklaerung", ustDryOut.contains("<Verfahren>ElsterErklaerung</Verfahren>"))
+check("ust dry-run has DatenArt USt", ustDryOut.contains("<DatenArt>USt</DatenArt>"))
+check("ust dry-run has Empfaenger Ziel", ustDryOut.contains("<Ziel>BY</Ziel>"))
+check("ust dry-run has Unterfallart 50", ustDryOut.contains("<Unterfallart>50</Unterfallart>"))
+check("ust dry-run has Ums_allg 19%", ustDryOut.contains("<E3003303>1000</E3003303>"))
+check("ust dry-run has Ums_erm 7%", ustDryOut.contains("<E3004401>500</E3004401>"))
+check("ust dry-run has Berech_USt", ustDryOut.contains("<Berech_USt>"))
+check("ust dry-run has Testmerker", ustDryOut.contains("<Testmerker>700000004</Testmerker>"))
+echo ""
+
+# --- USt: income/expense split ---
+echo "--- ust income/expense split ---"
+writeFile(ustCsv, "1000,19\n-300,19\n")
+let (ustSplitOut, ustSplitRc) = run("./viking ust -i " & ustCsv & " -y 2025 --dry-run")
+check("ust split exits 0", ustSplitRc == 0, ustSplitOut)
+# Income 19%: 1000 net, VAT 190
+check("ust split Ums_allg base", ustSplitOut.contains("<E3003303>1000</E3003303>"))
+check("ust split Ums_allg tax", ustSplitOut.contains("<E3003304>190,00</E3003304>"))
+# Expense Vorsteuer: 300 * 0.19 = 57
+check("ust split Vorsteuer in Abz_VoSt", ustSplitOut.contains("<E3006201>57,00</E3006201>"))
+check("ust split Vorsteuer sum", ustSplitOut.contains("<E3006901>57,00</E3006901>"))
+# Vorsteuer in Berech_USt
+check("ust split Vorsteuer in calc", ustSplitOut.contains("<E3009901>57,00</E3009901>"))
+# Verbleibende USt: 190 - 57 = 133
+check("ust split verbleibende USt", ustSplitOut.contains("<E3011101>133,00</E3011101>"))
+echo ""
+
+# --- USt: with Vorauszahlungen ---
+echo "--- ust with Vorauszahlungen ---"
+writeFile(ustCsv, "1000,19\n")
+let (ustVzOut, ustVzRc) = run("./viking ust -i " & ustCsv & " -y 2025 --vorauszahlungen=100 --dry-run")
+check("ust vorauszahlungen exits 0", ustVzRc == 0, ustVzOut)
+check("ust vorauszahlungen E3011301", ustVzOut.contains("<E3011301>100,00</E3011301>"))
+# Abschluss: 190 - 100 = 90
+check("ust vorauszahlungen E3011401", ustVzOut.contains("<E3011401>90,00</E3011401>"))
+echo ""
+
+# --- USt: empty file (zero submission) ---
+echo "--- ust empty file ---"
+writeFile(ustCsv, "")
+let (ustEmptyOut, ustEmptyRc) = run("./viking ust -i " & ustCsv & " -y 2025 --dry-run")
+check("ust empty exits 0", ustEmptyRc == 0, ustEmptyOut)
+check("ust empty Ums_Sum 0", ustEmptyOut.contains("<E3006001>0,00</E3006001>"))
+check("ust empty verbleibende 0", ustEmptyOut.contains("<E3011101>0,00</E3011101>"))
+echo ""
+
+# --- USt: missing invoice file ---
+echo "--- ust input validation ---"
+let (ustNoFile, ustNoFileRc) = run("./viking ust -y 2025 --dry-run")
+check("ust missing invoice rejected", ustNoFileRc != 0)
+check("ust missing invoice error", ustNoFile.contains("--invoice-file is required"))
+echo ""
+
+# --- USt: Testmerker ---
+echo "--- ust Testmerker ---"
+writeFile(ustCsv, "100,19\n")
+let (ustTestOut, ustTestRc) = run("./viking ust -i " & ustCsv & " -y 2025 --dry-run")
+check("ust TEST=1 has Testmerker", ustTestOut.contains("<Testmerker>700000004</Testmerker>"))
+
+# TEST=0
+let ustProdEnv = projectRoot / "tests" / ".env.ust_prod"
+writeFile(ustProdEnv, readFile(projectRoot / ".env").replace("TEST=1", "TEST=0"))
+let (ustProdOut, ustProdRc) = run("./viking ust -i " & ustCsv & " -y 2025 --dry-run --env " & ustProdEnv)
+check("ust TEST=0 exits 0", ustProdRc == 0, ustProdOut)
+check("ust TEST=0 no Testmerker", not ustProdOut.contains("Testmerker"), ustProdOut)
+removeFile(ustProdEnv)
+echo ""
+
+# --- USt: per-year validation ---
+echo "--- ust per-year validation ---"
+var ustYears: seq[int] = @[]
+for kind, path in walkDir(pluginPath):
+  if kind == pcFile:
+    let name = path.extractFilename
+    if name.startsWith("libcheckUSt_") and not name.startsWith("libcheckUStVA_") and name.endsWith(".so"):
+      try:
+        let y = parseInt(name[12..^4])
+        if y >= 2025:
+          ustYears.add(y)
+      except ValueError:
+        discard
+ustYears.sort()
+
+check("found USt plugins for 2025+", ustYears.len > 0, "plugins in: " & pluginPath)
+writeFile(ustCsv, "1000,19\n-500,19\n")
+for year in ustYears:
+  let (eyOut, eyRc) = run("./viking ust -i " & ustCsv & " -y " & $year & " --validate-only")
+  let eySchemaOk = not eyOut.contains("610301200")
+  let eyCertOk = not eyOut.contains("610001050")
+  let eyHidBlocked = eyOut.contains("610301202")
+  let eyOk = eyRc == 0 or eyHidBlocked
+  check("ust " & $year & " schema valid", eySchemaOk, eyOut)
+  check("ust " & $year & " no cert errors", eyCertOk, eyOut)
+  if eyOk:
+    check("ust " & $year & " passes validation", true)
+  else:
+    check("ust " & $year & " passes validation", false, eyOut)
+
+# --- USt: full send path ---
+echo "--- ust (send) ---"
+let (ustSendOut, ustSendRc) = run("./viking ust -i " & ustCsv & " -y 2025")
+let ustSendSchemaOk = not ustSendOut.contains("610301200")
+let ustSendCertOk = not ustSendOut.contains("610001050")
+check("ust send: no schema errors", ustSendSchemaOk, ustSendOut)
+check("ust send: no cert errors", ustSendCertOk, ustSendOut)
+let ustSendHidBlocked = ustSendOut.contains("610301202")
+if ustSendRc == 0:
+  check("ust send: succeeds", true)
+elif ustSendHidBlocked:
+  check("ust send: only HerstellerID issue", true)
+else:
+  check("ust send: unexpected error", false, ustSendOut)
+
+removeFile(ustCsv)
+echo ""
+
+# =================================================================
+# Retrieve (Datenabholung) tests
+# =================================================================
+
+echo "--- retrieve --dry-run ---"
+let (retDryOut, retDryRc) = run("./viking retrieve --dry-run")
+check("retrieve dry-run exits 0", retDryRc == 0, retDryOut)
+check("retrieve dry-run has PostfachAnfrage XML", retDryOut.contains("<PostfachAnfrage/>"))
+check("retrieve dry-run has Datenabholung element", retDryOut.contains("<Datenabholung"))
+check("retrieve dry-run has ElsterDatenabholung", retDryOut.contains("<Verfahren>ElsterDatenabholung</Verfahren>"))
+check("retrieve dry-run has DatenArt PostfachAnfrage", retDryOut.contains("<DatenArt>PostfachAnfrage</DatenArt>"))
+check("retrieve dry-run has Testmerker", retDryOut.contains("<Testmerker>700000004</Testmerker>"))
+echo ""
+
 # --- Summary ---
 echo "=== Results ==="
 echo "  Passed: ", passes

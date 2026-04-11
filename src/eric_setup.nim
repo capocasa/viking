@@ -661,6 +661,43 @@ proc listAvailableYears*(installation: EricInstallation): seq[int] =
 
   result.sort()
 
+proc listAvailableEstYears*(installation: EricInstallation): seq[int] =
+  ## List years for which ESt plugins are available
+  result = @[]
+  if not installation.valid:
+    return
+
+  for kind, path in walkDir(installation.pluginPath):
+    if kind == pcFile:
+      let name = path.extractFilename
+      if name.startsWith("libcheckESt_") and name.endsWith(".so"):
+        let yearStr = name[12..^4]
+        try:
+          result.add(parseInt(yearStr))
+        except ValueError:
+          discard
+
+  result.sort()
+
+proc listAvailableUstYears*(installation: EricInstallation): seq[int] =
+  ## List years for which USt (annual VAT) plugins are available
+  result = @[]
+  if not installation.valid:
+    return
+
+  for kind, path in walkDir(installation.pluginPath):
+    if kind == pcFile:
+      let name = path.extractFilename
+      # Match libcheckUSt_YYYY.so but NOT libcheckUStVA_YYYY.so
+      if name.startsWith("libcheckUSt_") and not name.startsWith("libcheckUStVA_") and name.endsWith(".so"):
+        let yearStr = name[12..^4]
+        try:
+          result.add(parseInt(yearStr))
+        except ValueError:
+          discard
+
+  result.sort()
+
 proc listAvailableEuerYears*(installation: EricInstallation): seq[int] =
   ## List years for which EUER plugins are available
   result = @[]

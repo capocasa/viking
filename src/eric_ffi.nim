@@ -51,6 +51,24 @@ type
     pathToKeystore: cstring
   ): cint {.cdecl.}
   EricCloseHandleToCertificateProc = proc(hToken: EricZertifikatHandle): cint {.cdecl.}
+  EricCreateTHProc = proc(
+    xml: cstring,
+    verfahren: cstring,
+    datenart: cstring,
+    vorgang: cstring,
+    testmerker: cstring,
+    herstellerId: cstring,
+    datenLieferant: cstring,
+    versionClient: cstring,
+    publicKey: cstring,
+    xmlRueckgabePuffer: EricRueckgabepuffer
+  ): cint {.cdecl.}
+  EricDekodiereDatenProc = proc(
+    zertifikatHandle: EricZertifikatHandle,
+    pin: cstring,
+    base64Eingabe: cstring,
+    rueckgabePuffer: EricRueckgabepuffer
+  ): cint {.cdecl.}
 
 # Function pointers
 var
@@ -63,6 +81,8 @@ var
   pEricHoleFehlerText: EricHoleFehlerTextProc = nil
   pEricGetHandleToCertificate: EricGetHandleToCertificateProc = nil
   pEricCloseHandleToCertificate: EricCloseHandleToCertificateProc = nil
+  pEricCreateTH: EricCreateTHProc = nil
+  pEricDekodiereDaten: EricDekodiereDatenProc = nil
 
 # Dynamic library loading
 when defined(windows):
@@ -82,6 +102,8 @@ when defined(windows):
     pEricHoleFehlerText = cast[EricHoleFehlerTextProc](symAddr(ericLibHandle, "EricHoleFehlerText"))
     pEricGetHandleToCertificate = cast[EricGetHandleToCertificateProc](symAddr(ericLibHandle, "EricGetHandleToCertificate"))
     pEricCloseHandleToCertificate = cast[EricCloseHandleToCertificateProc](symAddr(ericLibHandle, "EricCloseHandleToCertificate"))
+    pEricCreateTH = cast[EricCreateTHProc](symAddr(ericLibHandle, "EricCreateTH"))
+    pEricDekodiereDaten = cast[EricDekodiereDatenProc](symAddr(ericLibHandle, "EricDekodiereDaten"))
 
     return pEricInitialisiere != nil and pEricBeende != nil
 else:
@@ -101,6 +123,8 @@ else:
     pEricHoleFehlerText = cast[EricHoleFehlerTextProc](symAddr(ericLibHandle, "EricHoleFehlerText"))
     pEricGetHandleToCertificate = cast[EricGetHandleToCertificateProc](symAddr(ericLibHandle, "EricGetHandleToCertificate"))
     pEricCloseHandleToCertificate = cast[EricCloseHandleToCertificateProc](symAddr(ericLibHandle, "EricCloseHandleToCertificate"))
+    pEricCreateTH = cast[EricCreateTHProc](symAddr(ericLibHandle, "EricCreateTH"))
+    pEricDekodiereDaten = cast[EricDekodiereDatenProc](symAddr(ericLibHandle, "EricDekodiereDaten"))
 
     return pEricInitialisiere != nil and pEricBeende != nil
 
@@ -185,3 +209,28 @@ proc ericCloseHandleToCertificate*(handle: EricZertifikatHandle): int =
   if pEricCloseHandleToCertificate == nil:
     return -1
   result = pEricCloseHandleToCertificate(handle).int
+
+proc ericCreateTH*(
+  xml: string,
+  verfahren: string,
+  datenart: string,
+  vorgang: string,
+  testmerker: string,
+  herstellerId: string,
+  datenLieferant: string,
+  versionClient: string,
+  buf: EricRueckgabepuffer
+): int =
+  if pEricCreateTH == nil:
+    return -1
+  let tmPtr = if testmerker == "": nil else: testmerker.cstring
+  let vcPtr = if versionClient == "": nil else: versionClient.cstring
+  result = pEricCreateTH(
+    xml.cstring, verfahren.cstring, datenart.cstring, vorgang.cstring,
+    tmPtr, herstellerId.cstring, datenLieferant.cstring, vcPtr, nil, buf
+  ).int
+
+proc ericDekodiereDaten*(handle: EricZertifikatHandle, pin: string, base64Data: string, buf: EricRueckgabepuffer): int =
+  if pEricDekodiereDaten == nil:
+    return -1
+  result = pEricDekodiereDaten(handle, pin.cstring, base64Data.cstring, buf).int

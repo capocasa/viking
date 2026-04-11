@@ -25,6 +25,17 @@ type
     incomeCount*: int
     expenseCount*: int
 
+  UstAggregation* = object
+    income19*: float         ## Net income at 19%
+    income7*: float          ## Net income at 7%
+    income0*: float          ## Net income at 0%
+    vorsteuer*: float        ## Input VAT from expenses
+    has19*: bool
+    has7*: bool
+    has0*: bool
+    incomeCount*: int
+    expenseCount*: int
+
   InvoiceError* = object
     line*: int
     msg*: string
@@ -288,4 +299,48 @@ proc loadAndAggregateForEuer*(path: string): (EuerAggregation, bool) =
     return (EuerAggregation(), true)
 
   let agg = aggregateForEuer(invoices)
+  return (agg, true)
+
+proc aggregateForUst*(invoices: seq[Invoice]): UstAggregation =
+  ## Split invoices into income by rate and expense Vorsteuer for annual USt.
+  for inv in invoices:
+    let rate = inv.rate.float / 100.0
+    if inv.amount >= 0:
+      case inv.rate
+      of 19:
+        result.income19 += inv.amount
+        result.has19 = true
+      of 7:
+        result.income7 += inv.amount
+        result.has7 = true
+      of 0:
+        result.income0 += inv.amount
+        result.has0 = true
+      else: discard
+      inc result.incomeCount
+    else:
+      result.vorsteuer += abs(inv.amount) * rate
+      inc result.expenseCount
+
+proc loadAndAggregateForUst*(path: string): (UstAggregation, bool) =
+  ## Top-level entry point for annual USt: read, parse, aggregate.
+  var input: string
+  try:
+    input = readInvoiceInput(path)
+  except IOError as e:
+    stderr.writeLine("Error: Cannot read invoice file: " & e.msg)
+    return (UstAggregation(), false)
+
+  let (invoices, errors) = parseInvoices(input)
+
+  if errors.len > 0:
+    stderr.writeLine("Invoice parsing errors:")
+    for e in errors:
+      stderr.writeLine("  line " & $e.line & ": " & e.msg)
+    return (UstAggregation(), false)
+
+  if invoices.len == 0:
+    return (UstAggregation(), true)
+
+  let agg = aggregateForUst(invoices)
   return (agg, true)
