@@ -4,7 +4,7 @@
 import std/[strutils, strformat, times, options, os, xmltree, xmlparser]
 import cligen, cligen/argcvt
 import dotenv
-import config, eric_ffi, ustva_xml, euer_xml, est_xml, ust_xml, eric_setup, invoices, abholung_xml
+import config, eric_ffi, otto_ffi, ustva_xml, euer_xml, est_xml, ust_xml, eric_setup, invoices, abholung_xml
 
 # Custom cligen converters for Option[float]
 proc argParse(dst: var Option[float], dfl: Option[float], a: var ArgcvtParams): bool =
@@ -1118,20 +1118,94 @@ proc fetch(file: string = "", check: bool = false, env: string = ".env"): int =
     echo "ERiC setup incomplete. Use 'viking fetch --file=<path>' with a local archive."
     return 1
 
+type
+  AbholAnhang = object
+    dateibezeichnung: string
+    dateityp: string
+    dateiReferenzId: string
+    dateiGroesse: int
+
+  AbholBereitstellung = object
+    id: string
+    datenart: string
+    groesse: int
+    veranlagungszeitraum: string
+    steuernummer: string
+    bescheiddatum: string
+    anhaenge: seq[AbholAnhang]
+
+proc findAll(node: XmlNode, tag: string): seq[XmlNode] =
+  result = @[]
+  if node.kind != xnElement: return
+  if node.tag == tag: result.add(node)
+  for child in node:
+    result.add(findAll(child, tag))
+
+proc mimeToExt(mime: string): string =
+  case mime
+  of "application/pdf": ".pdf"
+  of "text/xml", "application/xml": ".xml"
+  of "text/html": ".html"
+  else: ".bin"
+
+proc sanitizeFilename(s: string): string =
+  result = s
+  for c in [' ', '/', '\\', ':', '*', '?', '"', '<', '>', '|']:
+    result = result.replace($c, "_")
+
+proc parsePostfachAntwort(xmlDoc: XmlNode): seq[AbholBereitstellung] =
+  result = @[]
+  for dab in xmlDoc.findAll("DatenartBereitstellung"):
+    let datenart = dab.attr("name")
+    let anzahl = try: parseInt(dab.attr("anzahltreffer")) except: 0
+    if anzahl == 0: continue
+
+    for bs in dab.findAll("Bereitstellung"):
+      var b = AbholBereitstellung(
+        id: bs.attr("id"),
+        datenart: datenart,
+        groesse: try: parseInt(bs.attr("groesse")) except: 0,
+      )
+
+      # Extract meta information
+      for meta in bs.findAll("Meta"):
+        let name = meta.attr("name")
+        let value = meta.innerText
+        case name
+        of "veranlagungszeitraum": b.veranlagungszeitraum = value
+        of "steuernummer": b.steuernummer = value
+        of "bescheiddatum": b.bescheiddatum = value
+
+      # Extract attachments
+      for anhang in bs.findAll("Anhang"):
+        var a = AbholAnhang()
+        for child in anhang:
+          if child.kind != xnElement: continue
+          case child.tag
+          of "Dateibezeichnung": a.dateibezeichnung = child.innerText
+          of "Dateityp": a.dateityp = child.innerText
+          of "DateiReferenzId": a.dateiReferenzId = child.innerText
+          of "DateiGroesse": a.dateiGroesse = try: parseInt(child.innerText) except: 0
+        if a.dateiReferenzId.len > 0:
+          b.anhaenge.add(a)
+
+      result.add(b)
+
 proc retrieve(
   output: string = "",
   dryRun: bool = false,
   verbose: bool = false,
   env: string = ".env",
 ): int =
-  ## Retrieve data from the tax office (Datenabholung)
+  ## Retrieve documents from the tax office (Datenabholung)
   ##
-  ## Checks the ELSTER Postfach for available documents (tax assessments,
-  ## confirmations, etc.) and retrieves them.
+  ## Queries the ELSTER Postfach, downloads documents via OTTER,
+  ## and confirms retrieval. Downloaded files are saved to the
+  ## output directory.
   ##
   ## Examples:
   ##   viking retrieve
-  ##   viking retrieve --output=data.xml
+  ##   viking retrieve --output=./bescheide
   ##   viking retrieve --dry-run
 
   # Load and validate configuration
@@ -1236,76 +1310,180 @@ proc retrieve(
 
   echo "  OK"
 
-  if serverResponse.len > 0:
-    if output != "":
-      writeFile(output, serverResponse)
-      echo &"Server response written to: {output}"
-    else:
-      if verbose:
-        echo ""
-        echo "=== Server Response ==="
-        echo serverResponse
-        echo "======================="
-
-    # Try to decrypt any Datenpaket elements
-    try:
-      let xmlDoc = parseXml(serverResponse)
-      # Walk to find Datenpaket elements for decryption
-      var decrypted = false
-      for nb in xmlDoc:
-        if nb.kind != xnElement: continue
-        for child in nb:
-          if child.kind != xnElement: continue
-          for nutzdaten in child:
-            if nutzdaten.kind != xnElement: continue
-            for da in nutzdaten:
-              if da.kind != xnElement or da.tag != "Datenabholung": continue
-              for abh in da:
-                if abh.kind != xnElement or abh.tag != "Abholung": continue
-                for dp in abh:
-                  if dp.kind != xnElement or dp.tag != "Datenpaket": continue
-                  let encData = dp.innerText.strip
-                  if encData.len == 0: continue
-
-                  echo ""
-                  echo "Decrypting retrieved data..."
-                  let decodeBuf = ericRueckgabepufferErzeugen()
-                  if decodeBuf == nil:
-                    echo "Error: Failed to create decode buffer"
-                    continue
-                  defer: discard ericRueckgabepufferFreigabe(decodeBuf)
-
-                  let decRc = ericDekodiereDaten(certHandle, cfg.certPin, encData, decodeBuf)
-                  let decoded = ericRueckgabepufferInhalt(decodeBuf)
-
-                  if decRc != 0:
-                    echo &"  Decryption failed with code {decRc}: {ericHoleFehlerText(decRc)}"
-                  elif decoded.len > 0:
-                    decrypted = true
-                    echo "  Decryption successful."
-                    if output != "":
-                      let decFile = output.changeFileExt("") & "_decrypted" & output.splitFile.ext
-                      writeFile(decFile, decoded)
-                      echo &"  Decrypted data written to: {decFile}"
-                    else:
-                      echo ""
-                      echo "=== Decrypted Data ==="
-                      echo decoded
-                      echo "======================"
-
-      if not decrypted and not verbose:
-        echo ""
-        echo serverResponse
-    except:
-      if not verbose:
-        echo ""
-        echo serverResponse
-  else:
+  if serverResponse.len == 0:
     echo ""
     echo "No data returned from server."
+    return 0
+
+  if verbose:
+    echo ""
+    echo "=== Server Response ==="
+    echo serverResponse
+    echo "======================="
+
+  # Parse PostfachAnfrage response
+  var xmlDoc: XmlNode
+  try:
+    xmlDoc = parseXml(serverResponse)
+  except:
+    echo "Error: Failed to parse server response XML"
+    echo serverResponse
+    return 1
+
+  let bereitstellungen = parsePostfachAntwort(xmlDoc)
+
+  # Display summary
+  echo ""
+  if bereitstellungen.len == 0:
+    echo "No documents available for download."
+    return 0
+
+  echo &"Found {bereitstellungen.len} document(s):"
+  for b in bereitstellungen:
+    let vz = if b.veranlagungszeitraum.len > 0: " " & b.veranlagungszeitraum else: ""
+    let bd = if b.bescheiddatum.len > 0:
+      let d = b.bescheiddatum
+      if d.len == 8: " vom " & d[6..7] & "." & d[4..5] & "." & d[0..3]
+      else: " vom " & d
+    else: ""
+    echo &"  {b.datenart}{vz}{bd}"
+    for a in b.anhaenge:
+      echo &"    - {a.dateibezeichnung} ({a.dateityp}, {a.dateiGroesse} bytes)"
+      echo &"      OTTER ID: {a.dateiReferenzId}"
+
+  # Determine output directory
+  let outDir = if output.len > 0: output else: "."
+  if outDir != ".":
+    createDir(outDir)
+
+  # Load Otto library for OTTER download
+  let ottoLibPath = cfg.ericLibPath.parentDir / "libotto.so"
+  if not loadOttoLib(ottoLibPath):
+    echo &""
+    echo &"Error: Failed to load Otto library from {ottoLibPath}"
+    echo "Cannot download documents without libotto.so."
+    return 1
+  defer: unloadOttoLib()
+
+  let (ottoRc, ottoInstanz) = ottoInstanzErzeugen(cfg.ericLogPath)
+  if ottoRc != 0:
+    echo &"Error: Failed to create Otto instance (code {ottoRc})"
+    echo &"  {ottoHoleFehlertext(ottoRc)}"
+    return 1
+  defer: discard ottoInstanzFreigeben(ottoInstanz)
 
   echo ""
-  echo "Retrieval complete."
+  echo "Downloading from OTTER..."
+
+  var confirmedIds: seq[string] = @[]
+  var downloadErrors = 0
+
+  for b in bereitstellungen:
+    var allOk = true
+
+    for a in b.anhaenge:
+      let ext = mimeToExt(a.dateityp)
+      let vz = if b.veranlagungszeitraum.len > 0: "_" & b.veranlagungszeitraum else: ""
+      let filename = sanitizeFilename(a.dateibezeichnung) & vz & ext
+      let filepath = outDir / filename
+
+      echo &"  Downloading {a.dateibezeichnung}{vz}..."
+
+      let (bufRc, ottoBuf) = ottoRueckgabepufferErzeugen(ottoInstanz)
+      if bufRc != 0:
+        echo &"    Error: Failed to create download buffer (code {bufRc})"
+        allOk = false
+        inc downloadErrors
+        continue
+      defer: discard ottoRueckgabepufferFreigeben(ottoBuf)
+
+      let dlRc = ottoDatenAbholen(
+        ottoInstanz, a.dateiReferenzId, a.dateiGroesse.uint32,
+        cfg.certPath, cfg.certPin, cfg.herstellerId, ottoBuf,
+      )
+
+      if dlRc != 0:
+        echo &"    Error: Download failed (code {dlRc})"
+        echo &"    {ottoHoleFehlertext(dlRc)}"
+        allOk = false
+        inc downloadErrors
+        continue
+
+      let dataPtr = ottoRueckgabepufferInhalt(ottoBuf)
+      let dataSize = ottoRueckgabepufferGroesse(ottoBuf)
+
+      if dataPtr == nil or dataSize == 0:
+        echo &"    Error: Downloaded empty data"
+        allOk = false
+        inc downloadErrors
+        continue
+
+      # Write binary data to file
+      var data = newString(dataSize.int)
+      copyMem(addr data[0], dataPtr, dataSize.int)
+      writeFile(filepath, data)
+      echo &"    Saved: {filepath} ({dataSize} bytes)"
+
+    if allOk:
+      confirmedIds.add(b.id)
+
+  # Send PostfachBestaetigung for successfully downloaded documents
+  if confirmedIds.len > 0:
+    echo ""
+    echo "Confirming retrieval..."
+
+    let bestXml = generatePostfachBestaetigungXml(
+      confirmedIds, cfg.herstellerId, cfg.name, cfg.test,
+    )
+
+    if verbose:
+      echo ""
+      echo "=== PostfachBestaetigung XML ==="
+      echo bestXml
+      echo "================================"
+
+    var bestTransferHandle: uint32 = 0
+    let bestResponseBuf = ericRueckgabepufferErzeugen()
+    let bestServerBuf = ericRueckgabepufferErzeugen()
+    if bestResponseBuf == nil or bestServerBuf == nil:
+      echo "Error: Failed to create return buffers for confirmation"
+      return 1
+    defer:
+      discard ericRueckgabepufferFreigabe(bestResponseBuf)
+      discard ericRueckgabepufferFreigabe(bestServerBuf)
+
+    let bestRc = ericBearbeiteVorgang(
+      bestXml,
+      "PostfachBestaetigung_31",
+      ERIC_VALIDIERE or ERIC_SENDE,
+      nil,
+      addr cryptParam,
+      addr bestTransferHandle,
+      bestResponseBuf,
+      bestServerBuf,
+    )
+
+    if bestRc != 0:
+      let bestResponse = ericRueckgabepufferInhalt(bestResponseBuf)
+      let bestServerResponse = ericRueckgabepufferInhalt(bestServerBuf)
+      echo &"  Warning: Confirmation failed with code {bestRc}"
+      echo &"  {ericHoleFehlerText(bestRc)}"
+      if bestResponse.len > 0:
+        echo &"  {bestResponse}"
+      if bestServerResponse.len > 0:
+        echo &"  {bestServerResponse}"
+      echo ""
+      echo "  Documents were downloaded but not confirmed."
+      echo "  You must confirm within 24 hours to avoid HerstellerID suspension."
+      echo "  Run 'viking retrieve' again to retry confirmation."
+    else:
+      echo &"  OK - confirmed {confirmedIds.len} document(s)"
+
+  echo ""
+  if downloadErrors > 0:
+    echo &"Retrieval complete with {downloadErrors} error(s)."
+  else:
+    echo "Retrieval complete."
   return 0
 
 when isMainModule:
@@ -1395,9 +1573,9 @@ when isMainModule:
     ],
     [retrieve,
       help = {
-        "output": "Write retrieved data to file instead of stdout",
+        "output": "Output directory for downloaded files (default: current dir)",
         "dryRun": "Show generated XML without sending",
-        "verbose": "Show full server response XML",
+        "verbose": "Show full server response and confirmation XML",
         "env": "Path to env file (default: .env)",
       },
       short = {

@@ -703,7 +703,7 @@ echo ""
 echo "--- retrieve --dry-run ---"
 let (retDryOut, retDryRc) = run("./viking retrieve --dry-run")
 check("retrieve dry-run exits 0", retDryRc == 0, retDryOut)
-check("retrieve dry-run has PostfachAnfrage XML", retDryOut.contains("<PostfachAnfrage/>"))
+check("retrieve dry-run has PostfachAnfrage XML", retDryOut.contains("<PostfachAnfrage "))
 check("retrieve dry-run has Datenabholung element", retDryOut.contains("<Datenabholung"))
 check("retrieve dry-run has ElsterDatenabholung", retDryOut.contains("<Verfahren>ElsterDatenabholung</Verfahren>"))
 check("retrieve dry-run has DatenArt PostfachAnfrage", retDryOut.contains("<DatenArt>PostfachAnfrage</DatenArt>"))

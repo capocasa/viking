@@ -1,6 +1,6 @@
 # Package
 
-version       = "0.1.0"
+version       = "0.1.1"
 author        = "Carlo"
 description   = "CLI tool to submit German VAT advance returns (Umsatzsteuervoranmeldung) via ERiC"
 license       = "MIT"

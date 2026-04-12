@@ -1,6 +1,8 @@
 # Viking
 
-CLI tool to submit German VAT advance returns (Umsatzsteuervoranmeldung/UStVA) via the ELSTER ERiC C library.
+CLI tool for German tax submissions and document retrieval via the ELSTER ERiC library.
+
+Supports UStVA, EUeR, ESt, USt annual returns, and downloading Steuerbescheide (tax assessments) from the ELSTER Postfach.
 
 This is experimental — tax submissions are irreversible, so verify independently.
 
@@ -22,6 +24,19 @@ viking submit --period 41 --amount19 1000
 # Both rates
 viking submit --period 01 --amount19 5000 --amount7 2000
 
+# EUeR (profit/loss statement)
+viking euer -i invoices.csv --year 2025
+
+# ESt (income tax return)
+viking est -i invoices.csv --year 2025
+
+# USt (annual VAT return)
+viking ust -i invoices.csv --vorauszahlungen 3600 --year 2025
+
+# Retrieve documents from Finanzamt (Steuerbescheide etc.)
+viking retrieve                          # download all available documents
+viking retrieve --output=./bescheide     # save to specific directory
+
 # Validate without sending
 viking submit --period 41 --amount19 1000 --validate-only
 
@@ -31,6 +46,8 @@ viking submit --period 41 --amount19 1000 --dry-run
 # Use a different config profile
 viking submit --env .env.production --period 41 --amount19 1000
 ```
+
+The `retrieve` command queries the ELSTER Postfach, downloads documents from the OTTER server via `libotto`, and sends the mandatory confirmation (PostfachBestaetigung).
 
 ## Configuration
 
@@ -47,6 +64,8 @@ ERIC_PLUGIN_PATH=...
 # Certificate
 CERT_PATH=path/to/certificate.pfx
 CERT_PIN=123456
+# Or use a command to fetch the PIN:
+# CERT_PIN_CMD=pass show elster/pin
 
 # Hersteller-ID (register at https://www.elster.de/elsterweb/entwickler)
 HERSTELLER_ID=40036

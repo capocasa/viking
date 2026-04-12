@@ -11,13 +11,14 @@ proc generateAbholungXml*(
   herstellerId: string,
   name: string,
   test: bool,
+  datenArt: string = "PostfachAnfrage",
 ): string =
   let testmerkerLine = if test: "\n    <Testmerker>700000004</Testmerker>" else: ""
   result = &"""<?xml version="1.0" encoding="UTF-8"?>
 <Elster xmlns="{elsterNs}">
   <TransferHeader version="11">
     <Verfahren>ElsterDatenabholung</Verfahren>
-    <DatenArt>PostfachAnfrage</DatenArt>
+    <DatenArt>{datenArt}</DatenArt>
     <Vorgang>send-Auth</Vorgang>{testmerkerLine}
     <HerstellerID>{herstellerId}</HerstellerID>
     <DatenLieferant>{name}</DatenLieferant>
@@ -63,4 +64,18 @@ proc generatePostfachAnfrageXml*(
                 "DivaBescheidFEIN", "DivaSonstigerVA"]:
     content.add(&"            <DatenartBereitstellung name=\"{name}\"/>\n")
   content.add("          </PostfachAnfrage>")
-  generateAbholungXml(content, herstellerId, name, test)
+  generateAbholungXml(content, herstellerId, name, test, "PostfachAnfrage")
+
+proc generatePostfachBestaetigungXml*(
+  bereitstellungIds: seq[string],
+  herstellerId: string,
+  name: string,
+  test: bool,
+): string =
+  var content = "          <PostfachBestaetigung>\n"
+  content.add("            <Bereitstellungen>\n")
+  for id in bereitstellungIds:
+    content.add(&"              <Bereitstellung id=\"{id}\"/>\n")
+  content.add("            </Bereitstellungen>\n")
+  content.add("          </PostfachBestaetigung>")
+  generateAbholungXml(content, herstellerId, name, test, "PostfachBestaetigung")
