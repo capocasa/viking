@@ -1166,33 +1166,10 @@ proc retrieve(
     return 1
   defer: discard ericBeende()
 
-  # Build XML using EricCreateTH to generate proper TransferHeader
-  let datenTeil = generatePostfachAnfrageDatenTeil()
-  let testmerker = if cfg.test: "700000004" else: ""
-
-  let thBuf = ericRueckgabepufferErzeugen()
-  if thBuf == nil:
-    echo "Error: Failed to create buffer"
-    return 1
-  defer: discard ericRueckgabepufferFreigabe(thBuf)
-
-  let thRc = ericCreateTH(
-    datenTeil,
-    "ElsterDatenabholung",
-    "PostfachAnfrage",
-    "send-Auth",
-    testmerker,
-    cfg.herstellerId,
-    cfg.name,
-    "",
-    thBuf,
+  # Build full XML for PostfachAnfrage
+  let anfragXml = generatePostfachAnfrageXml(
+    cfg.herstellerId, cfg.name, cfg.test,
   )
-  if thRc != 0:
-    echo &"Error: EricCreateTH failed with code {thRc}"
-    echo &"  {ericHoleFehlerText(thRc)}"
-    return 1
-
-  let anfragXml = ericRueckgabepufferInhalt(thBuf)
 
   if dryRun:
     echo "=== PostfachAnfrage XML ==="

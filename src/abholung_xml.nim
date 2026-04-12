@@ -1,10 +1,32 @@
 ## Datenabholung XML Generation
-## Generates ELSTER DatenTeil XML for Postfach operations
+## Generates ELSTER XML for Postfach operations (Datenabholung v31)
 
 import std/[strformat]
 
-proc generateDatenTeil(nutzdatenContent: string): string =
-  result = &"""<Elster>
+const datenabholungNs = "http://finkonsens.de/elster/elsterdatenabholung/v3"
+const elsterNs = "http://www.elster.de/elsterxml/schema/v11"
+
+proc generateAbholungXml*(
+  nutzdatenContent: string,
+  herstellerId: string,
+  name: string,
+  test: bool,
+): string =
+  let testmerkerLine = if test: "\n    <Testmerker>700000004</Testmerker>" else: ""
+  result = &"""<?xml version="1.0" encoding="UTF-8"?>
+<Elster xmlns="{elsterNs}">
+  <TransferHeader version="11">
+    <Verfahren>ElsterDatenabholung</Verfahren>
+    <DatenArt>PostfachAnfrage</DatenArt>
+    <Vorgang>send-Auth</Vorgang>{testmerkerLine}
+    <HerstellerID>{herstellerId}</HerstellerID>
+    <DatenLieferant>{name}</DatenLieferant>
+    <Datei>
+      <Verschluesselung>CMSEncryptedData</Verschluesselung>
+      <Kompression>GZIP</Kompression>
+      <TransportSchluessel></TransportSchluessel>
+    </Datei>
+  </TransferHeader>
   <DatenTeil>
     <Nutzdatenblock>
       <NutzdatenHeader version="11">
@@ -16,7 +38,7 @@ proc generateDatenTeil(nutzdatenContent: string): string =
         </Hersteller>
       </NutzdatenHeader>
       <Nutzdaten>
-        <Datenabholung xmlns="http://www.elster.de/elsterxml/schema/v11">
+        <Datenabholung xmlns="{datenabholungNs}" version="31">
 {nutzdatenContent}
         </Datenabholung>
       </Nutzdaten>
@@ -24,17 +46,21 @@ proc generateDatenTeil(nutzdatenContent: string): string =
   </DatenTeil>
 </Elster>"""
 
-proc generatePostfachStatusDatenTeil*(): string =
-  generateDatenTeil("          <PostfachStatus/>")
-
-proc generatePostfachAnfrageDatenTeil*(): string =
-  generateDatenTeil("          <PostfachAnfrage/>")
-
-proc generatePostfachBestaetigungDatenTeil*(ids: seq[string]): string =
-  var content = "          <PostfachBestaetigung>\n"
-  content.add("            <Bereitstellungen>\n")
-  for id in ids:
-    content.add(&"              <Bereitstellung id=\"{id}\"/>\n")
-  content.add("            </Bereitstellungen>\n")
-  content.add("          </PostfachBestaetigung>")
-  generateDatenTeil(content)
+proc generatePostfachAnfrageXml*(
+  herstellerId: string,
+  name: string,
+  test: bool,
+): string =
+  # Request all standard document types:
+  # ESB = Elektronischer Steuerbescheid (DIVA Stufe 1)
+  # EPMitteilung = Elektronische Postfach-Mitteilungen
+  # DivaBescheidESt/USt/GewSt/KSt/FEIN = Steuerbescheide (DIVA Stufe 2)
+  # DivaSonstigerVA = sonstige Verwaltungsakte
+  var content = "          <PostfachAnfrage einschraenkung=\"alle\" max=\"1000\">\n"
+  for name in ["ESB", "EPMitteilung",
+                "DivaBescheidESt", "DivaBescheidUSt",
+                "DivaBescheidGewSt", "DivaBescheidKSt",
+                "DivaBescheidFEIN", "DivaSonstigerVA"]:
+    content.add(&"            <DatenartBereitstellung name=\"{name}\"/>\n")
+  content.add("          </PostfachAnfrage>")
+  generateAbholungXml(content, herstellerId, name, test)
