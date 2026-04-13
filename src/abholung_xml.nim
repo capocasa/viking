@@ -51,13 +51,14 @@ proc generatePostfachAnfrageXml*(
   herstellerId: string,
   name: string,
   test: bool,
+  einschraenkung: string = "alle",
 ): string =
   # Request all standard document types:
   # ESB = Elektronischer Steuerbescheid (DIVA Stufe 1)
   # EPMitteilung = Elektronische Postfach-Mitteilungen
   # DivaBescheidESt/USt/GewSt/KSt/FEIN = Steuerbescheide (DIVA Stufe 2)
   # DivaSonstigerVA = sonstige Verwaltungsakte
-  var content = "          <PostfachAnfrage einschraenkung=\"alle\" max=\"1000\">\n"
+  var content = &"          <PostfachAnfrage einschraenkung=\"{einschraenkung}\" max=\"1000\">\n"
   for name in ["ESB", "EPMitteilung",
                 "DivaBescheidESt", "DivaBescheidUSt",
                 "DivaBescheidGewSt", "DivaBescheidKSt",
