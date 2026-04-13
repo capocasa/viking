@@ -14,6 +14,15 @@ proc formatEurDE(val: float): string =
   let s = formatFloat(rounded, ffDecimal, 2)
   s.replace('.', ',')
 
+type
+  ChildData* = object
+    vorname*: string
+    nachname*: string
+    geburtsdatum*: string
+    idnr*: string
+    betreuungskosten*: float
+    schulgeld*: float
+
 proc generateEst*(
   steuernummer: string,
   jahr: int,
@@ -35,6 +44,19 @@ proc generateEst*(
   pflegeversicherung: float = 0.0,
   rentenversicherung: float = 0.0,
   kvArt: string = "privat",
+  zusatzKv: float = 0.0,
+  kfzHaftpflicht: float = 0.0,
+  unfallversicherung: float = 0.0,
+  kirchensteuerGezahlt: float = 0.0,
+  kirchensteuerErstattet: float = 0.0,
+  spenden: float = 0.0,
+  agbKrankheit: float = 0.0,
+  kapitalertraege: float = 0.0,
+  kapitalertragsteuer: float = 0.0,
+  kapSoli: float = 0.0,
+  sparerPauschbetrag: float = 0.0,
+  guenstigerpruefung: bool = false,
+  kinder: seq[ChildData] = @[],
   test: bool,
 ): string =
   ## Generate ELSTER XML for ESt (Einkommensteuererklarung)
@@ -76,9 +98,11 @@ proc generateEst*(
           </Gewinn>
         </S>"""
 
-  # Build Anlage Vorsorgeaufwand if any insurance amounts provided
+  # Build Anlage Vorsorgeaufwand
   var vorsorge = ""
-  let hasVorsorge = krankenversicherung > 0 or pflegeversicherung > 0 or rentenversicherung > 0
+  let sonstigeVorsorge = kfzHaftpflicht + unfallversicherung
+  let hasVorsorge = krankenversicherung > 0 or pflegeversicherung > 0 or
+                    rentenversicherung > 0 or sonstigeVorsorge > 0 or zusatzKv > 0
   if hasVorsorge:
     var vorParts = ""
 
@@ -91,13 +115,16 @@ proc generateEst*(
           </AVor>""")
 
     # Health/nursing insurance
-    if krankenversicherung > 0 or pflegeversicherung > 0:
+    if krankenversicherung > 0 or pflegeversicherung > 0 or zusatzKv > 0:
       if kvArt == "gesetzlich":
         # Freiwillig gesetzlich versichert
         var andPers = ""
         if krankenversicherung > 0:
           andPers.add(&"""
               <E2001805>{roundEuro(krankenversicherung)}</E2001805>""")
+        if zusatzKv > 0:
+          andPers.add(&"""
+              <E2002206>{roundEuro(zusatzKv)}</E2002206>""")
         if pflegeversicherung > 0:
           andPers.add(&"""
               <E2002105>{roundEuro(pflegeversicherung)}</E2002105>""")
@@ -116,14 +143,198 @@ proc generateEst*(
         if pflegeversicherung > 0:
           privParts.add(&"""
               <E2003202>{roundEuro(pflegeversicherung)}</E2003202>""")
+        if zusatzKv > 0:
+          privParts.add(&"""
+              <E2003302>{roundEuro(zusatzKv)}</E2003302>""")
         vorParts.add(&"""
           <Beitr_p_KV_PV_Inl>
             <Person>PersonA</Person>{privParts}
           </Beitr_p_KV_PV_Inl>""")
 
+    # Weitere sonstige Vorsorgeaufwendungen (Haftpflicht, Unfall)
+    if sonstigeVorsorge > 0:
+      vorParts.add(&"""
+          <Weit_Sons_VorAW>
+            <A_B_LP>
+              <U_HP_Ris_Vers>
+                <Sum>
+                  <E2001803>{roundEuro(sonstigeVorsorge)}</E2001803>
+                </Sum>
+              </U_HP_Ris_Vers>
+            </A_B_LP>
+          </Weit_Sons_VorAW>""")
+
     vorsorge = &"""
         <VOR>{vorParts}
         </VOR>"""
+
+  # Build Anlage Sonderausgaben (SA)
+  var sonderausgaben = ""
+  let hasSA = kirchensteuerGezahlt > 0 or kirchensteuerErstattet > 0 or spenden > 0
+  if hasSA:
+    var saParts = ""
+
+    # Kirchensteuer
+    if kirchensteuerGezahlt > 0 or kirchensteuerErstattet > 0:
+      var kistParts = ""
+      if kirchensteuerGezahlt > 0:
+        kistParts.add(&"""
+            <Gezahlt>
+              <Sum>
+                <E0107601>{roundEuro(kirchensteuerGezahlt)}</E0107601>
+              </Sum>
+            </Gezahlt>""")
+      if kirchensteuerErstattet > 0:
+        kistParts.add(&"""
+            <Erstattet>
+              <E0107602>{roundEuro(kirchensteuerErstattet)}</E0107602>
+            </Erstattet>""")
+      saParts.add(&"""
+          <KiSt>{kistParts}
+          </KiSt>""")
+
+    # Spenden / Zuwendungen
+    if spenden > 0:
+      saParts.add(&"""
+          <Zuw>
+            <Sp_MB>
+              <Foerd_st_beg_Zw_Inl>
+                <Sum_Best>
+                  <E0108105>{roundEuro(spenden)}</E0108105>
+                </Sum_Best>
+              </Foerd_st_beg_Zw_Inl>
+            </Sp_MB>
+          </Zuw>""")
+
+    sonderausgaben = &"""
+        <SA>{saParts}
+        </SA>"""
+
+  # Build Anlage Außergewöhnliche Belastungen (AgB)
+  var agb = ""
+  if agbKrankheit > 0:
+    agb = &"""
+        <AgB>
+          <And_Aufw>
+            <Krankh>
+              <Sum>
+                <E0161304>{roundEuro(agbKrankheit)}</E0161304>
+              </Sum>
+            </Krankh>
+          </And_Aufw>
+        </AgB>"""
+
+  # Build Anlage Kind (one per child)
+  var kinderXml = ""
+  for child in kinder:
+    var kindParts = ""
+
+    # Basic child info
+    var allgParts = ""
+    if child.idnr != "":
+      allgParts.add(&"""
+              <E0500406>{child.idnr}</E0500406>""")
+    allgParts.add(&"""
+              <E0500107>{child.vorname}</E0500107>""")
+    if child.nachname != "":
+      allgParts.add(&"""
+              <E0500108>{child.nachname}</E0500108>""")
+    allgParts.add(&"""
+              <E0500701>{child.geburtsdatum}</E0500701>""")
+
+    kindParts.add(&"""
+          <Ang_Kind>
+            <Allg>{allgParts}
+            </Allg>
+            <WS>
+              <Inl>
+                <E0500703>01.01-31.12</E0500703>
+              </Inl>
+            </WS>
+          </Ang_Kind>""")
+
+    # Kindschaftsverhältnis
+    kindParts.add(&"""
+          <K_Verh>
+            <K_Verh_A>
+              <E0500807>1</E0500807>
+              <E0500601>01.01-31.12</E0500601>
+            </K_Verh_A>
+          </K_Verh>""")
+
+    # Kinderbetreuungskosten
+    if child.betreuungskosten > 0:
+      let betrag = roundEuro(child.betreuungskosten)
+      kindParts.add(&"""
+          <KBK>
+            <Art>
+              <Sum>
+                <E0506105>{betrag}</E0506105>
+              </Sum>
+            </Art>
+          </KBK>""")
+
+    # Schulgeld
+    if child.schulgeld > 0:
+      let betrag = roundEuro(child.schulgeld)
+      kindParts.add(&"""
+          <Schulgeld>
+            <Sum>
+              <E0505607>{betrag}</E0505607>
+            </Sum>
+          </Schulgeld>""")
+
+    kinderXml.add(&"""
+        <Kind>{kindParts}
+        </Kind>""")
+
+  # Build Anlage KAP
+  var kap = ""
+  let hasKAP = kapitalertraege > 0 or kapitalertragsteuer > 0 or guenstigerpruefung or
+               sparerPauschbetrag > 0
+  if hasKAP:
+    var kapParts = ""
+
+    # Günstigerprüfung
+    if guenstigerpruefung:
+      kapParts.add(&"""
+          <Ant>
+            <E1900401>1</E1900401>
+          </Ant>""")
+
+    # Kapitalerträge (dem inländischen Steuerabzug unterlegen)
+    if kapitalertraege > 0:
+      kapParts.add(&"""
+          <KapErt_inl_StAbz>
+            <Betr_lt_StBesch>
+              <E1900701>{roundEuro(kapitalertraege)}</E1900701>
+            </Betr_lt_StBesch>
+          </KapErt_inl_StAbz>""")
+
+    # Sparer-Pauschbetrag (required when Günstigerprüfung is set)
+    if sparerPauschbetrag > 0:
+      kapParts.add(&"""
+          <Sp_PB>
+            <E1901401>{roundEuro(sparerPauschbetrag)}</E1901401>
+          </Sp_PB>""")
+
+    # Steuerabzugsbeträge
+    if kapitalertragsteuer > 0 or kapSoli > 0:
+      var stParts = ""
+      if kapitalertragsteuer > 0:
+        stParts.add(&"""
+              <E1904701>{formatEurDE(kapitalertragsteuer)}</E1904701>""")
+      if kapSoli > 0:
+        stParts.add(&"""
+              <E1904801>{formatEurDE(kapSoli)}</E1904801>""")
+      kapParts.add(&"""
+          <St_Abz_Betr_Inl_u_Inv_Ert>{stParts}
+          </St_Abz_Betr_Inl_u_Inv_Ert>""")
+
+    kap = &"""
+        <KAP>
+          <Person>PersonA</Person>{kapParts}
+        </KAP>"""
 
   # Optional fields (must follow XSD element order)
   let religionLine = if religion != "": &"""
@@ -181,7 +392,7 @@ proc generateEst*(
                 </Kto_Inh>
               </BV>
             </Allg>
-          </ESt1A>{anlage}{vorsorge}
+          </ESt1A>{sonderausgaben}{agb}{kinderXml}{anlage}{kap}{vorsorge}
           <Vorsatz>
             <Unterfallart>10</Unterfallart>
             <Vorgang>01</Vorgang>

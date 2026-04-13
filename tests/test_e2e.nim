@@ -565,6 +565,116 @@ else:
 removeFile(estCsv)
 echo ""
 
+# --- ESt: Sonderausgaben (Kirchensteuer + Spenden) ---
+echo "--- est Sonderausgaben ---"
+let estSaCsv = projectRoot / "tests" / "tmp_est_sa.csv"
+writeFile(estSaCsv, "1000,19\n")
+let estSaEnv = projectRoot / "tests" / ".env.est_sa"
+writeFile(estSaEnv, readFile(projectRoot / ".env") & "\nKIRCHENSTEUER_GEZAHLT=500\nKIRCHENSTEUER_ERSTATTET=50\nSPENDEN=200\n")
+let (estSaOut, estSaRc) = run("./viking est -i " & estSaCsv & " -y 2025 --dry-run --env " & estSaEnv)
+check("est SA exits 0", estSaRc == 0, estSaOut)
+check("est SA has <SA>", estSaOut.contains("<SA>"))
+check("est SA has KiSt gezahlt", estSaOut.contains("<E0107601>"))
+check("est SA has KiSt erstattet", estSaOut.contains("<E0107602>"))
+check("est SA has Spenden", estSaOut.contains("<E0108105>"))
+removeFile(estSaEnv)
+echo ""
+
+# --- ESt: Aussergewoehnliche Belastungen ---
+echo "--- est AgB ---"
+let estAgbEnv = projectRoot / "tests" / ".env.est_agb"
+writeFile(estAgbEnv, readFile(projectRoot / ".env") & "\nAGB_KRANKHEITSKOSTEN=750\n")
+let (estAgbOut, estAgbRc) = run("./viking est -i " & estSaCsv & " -y 2025 --dry-run --env " & estAgbEnv)
+check("est AgB exits 0", estAgbRc == 0, estAgbOut)
+check("est AgB has <AgB>", estAgbOut.contains("<AgB>"))
+check("est AgB has Krankh", estAgbOut.contains("<E0161304>"))
+removeFile(estAgbEnv)
+echo ""
+
+# --- ESt: Weitere sonstige Vorsorgeaufwendungen ---
+echo "--- est Weit_Sons_VorAW ---"
+let estWsEnv = projectRoot / "tests" / ".env.est_ws"
+writeFile(estWsEnv, readFile(projectRoot / ".env") & "\nKFZ_HAFTPFLICHT=350\nUNFALLVERSICHERUNG=200\n")
+let (estWsOut, estWsRc) = run("./viking est -i " & estSaCsv & " -y 2025 --dry-run --env " & estWsEnv)
+check("est Weit exits 0", estWsRc == 0, estWsOut)
+check("est Weit has Weit_Sons_VorAW", estWsOut.contains("<Weit_Sons_VorAW>"))
+check("est Weit has U_HP_Ris_Vers sum 550", estWsOut.contains("<E2001803>550</E2001803>"))
+removeFile(estWsEnv)
+echo ""
+
+# --- ESt: Zusatz-KV (privat) ---
+echo "--- est Zusatz-KV (privat) ---"
+let estZkEnv = projectRoot / "tests" / ".env.est_zk"
+writeFile(estZkEnv, readFile(projectRoot / ".env") & "\nKRANKENVERSICHERUNG=5000\nZUSATZ_KV=120\nKV_ART=privat\n")
+let (estZkOut, estZkRc) = run("./viking est -i " & estSaCsv & " -y 2025 --dry-run --env " & estZkEnv)
+check("est ZK privat exits 0", estZkRc == 0, estZkOut)
+check("est ZK privat has E2003302", estZkOut.contains("<E2003302>120</E2003302>"))
+removeFile(estZkEnv)
+echo ""
+
+# --- ESt: Anlage KAP ---
+echo "--- est Anlage KAP ---"
+let estKapEnv = projectRoot / "tests" / ".env.est_kap"
+writeFile(estKapEnv, readFile(projectRoot / ".env") & "\nKAPITALERTRAEGE=1500.50\nKAPITALERTRAGSTEUER=375.13\nKAP_SOLI=20.63\nGUENSTIGERPRUEFUNG=1\n")
+let (estKapOut, estKapRc) = run("./viking est -i " & estSaCsv & " -y 2025 --dry-run --env " & estKapEnv)
+check("est KAP exits 0", estKapRc == 0, estKapOut)
+check("est KAP has <KAP>", estKapOut.contains("<KAP>"))
+check("est KAP has Guenstigerpruefung", estKapOut.contains("<E1900401>1</E1900401>"))
+check("est KAP has Kapitalertraege", estKapOut.contains("<E1900701>"))
+check("est KAP has KapESt", estKapOut.contains("<E1904701>"))
+check("est KAP has Soli", estKapOut.contains("<E1904801>"))
+removeFile(estKapEnv)
+echo ""
+
+# --- ESt: Anlage Kind ---
+echo "--- est Anlage Kind ---"
+let estKindTsv = projectRoot / "tests" / "tmp_kinder.tsv"
+writeFile(estKindTsv, "vorname\tgeburtsdatum\tidnr\tbetreuungskosten\tschulgeld\nMax\t01.06.2018\t12345678901\t2400\t0\nLisa\t15.03.2020\t98765432109\t3600\t1500\n")
+let (estKindOut, estKindRc) = run("./viking est -i " & estSaCsv & " -y 2025 --kinder " & estKindTsv & " --dry-run")
+check("est Kind exits 0", estKindRc == 0, estKindOut)
+check("est Kind has 2 <Kind>", estKindOut.count("<Kind>") == 2)
+check("est Kind has Max", estKindOut.contains("Max"))
+check("est Kind has Lisa", estKindOut.contains("Lisa"))
+check("est Kind has betreuungskosten", estKindOut.contains("<E0506105>"))
+check("est Kind has schulgeld", estKindOut.contains("<E0505607>"))
+check("est Kind display shows children", estKindOut.contains("=== Kinder ==="))
+removeFile(estKindTsv)
+echo ""
+
+# --- ESt: Steuernummer override ---
+echo "--- est Steuernummer override ---"
+let estSnEnv = projectRoot / "tests" / ".env.est_sn"
+writeFile(estSnEnv, readFile(projectRoot / ".env"))
+let (estSnOut, estSnRc) = run("./viking est -i " & estSaCsv & " -y 2025 --steuernummer 9181081508155 --dry-run --env " & estSnEnv)
+check("est SN override exits 0", estSnRc == 0, estSnOut)
+check("est SN override uses overridden number", estSnOut.contains("<StNr>9181081508155</StNr>"))
+removeFile(estSnEnv)
+echo ""
+
+# --- ESt: EST_STEUERNUMMER env var ---
+echo "--- est EST_STEUERNUMMER ---"
+let estEsnEnv = projectRoot / "tests" / ".env.est_esn"
+writeFile(estEsnEnv, readFile(projectRoot / ".env") & "\nEST_STEUERNUMMER=9181081508155\n")
+let (estEsnOut, estEsnRc) = run("./viking est -i " & estSaCsv & " -y 2025 --dry-run --env " & estEsnEnv)
+check("est ESN env exits 0", estEsnRc == 0, estEsnOut)
+check("est ESN env uses EST_STEUERNUMMER", estEsnOut.contains("<StNr>9181081508155</StNr>"))
+removeFile(estEsnEnv)
+echo ""
+
+# --- ESt: validate SA+AgB+KAP against ERiC ---
+echo "--- est personal deductions validation ---"
+let estPdEnv = projectRoot / "tests" / ".env.est_pd"
+writeFile(estPdEnv, readFile(projectRoot / ".env") & "\nKRANKENVERSICHERUNG=5000\nPFLEGEVERSICHERUNG=600\nKV_ART=privat\nKFZ_HAFTPFLICHT=350\nKIRCHENSTEUER_GEZAHLT=500\nSPENDEN=200\nAGB_KRANKHEITSKOSTEN=750\nKAPITALERTRAEGE=1500\nKAPITALERTRAGSTEUER=375\nSPARER_PAUSCHBETRAG=1000\nGUENSTIGERPRUEFUNG=1\n")
+let (estPdOut, estPdRc) = run("./viking est -i " & estSaCsv & " -y 2025 --validate-only --env " & estPdEnv)
+check("est PD validate no schema errors", not estPdOut.contains("610301200"), estPdOut)
+check("est PD validate no cert errors", not estPdOut.contains("610001050"), estPdOut)
+let estPdOk = estPdRc == 0 or estPdOut.contains("610301202")
+check("est PD validates", estPdOk, estPdOut)
+removeFile(estPdEnv)
+
+removeFile(estSaCsv)
+echo ""
+
 # =================================================================
 # USt (Umsatzsteuererklaerung) tests
 # =================================================================
@@ -697,17 +807,97 @@ removeFile(ustCsv)
 echo ""
 
 # =================================================================
+# Message (SonstigeNachrichten) tests
+# =================================================================
+
+echo "--- message --dry_run ---"
+let (msgDryOut, msgDryRc) = run("./viking message --subject \"Test Betreff\" --text \"Test Nachricht\" --dry_run")
+check("message dry_run exits 0", msgDryRc == 0, msgDryOut)
+check("message dry_run has Nachricht element", msgDryOut.contains("<Nachricht xmlns="))
+check("message dry_run has ElsterNachricht", msgDryOut.contains("<Verfahren>ElsterNachricht</Verfahren>"))
+check("message dry_run has DatenArt SonstigeNachrichten", msgDryOut.contains("<DatenArt>SonstigeNachrichten</DatenArt>"))
+check("message dry_run has Testmerker", msgDryOut.contains("<Testmerker>700000004</Testmerker>"))
+check("message dry_run has Betreff", msgDryOut.contains("<Betreff>Test Betreff</Betreff>"))
+check("message dry_run has Text", msgDryOut.contains("<Text>Test Nachricht</Text>"))
+check("message dry_run has SteuerpflichtigerTyp", msgDryOut.contains("<SteuerpflichtigerTyp>NichtNatPerson</SteuerpflichtigerTyp>"))
+check("message dry_run has Steuernummer", msgDryOut.contains("<Steuernummer>"))
+check("message dry_run has Bundesland in TransferHeader", msgDryOut.contains("<Ziel>"))
+check("message dry_run has Finanzamt in NutzdatenHeader", msgDryOut.contains("<Empfaenger id=\"F\">"))
+echo ""
+
+echo "--- message --validate_only ---"
+let (msgValOut, msgValRc) = run("./viking message --subject \"Test\" --text \"Testnachricht\" --validate_only")
+check("message validate_only exits 0", msgValRc == 0, msgValOut)
+check("message validate_only succeeds", msgValOut.contains("Validation successful"))
+echo ""
+
+echo "--- message validation ---"
+let (msgNoSubj, msgNoSubjRc) = run("./viking message --text \"Test\"")
+check("message without subject fails", msgNoSubjRc != 0)
+check("message without subject shows error", msgNoSubj.contains("--subject is required"))
+
+let (msgNoText, msgNoTextRc) = run("./viking message --subject \"Test\"")
+check("message without text fails", msgNoTextRc != 0)
+check("message without text shows error", msgNoText.contains("--text or --text-file is required"))
+
+let (msgBothInput, msgBothInputRc) = run("./viking message --subject \"Test\" --text \"a\" --text_file \"b\"")
+check("message with both text and text_file fails", msgBothInputRc != 0)
+check("message with both inputs shows error", msgBothInput.contains("mutually exclusive"))
+
+let longSubject = 'A'.repeat(100)
+let (msgLongSubj, msgLongSubjRc) = run("./viking message --subject \"" & longSubject & "\" --text \"Test\"")
+check("message with long subject fails", msgLongSubjRc != 0)
+check("message long subject shows error", msgLongSubj.contains("at most 99"))
+echo ""
+
+# =================================================================
+# IBAN change (AenderungBankverbindung) tests
+# =================================================================
+
+echo "--- iban --dry_run ---"
+let (ibanDryOut, ibanDryRc) = run("./viking iban --new_iban DE89370400440532013000 --dry_run")
+check("iban dry_run exits 0", ibanDryRc == 0, ibanDryOut)
+check("iban dry_run has AenderungBankverbindung", ibanDryOut.contains("<AenderungBankverbindung xmlns="))
+check("iban dry_run has ElsterNachricht", ibanDryOut.contains("<Verfahren>ElsterNachricht</Verfahren>"))
+check("iban dry_run has DatenArt", ibanDryOut.contains("<DatenArt>AenderungBankverbindung</DatenArt>"))
+check("iban dry_run has Testmerker", ibanDryOut.contains("<Testmerker>700000004</Testmerker>"))
+check("iban dry_run has IBAN", ibanDryOut.contains("<IBAN>DE89370400440532013000</IBAN>"))
+check("iban dry_run has Kontoinhaber", ibanDryOut.contains("<Kontoinhaber>Person_A</Kontoinhaber>"))
+check("iban dry_run has Steuernummer", ibanDryOut.contains("<Steuernummer>"))
+check("iban dry_run has Anrede", ibanDryOut.contains("<Anrede>Herrn</Anrede>"))
+check("iban dry_run has Identifikationsnummer", ibanDryOut.contains("<Identifikationsnummer>"))
+echo ""
+
+echo "--- iban --validate_only ---"
+let (ibanValOut, ibanValRc) = run("./viking iban --new_iban DE89370400440532013000 --validate_only")
+check("iban validate_only exits 0", ibanValRc == 0, ibanValOut)
+check("iban validate_only succeeds", ibanValOut.contains("Validation successful"))
+echo ""
+
+echo "--- iban validation ---"
+let (ibanNoIban, ibanNoIbanRc) = run("./viking iban")
+check("iban without new_iban fails", ibanNoIbanRc != 0)
+check("iban without new_iban shows error", ibanNoIban.contains("--new-iban is required"))
+echo ""
+
+# =================================================================
 # Retrieve (Datenabholung) tests
 # =================================================================
 
-echo "--- retrieve --dry-run ---"
-let (retDryOut, retDryRc) = run("./viking retrieve --dry-run")
-check("retrieve dry-run exits 0", retDryRc == 0, retDryOut)
-check("retrieve dry-run has PostfachAnfrage XML", retDryOut.contains("<PostfachAnfrage "))
-check("retrieve dry-run has Datenabholung element", retDryOut.contains("<Datenabholung"))
-check("retrieve dry-run has ElsterDatenabholung", retDryOut.contains("<Verfahren>ElsterDatenabholung</Verfahren>"))
-check("retrieve dry-run has DatenArt PostfachAnfrage", retDryOut.contains("<DatenArt>PostfachAnfrage</DatenArt>"))
-check("retrieve dry-run has Testmerker", retDryOut.contains("<Testmerker>700000004</Testmerker>"))
+echo "--- list --dry_run ---"
+let (listDryOut, listDryRc) = run("./viking list --dry_run")
+check("list dry_run exits 0", listDryRc == 0, listDryOut)
+check("list dry_run has PostfachAnfrage XML", listDryOut.contains("<PostfachAnfrage "))
+check("list dry_run has Datenabholung element", listDryOut.contains("<Datenabholung"))
+check("list dry_run has ElsterDatenabholung", listDryOut.contains("<Verfahren>ElsterDatenabholung</Verfahren>"))
+check("list dry_run has DatenArt PostfachAnfrage", listDryOut.contains("<DatenArt>PostfachAnfrage</DatenArt>"))
+check("list dry_run has Testmerker", listDryOut.contains("<Testmerker>700000004</Testmerker>"))
+
+echo "--- download --dry_run ---"
+let (dlDryOut, dlDryRc) = run("./viking download --dry_run")
+check("download dry_run exits 0", dlDryRc == 0, dlDryOut)
+check("download dry_run has PostfachAnfrage XML", dlDryOut.contains("<PostfachAnfrage "))
+check("download dry_run has Datenabholung element", dlDryOut.contains("<Datenabholung"))
 echo ""
 
 # --- Summary ---

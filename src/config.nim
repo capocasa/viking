@@ -26,6 +26,7 @@ type
     geburtsdatum*: string
     hausnummer*: string
     iban*: string
+    idnr*: string
     religion*: string
     beruf*: string
     krankenversicherung*: float
@@ -33,6 +34,24 @@ type
     rentenversicherung*: float
     kvArt*: string
     besteuerungsart*: string
+    # Additional Vorsorgeaufwand
+    zusatzKv*: float
+    kfzHaftpflicht*: float
+    unfallversicherung*: float
+    # Sonderausgaben
+    kirchensteuerGezahlt*: float
+    kirchensteuerErstattet*: float
+    spenden*: float
+    # Außergewöhnliche Belastungen
+    agbKrankheit*: float
+    # Anlage KAP
+    kapitalertraege*: float
+    kapitalertragsteuer*: float
+    kapSoli*: float
+    sparerPauschbetrag*: float
+    guenstigerpruefung*: bool
+    # ESt-specific Steuernummer
+    estSteuernummer*: string
 
 proc loadConfig*(envFile: string = ".env"): Config =
   ## Load configuration from env file
@@ -72,6 +91,7 @@ proc loadConfig*(envFile: string = ".env"): Config =
   result.geburtsdatum = getEnv("GEBURTSDATUM", "")
   result.hausnummer = getEnv("HAUSNUMMER", "")
   result.iban = getEnv("IBAN", "")
+  result.idnr = getEnv("IDNR", "")
   result.religion = getEnv("RELIGION", "11")
   result.beruf = getEnv("BERUF", "")
   let kvStr = getEnv("KRANKENVERSICHERUNG", "0")
@@ -85,6 +105,46 @@ proc loadConfig*(envFile: string = ".env"): Config =
   except ValueError: discard
   result.kvArt = getEnv("KV_ART", "privat")
   result.besteuerungsart = getEnv("BESTEUERUNGSART", "2")
+  # Additional Vorsorgeaufwand
+  let zkStr = getEnv("ZUSATZ_KV", "0")
+  try: result.zusatzKv = parseFloat(zkStr)
+  except ValueError: discard
+  let kfzStr = getEnv("KFZ_HAFTPFLICHT", "0")
+  try: result.kfzHaftpflicht = parseFloat(kfzStr)
+  except ValueError: discard
+  let uvStr = getEnv("UNFALLVERSICHERUNG", "0")
+  try: result.unfallversicherung = parseFloat(uvStr)
+  except ValueError: discard
+  # Sonderausgaben
+  let kstGStr = getEnv("KIRCHENSTEUER_GEZAHLT", "0")
+  try: result.kirchensteuerGezahlt = parseFloat(kstGStr)
+  except ValueError: discard
+  let kstEStr = getEnv("KIRCHENSTEUER_ERSTATTET", "0")
+  try: result.kirchensteuerErstattet = parseFloat(kstEStr)
+  except ValueError: discard
+  let spStr = getEnv("SPENDEN", "0")
+  try: result.spenden = parseFloat(spStr)
+  except ValueError: discard
+  # Außergewöhnliche Belastungen
+  let agbStr = getEnv("AGB_KRANKHEITSKOSTEN", "0")
+  try: result.agbKrankheit = parseFloat(agbStr)
+  except ValueError: discard
+  # Anlage KAP
+  let keStr = getEnv("KAPITALERTRAEGE", "0")
+  try: result.kapitalertraege = parseFloat(keStr)
+  except ValueError: discard
+  let kestStr = getEnv("KAPITALERTRAGSTEUER", "0")
+  try: result.kapitalertragsteuer = parseFloat(kestStr)
+  except ValueError: discard
+  let soliStr = getEnv("KAP_SOLI", "0")
+  try: result.kapSoli = parseFloat(soliStr)
+  except ValueError: discard
+  let spPbStr = getEnv("SPARER_PAUSCHBETRAG", "0")
+  try: result.sparerPauschbetrag = parseFloat(spPbStr)
+  except ValueError: discard
+  result.guenstigerpruefung = getEnv("GUENSTIGERPRUEFUNG", "0") == "1"
+  # ESt-specific Steuernummer
+  result.estSteuernummer = getEnv("EST_STEUERNUMMER", "")
 
 proc validate*(cfg: Config): seq[string] =
   ## Validate configuration and return list of errors
@@ -221,6 +281,30 @@ proc validateForUstValidateOnly*(cfg: Config): seq[string] =
     result.add("Cannot determine Bundesland from STEUERNUMMER prefix: " & cfg.steuernummer[0..1])
   if cfg.besteuerungsart != "1" and cfg.besteuerungsart != "2" and cfg.besteuerungsart != "3":
     result.add("BESTEUERUNGSART must be 1, 2 or 3 (1=vereinbart, 2=vereinnahmt, 3=mixed)")
+
+proc validateForNachrichtSubmission*(cfg: Config): seq[string] =
+  ## Full validation for SonstigeNachricht submission
+  result = cfg.validateForSubmission()
+  if cfg.hausnummer == "":
+    result.add("HAUSNUMMER not set (house number)")
+  if cfg.steuernummer.len >= 2 and bundeslandFromSteuernummer(cfg.steuernummer) == "":
+    result.add("Cannot determine Bundesland from STEUERNUMMER prefix: " & cfg.steuernummer[0..1])
+
+proc validateForNachrichtValidateOnly*(cfg: Config): seq[string] =
+  ## Minimal validation for SonstigeNachricht validate-only mode
+  result = cfg.validateForValidateOnly()
+  if cfg.name == "":
+    result.add("DATENLIEFERANT_NAME not set (sender name)")
+  if cfg.strasse == "":
+    result.add("DATENLIEFERANT_STRASSE not set (sender street)")
+  if cfg.plz == "":
+    result.add("DATENLIEFERANT_PLZ not set (sender postal code)")
+  if cfg.ort == "":
+    result.add("DATENLIEFERANT_ORT not set (sender city)")
+  if cfg.hausnummer == "":
+    result.add("HAUSNUMMER not set (house number)")
+  if cfg.steuernummer.len >= 2 and bundeslandFromSteuernummer(cfg.steuernummer) == "":
+    result.add("Cannot determine Bundesland from STEUERNUMMER prefix: " & cfg.steuernummer[0..1])
 
 proc validateForEstValidateOnly*(cfg: Config): seq[string] =
   ## Minimal validation for ESt validate-only mode
