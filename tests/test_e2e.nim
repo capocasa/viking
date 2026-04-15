@@ -468,6 +468,22 @@ for year in euerYears:
   else:
     check("euer " & $year & " passes validation", false, eyOut)
 
+# --- EÜR: multiple --euer files ---
+echo "--- euer multiple files ---"
+let euerCsv2 = projectRoot / "tests" / "tmp_euer2.csv"
+writeFile(euerCsv, "1000,19\n")
+writeFile(euerCsv2, "500,19\n-200,19\n")
+let (euerMultiOut, euerMultiRc) = run("./viking euer -c " & euerConf & " --euer " & euerCsv & " --euer " & euerCsv2 & " -y 2025 --dry-run")
+check("euer multi exits 0", euerMultiRc == 0, euerMultiOut)
+check("euer multi has [1/2]", euerMultiOut.contains("[1/2]"))
+check("euer multi has [2/2]", euerMultiOut.contains("[2/2]"))
+# First file: 1000 net at 19%
+check("euer multi file 1 income", euerMultiOut.contains("<E6000401>1000,00</E6000401>"))
+# Second file: 500 net at 19%, -200 expense
+check("euer multi file 2 income", euerMultiOut.contains("<E6000401>500,00</E6000401>"))
+removeFile(euerCsv2)
+echo ""
+
 removeFile(euerCsv)
 removeFile(euerConf)
 echo ""
@@ -551,6 +567,24 @@ echo ""
 echo "--- est no euer ---"
 let (estNoEuerOut, estNoEuerRc) = run("./viking est -c " & estConf & " -y 2025 --dry-run --force")
 check("est no euer exits 0", estNoEuerRc == 0, estNoEuerOut)
+echo ""
+
+# --- ESt: multiple --euer files ---
+echo "--- est multiple euer ---"
+let estEuer2 = projectRoot / "tests" / "tmp_euer2.tsv"
+writeFile(estEuer, "1000,19\n-300,19\n")
+writeFile(estEuer2, "500,19\n")
+let (estMultiOut, estMultiRc) = run("./viking est -c " & estConf & " -i " & estEuer & " -i " & estEuer2 & " -y 2025 --dry-run --force")
+check("est multi exits 0", estMultiRc == 0, estMultiOut)
+# First file: 1000*1.19 - 300*1.19 = 833 profit
+check("est multi has first profit", estMultiOut.contains("<E0800302>833</E0800302>"))
+# Second file: 500*1.19 = 595 profit
+check("est multi has second profit", estMultiOut.contains("<E0800302>595</E0800302>"))
+# Both in same Anlage G
+check("est multi has single Anlage G", estMultiOut.contains("<G>"))
+# Two Betr_1_2 blocks
+check("est multi has two Betr blocks", estMultiOut.contains("Betr_1_2"))
+removeFile(estEuer2)
 echo ""
 
 # --- ESt: input validation ---
@@ -819,6 +853,20 @@ let (ustEmptyOut, ustEmptyRc) = run("./viking ust -c " & ustConf & " -i " & ustC
 check("ust empty exits 0", ustEmptyRc == 0, ustEmptyOut)
 check("ust empty Ums_Sum 0", ustEmptyOut.contains("<E3006001>0,00</E3006001>"))
 check("ust empty verbleibende 0", ustEmptyOut.contains("<E3011101>0,00</E3011101>"))
+echo ""
+
+# --- USt: multiple --euer files ---
+echo "--- ust multiple euer ---"
+let ustCsv2 = projectRoot / "tests" / "tmp_ust2.csv"
+writeFile(ustCsv, "1000,19\n")
+writeFile(ustCsv2, "500,19\n-200,19\n")
+let (ustMultiOut, ustMultiRc) = run("./viking ust -c " & ustConf & " -i " & ustCsv & " -i " & ustCsv2 & " -y 2025 --dry-run")
+check("ust multi exits 0", ustMultiRc == 0, ustMultiOut)
+# Combined: 1000 + 500 = 1500 at 19%
+check("ust multi combined 19%", ustMultiOut.contains("<E3003303>1500</E3003303>"))
+# Vorsteuer: 200 * 0.19 = 38
+check("ust multi has Vorsteuer", ustMultiOut.contains("<E3006001>"))
+removeFile(ustCsv2)
 echo ""
 
 # --- USt: missing euer file ---

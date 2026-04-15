@@ -324,7 +324,7 @@ proc submit(
 proc euer(
   year: int = 0,
   conf: string = "",
-  euer: string = "",
+  euer: seq[string] = @[],
   validate_only: bool = false,
   dry_run: bool = false,
   verbose: bool = false,
@@ -334,10 +334,11 @@ proc euer(
   ##
   ## Personal data from viking.conf, invoices from euer.tsv.
   ## Positive invoice amounts = income, negative = expenses.
+  ## Multiple --euer flags submit separate EÜR forms for each income source.
   ##
   ## Examples:
   ##   viking euer -y 2025 -c viking.conf --euer euer.tsv
-  ##   viking euer -y 2025 -c viking.conf --euer euer.tsv --validate-only
+  ##   viking euer -y 2025 -c viking.conf --euer business1.tsv --euer business2.tsv
   ##   viking euer -y 2025 -c viking.conf --euer euer.tsv --dry-run
 
   let actualYear = if year == 0: now().year else: year
@@ -346,7 +347,7 @@ proc euer(
     echo "Error: --conf is required for EÜR submission (viking.conf file)"
     return 1
 
-  if euer == "":
+  if euer.len == 0:
     echo "Error: --euer is required for EÜR submission (invoice TSV file)"
     return 1
 
@@ -368,19 +369,22 @@ proc euer(
       echo &"  - {e}"
     return 1
 
-  # Load and aggregate invoices
-  if not fileExists(euer):
-    echo &"Error: EÜR file not found: {euer}"
-    return 1
-  let (agg, ok) = loadAndAggregateForEuer(euer)
-  if not ok:
-    return 1
+  # Load and aggregate invoices from all euer files
+  var aggregations: seq[tuple[file: string, agg: EuerAggregation]] = @[]
+  for euerFile in euer:
+    if not fileExists(euerFile):
+      echo &"Error: EÜR file not found: {euerFile}"
+      return 1
+    let (agg, ok) = loadAndAggregateForEuer(euerFile)
+    if not ok:
+      return 1
+    aggregations.add((file: euerFile, agg: agg))
 
-  echo &"=== Invoices ==="
-  echo &"File:      {euer}"
-  echo &"Income:    {agg.incomeCount} invoices, {agg.incomeNet:.2f} EUR net + {agg.incomeVat:.2f} EUR VAT"
-  echo &"Expenses:  {agg.expenseCount} invoices, {agg.expenseNet:.2f} EUR net + {agg.expenseVorsteuer:.2f} EUR Vorsteuer"
-  echo ""
+    echo &"=== Invoices ==="
+    echo &"File:      {euerFile}"
+    echo &"Income:    {agg.incomeCount} invoices, {agg.incomeNet:.2f} EUR net + {agg.incomeVat:.2f} EUR VAT"
+    echo &"Expenses:  {agg.expenseCount} invoices, {agg.expenseNet:.2f} EUR net + {agg.expenseVorsteuer:.2f} EUR Vorsteuer"
+    echo ""
 
   # Load technical .env config
   var cfg: Config
@@ -403,23 +407,26 @@ proc euer(
   let fullName = tp.firstname & " " & tp.lastname
   let fullStreet = tp.street & " " & tp.housenumber
 
-  # Generate XML
-  let xml = generateEuer(
-    steuernummer = tp.taxnumber,
-    jahr = actualYear,
-    incomeNet = agg.incomeNet,
-    incomeVat = agg.incomeVat,
-    expenseNet = agg.expenseNet,
-    expenseVorsteuer = agg.expenseVorsteuer,
-    rechtsform = tp.rechtsform,
-    einkunftsart = tp.income,
-    name = fullName,
-    strasse = fullStreet,
-    plz = tp.zip,
-    ort = tp.city,
-    test = cfg.test,
-    produktVersion = NimblePkgVersion,
-  )
+  # Generate XML for each euer file
+  var xmls: seq[string] = @[]
+  for entry in aggregations:
+    let xml = generateEuer(
+      steuernummer = tp.taxnumber,
+      jahr = actualYear,
+      incomeNet = entry.agg.incomeNet,
+      incomeVat = entry.agg.incomeVat,
+      expenseNet = entry.agg.expenseNet,
+      expenseVorsteuer = entry.agg.expenseVorsteuer,
+      rechtsform = tp.rechtsform,
+      einkunftsart = tp.income,
+      name = fullName,
+      strasse = fullStreet,
+      plz = tp.zip,
+      ort = tp.city,
+      test = cfg.test,
+      produktVersion = NimblePkgVersion,
+    )
+    xmls.add(xml)
 
   # Load ERiC library
   if not loadEricLib(cfg.ericLibPath):
@@ -441,10 +448,15 @@ proc euer(
   # Dry run mode
   if dryRun:
     echo "ERiC library loaded and initialized successfully."
-    echo ""
-    echo "=== Generated XML ==="
-    echo xml
-    echo "====================="
+    for i, xml in xmls:
+      if xmls.len > 1:
+        echo ""
+        echo &"=== Generated XML [{i+1}/{xmls.len}] ({aggregations[i].file}) ==="
+      else:
+        echo ""
+        echo "=== Generated XML ==="
+      echo xml
+      echo "====================="
     return 0
 
   # Create return buffers
@@ -484,101 +496,112 @@ proc euer(
     if certHandle != 0:
       discard ericCloseHandleToCertificate(certHandle)
 
-  # Compute totals for display
-  let totalIncome = agg.incomeNet + agg.incomeVat
-  let totalExpense = agg.expenseNet + agg.expenseVorsteuer
-  let profit = totalIncome - totalExpense
+  # Process each EÜR
+  for i, xml in xmls:
+    let entry = aggregations[i]
+    let agg = entry.agg
 
-  # Show summary
-  echo &"=== Einnahmenüberschussrechnung ==="
-  echo &"Year:        {actualYear}"
-  echo &"Tax number:  {tp.taxnumber}"
-  echo &"Bundesland:  {bundesland}"
-  echo &"Name:        {fullName}"
-  echo ""
-  echo &"Income:      {totalIncome:.2f} EUR ({agg.incomeNet:.2f} net + {agg.incomeVat:.2f} VAT)"
-  echo &"Expenses:    {totalExpense:.2f} EUR ({agg.expenseNet:.2f} net + {agg.expenseVorsteuer:.2f} Vorsteuer)"
-  echo &"Profit:      {profit:.2f} EUR"
-  echo ""
+    # Compute totals for display
+    let totalIncome = agg.incomeNet + agg.incomeVat
+    let totalExpense = agg.expenseNet + agg.expenseVorsteuer
+    let profit = totalIncome - totalExpense
 
-  let modeStr = if cfg.test: " (TEST)" else: ""
-  if validateOnly:
-    echo &"Mode: Validate only{modeStr}"
-  else:
-    echo &"Mode: Send to ELSTER{modeStr}"
-  echo ""
+    # Show summary
+    if xmls.len > 1:
+      echo &"=== Einnahmenüberschussrechnung [{i+1}/{xmls.len}] ({entry.file}) ==="
+    else:
+      echo &"=== Einnahmenüberschussrechnung ==="
+    echo &"Year:        {actualYear}"
+    echo &"Tax number:  {tp.taxnumber}"
+    echo &"Bundesland:  {bundesland}"
+    echo &"Name:        {fullName}"
+    echo ""
+    echo &"Income:      {totalIncome:.2f} EUR ({agg.incomeNet:.2f} net + {agg.incomeVat:.2f} VAT)"
+    echo &"Expenses:    {totalExpense:.2f} EUR ({agg.expenseNet:.2f} net + {agg.expenseVorsteuer:.2f} Vorsteuer)"
+    echo &"Profit:      {profit:.2f} EUR"
+    echo ""
 
-  # Process
-  var transferHandle: uint32 = 0
-  let datenartVersion = &"EUER_{actualYear}"
-  let rc = ericBearbeiteVorgang(
-    xml,
-    datenartVersion,
-    flags,
-    nil,
-    cryptParamPtr,
-    addr transferHandle,
-    responseBuf,
-    serverBuf,
-  )
-
-  let response = ericRueckgabepufferInhalt(responseBuf)
-  let serverResponse = ericRueckgabepufferInhalt(serverBuf)
-
-  if rc == 0:
+    let modeStr = if cfg.test: " (TEST)" else: ""
     if validateOnly:
-      echo "Validation successful!"
+      echo &"Mode: Validate only{modeStr}"
     else:
-      echo "Submission successful!"
+      echo &"Mode: Send to ELSTER{modeStr}"
+    echo ""
 
-    if verbose and serverResponse.len > 0:
-      echo ""
-      echo "Server response:"
-      echo serverResponse
+    # Process
+    var transferHandle: uint32 = 0
+    let datenartVersion = &"EUER_{actualYear}"
+    let rc = ericBearbeiteVorgang(
+      xml,
+      datenartVersion,
+      flags,
+      nil,
+      cryptParamPtr,
+      addr transferHandle,
+      responseBuf,
+      serverBuf,
+    )
 
-    return 0
-  else:
-    echo &"Error: Operation failed with code {rc}"
-    echo &"  {ericHoleFehlerText(rc)}"
+    let response = ericRueckgabepufferInhalt(responseBuf)
+    let serverResponse = ericRueckgabepufferInhalt(serverBuf)
 
-    case rc
-    of 610301202:
-      echo ""
-      echo "Hint: The demo HerstellerID (74931) is blocked."
-      echo "  Register at https://www.elster.de/elsterweb/entwickler"
-      echo "  and set HERSTELLER_ID in your .env file."
-    of 610301200:
-      echo ""
-      echo "Hint: XML schema validation failed."
-      let logFile = cfg.ericLogPath / "eric.log"
-      if fileExists(logFile):
-        let logContent = readFile(logFile).strip
-        if logContent.len > 0:
-          echo ""
-          echo "ERiC log:"
-          echo logContent
-    of 610001050:
-      echo ""
-      echo "Hint: Buffer instance mismatch - this is likely a bug in the FFI bindings."
+    if rc == 0:
+      if validateOnly:
+        echo "Validation successful!"
+      else:
+        echo "Submission successful!"
+
+      if verbose and serverResponse.len > 0:
+        echo ""
+        echo "Server response:"
+        echo serverResponse
+
+      if i < xmls.len - 1:
+        echo ""
     else:
-      discard
+      echo &"Error: Operation failed with code {rc}"
+      echo &"  {ericHoleFehlerText(rc)}"
 
-    if response.len > 0:
-      echo ""
-      echo "Details:"
-      echo response
+      case rc
+      of 610301202:
+        echo ""
+        echo "Hint: The demo HerstellerID (74931) is blocked."
+        echo "  Register at https://www.elster.de/elsterweb/entwickler"
+        echo "  and set HERSTELLER_ID in your .env file."
+      of 610301200:
+        echo ""
+        echo "Hint: XML schema validation failed."
+        let logFile = cfg.ericLogPath / "eric.log"
+        if fileExists(logFile):
+          let logContent = readFile(logFile).strip
+          if logContent.len > 0:
+            echo ""
+            echo "ERiC log:"
+            echo logContent
+      of 610001050:
+        echo ""
+        echo "Hint: Buffer instance mismatch - this is likely a bug in the FFI bindings."
+      else:
+        discard
 
-    if serverResponse.len > 0:
-      echo ""
-      echo "Server response:"
-      echo serverResponse
+      if response.len > 0:
+        echo ""
+        echo "Details:"
+        echo response
 
-    return 1
+      if serverResponse.len > 0:
+        echo ""
+        echo "Server response:"
+        echo serverResponse
+
+      return 1
+
+  return 0
 
 proc est(
   year: int = 0,
   conf: string = "",
-  euer: string = "",
+  euer: seq[string] = @[],
   deductions: string = "",
   kapital: string = "",
   validate_only: bool = false,
@@ -591,9 +614,11 @@ proc est(
   ##
   ## Personal data from viking.conf, income from euer.tsv,
   ## deductions from deductions.tsv, capital gains from kap.tsv.
+  ## Multiple --euer flags for multiple income sources.
   ##
   ## Examples:
   ##   viking est -y 2025 -c viking.conf --euer euer.tsv --deductions deductions.tsv
+  ##   viking est -y 2025 -c viking.conf --euer business1.tsv --euer business2.tsv
   ##   viking est -y 2025 -c viking.conf --kapital kap.tsv
   ##   viking est -y 2025 -c viking.conf --euer euer.tsv --dry-run
 
@@ -622,20 +647,21 @@ proc est(
     return 1
 
   # Load EÜR invoices (optional — ESt without income is valid for KAP-only)
-  var profit = 0.0
-  if euer != "":
-    if not fileExists(euer):
-      echo &"Error: EÜR file not found: {euer}"
+  var profits: seq[float] = @[]
+  for euerFile in euer:
+    if not fileExists(euerFile):
+      echo &"Error: EÜR file not found: {euerFile}"
       return 1
-    let (agg, ok) = loadAndAggregateForEuer(euer)
+    let (agg, ok) = loadAndAggregateForEuer(euerFile)
     if not ok:
       return 1
     let totalIncome = agg.incomeNet + agg.incomeVat
     let totalExpense = agg.expenseNet + agg.expenseVorsteuer
-    profit = totalIncome - totalExpense
+    let profit = totalIncome - totalExpense
+    profits.add(profit)
 
     echo &"=== EUeR ==="
-    echo &"File:      {euer}"
+    echo &"File:      {euerFile}"
     echo &"Income:    {agg.incomeCount} invoices, {totalIncome:.2f} EUR"
     echo &"Expenses:  {agg.expenseCount} invoices, {totalExpense:.2f} EUR"
     echo &"Profit:    {profit:.2f} EUR"
@@ -693,7 +719,7 @@ proc est(
   let estInput = EstInput(
     conf: vikingConf,
     year: actualYear,
-    profit: profit,
+    profits: profits,
     deductions: ded,
     kapTotals: kapTotals,
     test: cfg.test,
@@ -711,10 +737,14 @@ proc est(
   echo &"Tax number:  {tp.taxnumber}"
   echo &"Bundesland:  {bundesland}"
   echo &"Name:        {tp.firstname} {tp.lastname}"
-  if euer != "":
+  if profits.len > 0:
     echo &"Anlage:      {anlageStr}"
     echo ""
-    echo &"Profit:      {profit:.2f} EUR"
+    for i, profit in profits:
+      if profits.len > 1:
+        echo &"Profit [{i+1}]: {profit:.2f} EUR"
+      else:
+        echo &"Profit:      {profit:.2f} EUR"
   if ded.vor.len > 0:
     echo ""
     echo "Vorsorgeaufwand: " & $ded.vor.len & " entries"
@@ -872,7 +902,7 @@ proc est(
 proc ust(
   year: int = 0,
   conf: string = "",
-  euer: string = "",
+  euer: seq[string] = @[],
   vorauszahlungen: float = 0.0,
   validate_only: bool = false,
   dry_run: bool = false,
@@ -883,10 +913,11 @@ proc ust(
   ##
   ## Positive amounts = revenue, negative = expenses (for Vorsteuer).
   ## Provide --vorauszahlungen with the total UStVA advance payments made.
+  ## Multiple --euer flags for multiple income sources.
   ##
   ## Examples:
   ##   viking ust -y 2025 -c viking.conf --euer euer.tsv --vorauszahlungen=1200
-  ##   viking ust -y 2025 -c viking.conf --euer euer.tsv --validate-only
+  ##   viking ust -y 2025 -c viking.conf --euer a.tsv --euer b.tsv
   ##   viking ust -y 2025 -c viking.conf --euer euer.tsv --dry-run
 
   let actualYear = if year == 0: now().year else: year
@@ -895,7 +926,7 @@ proc ust(
     echo "Error: --conf is required for USt submission (viking.conf file)"
     return 1
 
-  if euer == "":
+  if euer.len == 0:
     echo "Error: --euer is required for USt submission"
     return 1
 
@@ -918,32 +949,45 @@ proc ust(
     echo "Error: taxpayer.besteuerungsart must be 1, 2 or 3 in viking.conf"
     return 1
 
-  # Load and aggregate invoices
-  if not fileExists(euer):
-    echo &"Error: EÜR file not found: {euer}"
-    return 1
-  let (agg, ok) = loadAndAggregateForUst(euer)
-  if not ok:
-    return 1
+  # Load and aggregate invoices from all euer files
+  var agg: UstAggregation
+  for euerFile in euer:
+    if not fileExists(euerFile):
+      echo &"Error: EÜR file not found: {euerFile}"
+      return 1
+    let (fileAgg, ok) = loadAndAggregateForUst(euerFile)
+    if not ok:
+      return 1
+    agg.income19 += fileAgg.income19
+    agg.income7 += fileAgg.income7
+    agg.income0 += fileAgg.income0
+    agg.vorsteuer += fileAgg.vorsteuer
+    agg.incomeCount += fileAgg.incomeCount
+    agg.expenseCount += fileAgg.expenseCount
+    agg.has19 = agg.has19 or fileAgg.has19
+    agg.has7 = agg.has7 or fileAgg.has7
+    agg.has0 = agg.has0 or fileAgg.has0
+
+    echo &"=== Invoices ==="
+    echo &"File:      {euerFile}"
+    echo &"Revenue:   {fileAgg.incomeCount} invoices"
+    if fileAgg.has19:
+      let v19 = fileAgg.income19 * 0.19
+      echo &"  19%:     {fileAgg.income19:.2f} EUR net -> {v19:.2f} EUR VAT"
+    if fileAgg.has7:
+      let v7 = fileAgg.income7 * 0.07
+      echo &"  7%:      {fileAgg.income7:.2f} EUR net -> {v7:.2f} EUR VAT"
+    if fileAgg.has0:
+      echo &"  0%:      {fileAgg.income0:.2f} EUR (non-taxable)"
+    if fileAgg.expenseCount > 0:
+      echo &"Expenses:  {fileAgg.expenseCount} invoices, {fileAgg.vorsteuer:.2f} EUR Vorsteuer"
+    echo ""
 
   # Compute VAT amounts for display
   let vat19 = agg.income19 * 0.19
   let vat7 = agg.income7 * 0.07
   let totalVat = vat19 + vat7
   let remaining = totalVat - agg.vorsteuer - vorauszahlungen
-
-  echo &"=== Invoices ==="
-  echo &"File:      {euer}"
-  echo &"Revenue:   {agg.incomeCount} invoices"
-  if agg.has19:
-    echo &"  19%:     {agg.income19:.2f} EUR net -> {vat19:.2f} EUR VAT"
-  if agg.has7:
-    echo &"  7%:      {agg.income7:.2f} EUR net -> {vat7:.2f} EUR VAT"
-  if agg.has0:
-    echo &"  0%:      {agg.income0:.2f} EUR (non-taxable)"
-  if agg.expenseCount > 0:
-    echo &"Expenses:  {agg.expenseCount} invoices, {agg.vorsteuer:.2f} EUR Vorsteuer"
-  echo ""
 
   # Load technical .env config
   var cfg: Config
@@ -2305,7 +2349,7 @@ when isMainModule:
       help = {
         "year": "Tax year (default: current year)",
         "conf": "viking.conf file with taxpayer data",
-        "euer": "TSV invoice file (positive=income, negative=expenses)",
+        "euer": "TSV invoice file (repeatable for multiple income sources)",
         "validate_only": "Only validate, don't send",
         "dry_run": "Show generated XML without processing",
         "verbose": "Show full server response XML",
@@ -2324,7 +2368,7 @@ when isMainModule:
       help = {
         "year": "Tax year (default: current year)",
         "conf": "viking.conf file (taxpayer data)",
-        "euer": "EUeR income/expense TSV (optional)",
+        "euer": "EUeR income/expense TSV (repeatable, optional)",
         "deductions": "Deductions TSV with compound codes (optional)",
         "kapital": "Capital gains TSV (optional)",
         "validate_only": "Only validate, don't send",
@@ -2350,7 +2394,7 @@ when isMainModule:
       help = {
         "year": "Tax year (default: current year)",
         "conf": "viking.conf file (taxpayer data)",
-        "euer": "EUeR income/expense TSV (required)",
+        "euer": "EUeR income/expense TSV (repeatable, required)",
         "vorauszahlungen": "Total UStVA advance payments made during the year",
         "validate_only": "Only validate, don't send",
         "dry_run": "Show generated XML without processing",

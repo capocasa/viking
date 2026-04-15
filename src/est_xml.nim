@@ -16,7 +16,7 @@ type
   EstInput* = object
     conf*: VikingConf
     year*: int
-    profit*: float
+    profits*: seq[float]
     deductions*: DeductionsByForm
     kapTotals*: KapTotals
     test*: bool
@@ -27,34 +27,42 @@ proc generateEst*(input: EstInput): string =
   let finanzamt = tp.taxnumber[0..3]
   let bundesland = bundeslandFromSteuernummer(tp.taxnumber)
   let testmerkerLine = if input.test: "\n    <Testmerker>700000004</Testmerker>" else: ""
-  let profitEuro = roundEuro(input.profit)
 
-  # Build Anlage G or Anlage S
+  # Build Anlage G or Anlage S (one block per income source)
   var anlage = ""
-  if tp.income == "2":
-    let taetigkeitStr = if tp.profession != "": tp.profession else: "Gewerbebetrieb"
-    anlage = &"""
-        <G>
-          <Person>PersonA</Person>
-          <Gew>
-            <Einz_U>
+  if input.profits.len > 0:
+    if tp.income == "2":
+      let taetigkeitStr = if tp.profession != "": tp.profession else: "Gewerbebetrieb"
+      var blocks = ""
+      for profit in input.profits:
+        let profitEuro = roundEuro(profit)
+        blocks.add(&"""
               <Betr_1_2>
                 <E0800301>{taetigkeitStr}</E0800301>
                 <E0800302>{profitEuro}</E0800302>
-              </Betr_1_2>
+              </Betr_1_2>""")
+      anlage = &"""
+        <G>
+          <Person>PersonA</Person>
+          <Gew>
+            <Einz_U>{blocks}
             </Einz_U>
           </Gew>
         </G>"""
-  else:
-    let taetigkeitStr = if tp.profession != "": tp.profession else: "Freiberufliche Taetigkeit"
-    anlage = &"""
-        <S>
-          <Person>PersonA</Person>
-          <Gewinn>
+    else:
+      let taetigkeitStr = if tp.profession != "": tp.profession else: "Freiberufliche Taetigkeit"
+      var blocks = ""
+      for profit in input.profits:
+        let profitEuro = roundEuro(profit)
+        blocks.add(&"""
             <Freiber_T>
               <E0803101>{taetigkeitStr}</E0803101>
               <E0803202>{profitEuro}</E0803202>
-            </Freiber_T>
+            </Freiber_T>""")
+      anlage = &"""
+        <S>
+          <Person>PersonA</Person>
+          <Gewinn>{blocks}
           </Gewinn>
         </S>"""
 
