@@ -432,15 +432,33 @@ removeFile(euerCsv)
 echo ""
 
 # =================================================================
-# ESt (Einkommensteuererklarung) tests
+# ESt (Einkommensteuererklarung) tests — new flag-based interface
 # =================================================================
 
-let estCsv = projectRoot / "tests" / "tmp_est.csv"
+# Base viking.conf for tests (Anlage G)
+let estConf = projectRoot / "tests" / "tmp_viking.conf"
+writeFile(estConf, """[taxpayer]
+firstname = Hans
+lastname = Maier
+birthdate = 05.05.1955
+idnr = 04452397687
+taxnumber = 9198011310010
+income = 2
+street = Musterstr. 1
+housenumber = 1
+zip = 10115
+city = Berlin
+iban = DE91100000000123456789
+religion = 11
+profession = Software-Entwickler
+""")
+
+let estEuer = projectRoot / "tests" / "tmp_euer.tsv"
 
 # --- ESt: dry-run with Anlage G ---
 echo "--- est --dry-run (Anlage G) ---"
-writeFile(estCsv, "1000,19\n-300,19\n")
-let (estDryOut, estDryRc) = run("./viking est -i " & estCsv & " -y 2025 --dry-run")
+writeFile(estEuer, "1000,19\n-300,19\n")
+let (estDryOut, estDryRc) = run("./viking est -c " & estConf & " -i " & estEuer & " -y 2025 --dry-run --force")
 check("est dry-run exits 0", estDryRc == 0, estDryOut)
 check("est dry-run loads ERiC", estDryOut.contains("ERiC library loaded"))
 check("est dry-run has E10 root", estDryOut.contains("<E10"))
@@ -458,60 +476,58 @@ echo ""
 
 # --- ESt: Anlage S ---
 echo "--- est Anlage S ---"
-let estSEnv = projectRoot / "tests" / ".env.est_s"
-writeFile(estSEnv, readFile(projectRoot / ".env").replace("EINKUNFTSART=2", "EINKUNFTSART=3"))
-let (estSOut, estSRc) = run("./viking est -i " & estCsv & " -y 2025 --dry-run --env " & estSEnv)
+let estConfS = projectRoot / "tests" / "tmp_viking_s.conf"
+writeFile(estConfS, readFile(estConf).replace("income = 2", "income = 3"))
+let (estSOut, estSRc) = run("./viking est -c " & estConfS & " -i " & estEuer & " -y 2025 --dry-run --force")
 check("est Anlage S exits 0", estSRc == 0, estSOut)
 check("est Anlage S has <S>", estSOut.contains("<S>"))
 check("est Anlage S has E0803202", estSOut.contains("<E0803202>833</E0803202>"))
 check("est Anlage S no <G>", not estSOut.contains("<G>"))
-removeFile(estSEnv)
+removeFile(estConfS)
 echo ""
 
 # --- ESt: Vorsorgeaufwand (privat) ---
 echo "--- est Vorsorgeaufwand (privat) ---"
-let estVorEnv = projectRoot / "tests" / ".env.est_vor"
-writeFile(estVorEnv, readFile(projectRoot / ".env") & "\nKRANKENVERSICHERUNG=5000\nPFLEGEVERSICHERUNG=600\nRENTENVERSICHERUNG=3000\nKV_ART=privat\n")
-let (estVorOut, estVorRc) = run("./viking est -i " & estCsv & " -y 2025 --validate-only --env " & estVorEnv)
+let estVorDed = projectRoot / "tests" / "tmp_deductions_vor.tsv"
+writeFile(estVorDed, "code\tamount\tdescription\nvor316\t5000\tKV privat\nvor319\t600\tPV privat\nvor300\t3000\tRentenversicherung\n")
+let (estVorOut, estVorRc) = run("./viking est -c " & estConf & " -i " & estEuer & " -D " & estVorDed & " -y 2025 --validate-only")
 check("est Vorsorge privat exits 0 or HID", estVorRc == 0 or estVorOut.contains("610301202"), estVorOut)
 check("est Vorsorge no schema errors", not estVorOut.contains("610301200"), estVorOut)
-removeFile(estVorEnv)
+removeFile(estVorDed)
 echo ""
 
 # --- ESt: Vorsorgeaufwand (gesetzlich) ---
 echo "--- est Vorsorgeaufwand (gesetzlich) ---"
-let estGkvEnv = projectRoot / "tests" / ".env.est_gkv"
-writeFile(estGkvEnv, readFile(projectRoot / ".env") & "\nKRANKENVERSICHERUNG=4800\nPFLEGEVERSICHERUNG=500\nKV_ART=gesetzlich\n")
-let (estGkvOut, estGkvRc) = run("./viking est -i " & estCsv & " -y 2025 --validate-only --env " & estGkvEnv)
+let estGkvDed = projectRoot / "tests" / "tmp_deductions_gkv.tsv"
+writeFile(estGkvDed, "code\tamount\nvor326\t4800\nvor329\t500\n")
+let (estGkvOut, estGkvRc) = run("./viking est -c " & estConf & " -i " & estEuer & " -D " & estGkvDed & " -y 2025 --validate-only")
 check("est Vorsorge gesetzlich exits 0 or HID", estGkvRc == 0 or estGkvOut.contains("610301202"), estGkvOut)
 check("est Vorsorge gesetzlich no schema errors", not estGkvOut.contains("610301200"), estGkvOut)
-removeFile(estGkvEnv)
+removeFile(estGkvDed)
 echo ""
 
-# --- ESt: empty file (zero profit) ---
-echo "--- est empty file ---"
-writeFile(estCsv, "")
-let (estEmptyOut, estEmptyRc) = run("./viking est -i " & estCsv & " -y 2025 --dry-run")
-check("est empty exits 0", estEmptyRc == 0, estEmptyOut)
-check("est empty profit 0", estEmptyOut.contains("Profit:    0.00 EUR"))
+# --- ESt: no euer (KAP-only filing) ---
+echo "--- est no euer ---"
+let (estNoEuerOut, estNoEuerRc) = run("./viking est -c " & estConf & " -y 2025 --dry-run --force")
+check("est no euer exits 0", estNoEuerRc == 0, estNoEuerOut)
 echo ""
 
 # --- ESt: input validation ---
 echo "--- est input validation ---"
-let (estNoFile, estNoFileRc) = run("./viking est -y 2025 --dry-run")
-check("est missing invoice rejected", estNoFileRc != 0)
-check("est missing invoice error", estNoFile.contains("--invoice-file is required"))
+let (estNoConf, estNoConfRc) = run("./viking est -y 2025 --dry-run")
+check("est missing conf rejected", estNoConfRc != 0)
+check("est missing conf error", estNoConf.contains("--conf is required"))
 echo ""
 
 # --- ESt: Testmerker ---
 echo "--- est Testmerker ---"
-writeFile(estCsv, "100,19\n")
-let (estTestOut, estTestRc) = run("./viking est -i " & estCsv & " -y 2025 --dry-run")
+writeFile(estEuer, "100,19\n")
+let (estTestOut, estTestRc) = run("./viking est -c " & estConf & " -i " & estEuer & " -y 2025 --dry-run --force")
 check("est TEST=1 has Testmerker", estTestOut.contains("<Testmerker>700000004</Testmerker>"))
 
 let estProdEnv = projectRoot / "tests" / ".env.est_prod"
 writeFile(estProdEnv, readFile(projectRoot / ".env").replace("TEST=1", "TEST=0"))
-let (estProdOut, estProdRc) = run("./viking est -i " & estCsv & " -y 2025 --dry-run --env " & estProdEnv)
+let (estProdOut, estProdRc) = run("./viking est -c " & estConf & " -i " & estEuer & " -y 2025 --dry-run --force --env " & estProdEnv)
 check("est TEST=0 exits 0", estProdRc == 0, estProdOut)
 check("est TEST=0 no Testmerker", not estProdOut.contains("Testmerker"), estProdOut)
 removeFile(estProdEnv)
@@ -533,9 +549,9 @@ for kind, path in walkDir(pluginPath):
 estYears.sort()
 
 check("found ESt plugins for 2024+", estYears.len > 0, "plugins in: " & pluginPath)
-writeFile(estCsv, "1000,19\n-500,19\n")
+writeFile(estEuer, "1000,19\n-500,19\n")
 for year in estYears:
-  let (eyOut, eyRc) = run("./viking est -i " & estCsv & " -y " & $year & " --validate-only")
+  let (eyOut, eyRc) = run("./viking est -c " & estConf & " -i " & estEuer & " -y " & $year & " --validate-only --force")
   let eySchemaOk = not eyOut.contains("610301200")
   let eyCertOk = not eyOut.contains("610001050")
   let eyHidBlocked = eyOut.contains("610301202")
@@ -549,7 +565,7 @@ for year in estYears:
 
 # --- ESt: full send path ---
 echo "--- est (send) ---"
-let (estSendOut, estSendRc) = run("./viking est -i " & estCsv & " -y 2025")
+let (estSendOut, estSendRc) = run("./viking est -c " & estConf & " -i " & estEuer & " -y 2025 --force")
 let estSendSchemaOk = not estSendOut.contains("610301200")
 let estSendCertOk = not estSendOut.contains("610001050")
 check("est send: no schema errors", estSendSchemaOk, estSendOut)
@@ -562,129 +578,157 @@ elif estSendHidBlocked:
 else:
   check("est send: unexpected error", false, estSendOut)
 
-removeFile(estCsv)
 echo ""
 
 # --- ESt: Sonderausgaben (Kirchensteuer + Spenden) ---
 echo "--- est Sonderausgaben ---"
-let estSaCsv = projectRoot / "tests" / "tmp_est_sa.csv"
-writeFile(estSaCsv, "1000,19\n")
-let estSaEnv = projectRoot / "tests" / ".env.est_sa"
-writeFile(estSaEnv, readFile(projectRoot / ".env") & "\nKIRCHENSTEUER_GEZAHLT=500\nKIRCHENSTEUER_ERSTATTET=50\nSPENDEN=200\n")
-let (estSaOut, estSaRc) = run("./viking est -i " & estSaCsv & " -y 2025 --dry-run --env " & estSaEnv)
+let estSaDed = projectRoot / "tests" / "tmp_deductions_sa.tsv"
+writeFile(estSaDed, "code\tamount\nsa140\t500\nsa141\t50\nsa131\t200\n")
+let (estSaOut, estSaRc) = run("./viking est -c " & estConf & " -i " & estEuer & " -D " & estSaDed & " -y 2025 --dry-run")
 check("est SA exits 0", estSaRc == 0, estSaOut)
 check("est SA has <SA>", estSaOut.contains("<SA>"))
 check("est SA has KiSt gezahlt", estSaOut.contains("<E0107601>"))
 check("est SA has KiSt erstattet", estSaOut.contains("<E0107602>"))
 check("est SA has Spenden", estSaOut.contains("<E0108105>"))
-removeFile(estSaEnv)
 echo ""
 
 # --- ESt: Aussergewoehnliche Belastungen ---
 echo "--- est AgB ---"
-let estAgbEnv = projectRoot / "tests" / ".env.est_agb"
-writeFile(estAgbEnv, readFile(projectRoot / ".env") & "\nAGB_KRANKHEITSKOSTEN=750\n")
-let (estAgbOut, estAgbRc) = run("./viking est -i " & estSaCsv & " -y 2025 --dry-run --env " & estAgbEnv)
+let estAgbDed = projectRoot / "tests" / "tmp_deductions_agb.tsv"
+writeFile(estAgbDed, "code\tamount\nagb187\t750\n")
+let (estAgbOut, estAgbRc) = run("./viking est -c " & estConf & " -i " & estEuer & " -D " & estAgbDed & " -y 2025 --dry-run")
 check("est AgB exits 0", estAgbRc == 0, estAgbOut)
 check("est AgB has <AgB>", estAgbOut.contains("<AgB>"))
 check("est AgB has Krankh", estAgbOut.contains("<E0161304>"))
-removeFile(estAgbEnv)
 echo ""
 
 # --- ESt: Weitere sonstige Vorsorgeaufwendungen ---
 echo "--- est Weit_Sons_VorAW ---"
-let estWsEnv = projectRoot / "tests" / ".env.est_ws"
-writeFile(estWsEnv, readFile(projectRoot / ".env") & "\nKFZ_HAFTPFLICHT=350\nUNFALLVERSICHERUNG=200\n")
-let (estWsOut, estWsRc) = run("./viking est -i " & estSaCsv & " -y 2025 --dry-run --env " & estWsEnv)
+let estWsDed = projectRoot / "tests" / "tmp_deductions_ws.tsv"
+writeFile(estWsDed, "code\tamount\nvor502\t550\n")
+let (estWsOut, estWsRc) = run("./viking est -c " & estConf & " -i " & estEuer & " -D " & estWsDed & " -y 2025 --dry-run")
 check("est Weit exits 0", estWsRc == 0, estWsOut)
 check("est Weit has Weit_Sons_VorAW", estWsOut.contains("<Weit_Sons_VorAW>"))
 check("est Weit has U_HP_Ris_Vers sum 550", estWsOut.contains("<E2001803>550</E2001803>"))
-removeFile(estWsEnv)
 echo ""
 
 # --- ESt: Zusatz-KV (privat) ---
 echo "--- est Zusatz-KV (privat) ---"
-let estZkEnv = projectRoot / "tests" / ".env.est_zk"
-writeFile(estZkEnv, readFile(projectRoot / ".env") & "\nKRANKENVERSICHERUNG=5000\nZUSATZ_KV=120\nKV_ART=privat\n")
-let (estZkOut, estZkRc) = run("./viking est -i " & estSaCsv & " -y 2025 --dry-run --env " & estZkEnv)
+let estZkDed = projectRoot / "tests" / "tmp_deductions_zk.tsv"
+writeFile(estZkDed, "code\tamount\nvor316\t5000\nvor328\t120\n")
+let (estZkOut, estZkRc) = run("./viking est -c " & estConf & " -i " & estEuer & " -D " & estZkDed & " -y 2025 --dry-run")
 check("est ZK privat exits 0", estZkRc == 0, estZkOut)
 check("est ZK privat has E2003302", estZkOut.contains("<E2003302>120</E2003302>"))
-removeFile(estZkEnv)
 echo ""
 
 # --- ESt: Anlage KAP ---
 echo "--- est Anlage KAP ---"
-let estKapEnv = projectRoot / "tests" / ".env.est_kap"
-writeFile(estKapEnv, readFile(projectRoot / ".env") & "\nKAPITALERTRAEGE=1500.50\nKAPITALERTRAGSTEUER=375.13\nKAP_SOLI=20.63\nGUENSTIGERPRUEFUNG=1\n")
-let (estKapOut, estKapRc) = run("./viking est -i " & estSaCsv & " -y 2025 --dry-run --env " & estKapEnv)
+let estKapTsv = projectRoot / "tests" / "tmp_kap.tsv"
+writeFile(estKapTsv, "gains\ttax\tsoli\n1500.50\t375.13\t20.63\n")
+let estKapConf = projectRoot / "tests" / "tmp_viking_kap.conf"
+writeFile(estKapConf, readFile(estConf) & """
+[kap]
+guenstigerpruefung = 1
+""")
+let (estKapOut, estKapRc) = run("./viking est -c " & estKapConf & " -i " & estEuer & " -K " & estKapTsv & " -y 2025 --dry-run --force")
 check("est KAP exits 0", estKapRc == 0, estKapOut)
 check("est KAP has <KAP>", estKapOut.contains("<KAP>"))
 check("est KAP has Guenstigerpruefung", estKapOut.contains("<E1900401>1</E1900401>"))
 check("est KAP has Kapitalertraege", estKapOut.contains("<E1900701>"))
 check("est KAP has KapESt", estKapOut.contains("<E1904701>"))
 check("est KAP has Soli", estKapOut.contains("<E1904801>"))
-removeFile(estKapEnv)
+removeFile(estKapTsv)
+removeFile(estKapConf)
 echo ""
 
 # --- ESt: Anlage Kind ---
 echo "--- est Anlage Kind ---"
-let estKindTsv = projectRoot / "tests" / "tmp_kinder.tsv"
-writeFile(estKindTsv, "vorname\tgeburtsdatum\tidnr\tbetreuungskosten\tschulgeld\nMax\t01.06.2018\t12345678901\t2400\t0\nLisa\t15.03.2020\t98765432109\t3600\t1500\n")
-let (estKindOut, estKindRc) = run("./viking est -i " & estSaCsv & " -y 2025 --kinder " & estKindTsv & " --dry-run")
+let estKindConf = projectRoot / "tests" / "tmp_viking_kind.conf"
+writeFile(estKindConf, readFile(estConf) & """
+[kid]
+firstname = Max
+birthdate = 01.06.2018
+idnr = 12345678901
+
+[kid]
+firstname = Lisa
+birthdate = 15.03.2020
+idnr = 98765432109
+""")
+let estKindDed = projectRoot / "tests" / "tmp_deductions_kind.tsv"
+writeFile(estKindDed, "code\tamount\nmax174\t2400\nlisa174\t3600\nlisa176\t1500\n")
+let (estKindOut, estKindRc) = run("./viking est -c " & estKindConf & " -i " & estEuer & " -D " & estKindDed & " -y 2025 --dry-run")
 check("est Kind exits 0", estKindRc == 0, estKindOut)
 check("est Kind has 2 <Kind>", estKindOut.count("<Kind>") == 2)
 check("est Kind has Max", estKindOut.contains("Max"))
 check("est Kind has Lisa", estKindOut.contains("Lisa"))
 check("est Kind has betreuungskosten", estKindOut.contains("<E0506105>"))
 check("est Kind has schulgeld", estKindOut.contains("<E0505607>"))
-check("est Kind display shows children", estKindOut.contains("=== Kinder ==="))
-removeFile(estKindTsv)
+check("est Kind display shows children", estKindOut.contains("Anlage Kind"))
+removeFile(estKindConf)
+removeFile(estKindDed)
 echo ""
 
-# --- ESt: Steuernummer override ---
-echo "--- est Steuernummer override ---"
-let estSnEnv = projectRoot / "tests" / ".env.est_sn"
-writeFile(estSnEnv, readFile(projectRoot / ".env"))
-let (estSnOut, estSnRc) = run("./viking est -i " & estSaCsv & " -y 2025 --steuernummer 9181081508155 --dry-run --env " & estSnEnv)
-check("est SN override exits 0", estSnRc == 0, estSnOut)
-check("est SN override uses overridden number", estSnOut.contains("<StNr>9181081508155</StNr>"))
-removeFile(estSnEnv)
-echo ""
-
-# --- ESt: EST_STEUERNUMMER env var ---
-echo "--- est EST_STEUERNUMMER ---"
-let estEsnEnv = projectRoot / "tests" / ".env.est_esn"
-writeFile(estEsnEnv, readFile(projectRoot / ".env") & "\nEST_STEUERNUMMER=9181081508155\n")
-let (estEsnOut, estEsnRc) = run("./viking est -i " & estSaCsv & " -y 2025 --dry-run --env " & estEsnEnv)
-check("est ESN env exits 0", estEsnRc == 0, estEsnOut)
-check("est ESN env uses EST_STEUERNUMMER", estEsnOut.contains("<StNr>9181081508155</StNr>"))
-removeFile(estEsnEnv)
-echo ""
-
-# --- ESt: validate SA+AgB+KAP against ERiC ---
+# --- ESt: validate deductions against ERiC ---
 echo "--- est personal deductions validation ---"
-let estPdEnv = projectRoot / "tests" / ".env.est_pd"
-writeFile(estPdEnv, readFile(projectRoot / ".env") & "\nKRANKENVERSICHERUNG=5000\nPFLEGEVERSICHERUNG=600\nKV_ART=privat\nKFZ_HAFTPFLICHT=350\nKIRCHENSTEUER_GEZAHLT=500\nSPENDEN=200\nAGB_KRANKHEITSKOSTEN=750\nKAPITALERTRAEGE=1500\nKAPITALERTRAGSTEUER=375\nSPARER_PAUSCHBETRAG=1000\nGUENSTIGERPRUEFUNG=1\n")
-let (estPdOut, estPdRc) = run("./viking est -i " & estSaCsv & " -y 2025 --validate-only --env " & estPdEnv)
+let estPdDed = projectRoot / "tests" / "tmp_deductions_pd.tsv"
+writeFile(estPdDed, "code\tamount\nvor316\t5000\nvor319\t600\nvor502\t350\nsa140\t500\nsa131\t200\nagb187\t750\n")
+let estPdKap = projectRoot / "tests" / "tmp_kap_pd.tsv"
+writeFile(estPdKap, "gains\ttax\tsoli\n1500\t375\t0\n")
+let estPdConf = projectRoot / "tests" / "tmp_viking_pd.conf"
+writeFile(estPdConf, readFile(estConf) & """
+[kap]
+guenstigerpruefung = 1
+sparer_pauschbetrag = 1000
+""")
+let (estPdOut, estPdRc) = run("./viking est -c " & estPdConf & " -i " & estEuer & " -D " & estPdDed & " -K " & estPdKap & " -y 2025 --validate-only")
 check("est PD validate no schema errors", not estPdOut.contains("610301200"), estPdOut)
 check("est PD validate no cert errors", not estPdOut.contains("610001050"), estPdOut)
 let estPdOk = estPdRc == 0 or estPdOut.contains("610301202")
 check("est PD validates", estPdOk, estPdOut)
-removeFile(estPdEnv)
+removeFile(estPdDed)
+removeFile(estPdKap)
+removeFile(estPdConf)
 
-removeFile(estSaCsv)
+# Cleanup shared fixtures
+removeFile(estConf)
+removeFile(estEuer)
+
+# Cleanup any stray deduction files
+for f in @[estSaDed, estAgbDed, estWsDed, estZkDed]:
+  removeFile(f)
+
 echo ""
 
 # =================================================================
-# USt (Umsatzsteuererklaerung) tests
+# USt (Umsatzsteuererklaerung) tests — new flag-based interface
 # =================================================================
+
+# Reuse the viking.conf for USt tests (needs taxnumber + besteuerungsart)
+let ustConf = projectRoot / "tests" / "tmp_viking_ust.conf"
+writeFile(ustConf, """[taxpayer]
+firstname = Hans
+lastname = Maier
+birthdate = 05.05.1955
+idnr = 04452397687
+taxnumber = 9198011310010
+income = 2
+street = Musterstr.
+housenumber = 1
+zip = 10115
+city = Berlin
+iban = DE91100000000123456789
+religion = 11
+profession = Software-Entwickler
+besteuerungsart = 2
+""")
 
 let ustCsv = projectRoot / "tests" / "tmp_ust.csv"
 
 # --- USt: dry-run with mixed rates ---
 echo "--- ust --dry-run (mixed rates) ---"
 writeFile(ustCsv, "1000,19\n500,7\n-200,19\n")
-let (ustDryOut, ustDryRc) = run("./viking ust -i " & ustCsv & " -y 2025 --dry-run")
+let (ustDryOut, ustDryRc) = run("./viking ust -c " & ustConf & " -i " & ustCsv & " -y 2025 --dry-run")
 check("ust dry-run exits 0", ustDryRc == 0, ustDryOut)
 check("ust dry-run loads ERiC", ustDryOut.contains("ERiC library loaded"))
 check("ust dry-run has E50 root", ustDryOut.contains("<E50"))
@@ -703,7 +747,7 @@ echo ""
 # --- USt: income/expense split ---
 echo "--- ust income/expense split ---"
 writeFile(ustCsv, "1000,19\n-300,19\n")
-let (ustSplitOut, ustSplitRc) = run("./viking ust -i " & ustCsv & " -y 2025 --dry-run")
+let (ustSplitOut, ustSplitRc) = run("./viking ust -c " & ustConf & " -i " & ustCsv & " -y 2025 --dry-run")
 check("ust split exits 0", ustSplitRc == 0, ustSplitOut)
 # Income 19%: 1000 net, VAT 190
 check("ust split Ums_allg base", ustSplitOut.contains("<E3003303>1000</E3003303>"))
@@ -720,7 +764,7 @@ echo ""
 # --- USt: with Vorauszahlungen ---
 echo "--- ust with Vorauszahlungen ---"
 writeFile(ustCsv, "1000,19\n")
-let (ustVzOut, ustVzRc) = run("./viking ust -i " & ustCsv & " -y 2025 --vorauszahlungen=100 --dry-run")
+let (ustVzOut, ustVzRc) = run("./viking ust -c " & ustConf & " -i " & ustCsv & " -y 2025 --vorauszahlungen=100 --dry-run")
 check("ust vorauszahlungen exits 0", ustVzRc == 0, ustVzOut)
 check("ust vorauszahlungen E3011301", ustVzOut.contains("<E3011301>100,00</E3011301>"))
 # Abschluss: 190 - 100 = 90
@@ -730,29 +774,37 @@ echo ""
 # --- USt: empty file (zero submission) ---
 echo "--- ust empty file ---"
 writeFile(ustCsv, "")
-let (ustEmptyOut, ustEmptyRc) = run("./viking ust -i " & ustCsv & " -y 2025 --dry-run")
+let (ustEmptyOut, ustEmptyRc) = run("./viking ust -c " & ustConf & " -i " & ustCsv & " -y 2025 --dry-run")
 check("ust empty exits 0", ustEmptyRc == 0, ustEmptyOut)
 check("ust empty Ums_Sum 0", ustEmptyOut.contains("<E3006001>0,00</E3006001>"))
 check("ust empty verbleibende 0", ustEmptyOut.contains("<E3011101>0,00</E3011101>"))
 echo ""
 
-# --- USt: missing invoice file ---
+# --- USt: missing euer file ---
 echo "--- ust input validation ---"
-let (ustNoFile, ustNoFileRc) = run("./viking ust -y 2025 --dry-run")
-check("ust missing invoice rejected", ustNoFileRc != 0)
-check("ust missing invoice error", ustNoFile.contains("--invoice-file is required"))
+let (ustNoFile, ustNoFileRc) = run("./viking ust -c " & ustConf & " -y 2025 --dry-run")
+check("ust missing euer rejected", ustNoFileRc != 0)
+check("ust missing euer error", ustNoFile.contains("--euer is required"))
+echo ""
+
+# --- USt: missing conf ---
+echo "--- ust missing conf ---"
+writeFile(ustCsv, "100,19\n")
+let (ustNoConf, ustNoConfRc) = run("./viking ust -i " & ustCsv & " -y 2025 --dry-run")
+check("ust missing conf rejected", ustNoConfRc != 0)
+check("ust missing conf error", ustNoConf.contains("--conf is required"))
 echo ""
 
 # --- USt: Testmerker ---
 echo "--- ust Testmerker ---"
 writeFile(ustCsv, "100,19\n")
-let (ustTestOut, ustTestRc) = run("./viking ust -i " & ustCsv & " -y 2025 --dry-run")
+let (ustTestOut, ustTestRc) = run("./viking ust -c " & ustConf & " -i " & ustCsv & " -y 2025 --dry-run")
 check("ust TEST=1 has Testmerker", ustTestOut.contains("<Testmerker>700000004</Testmerker>"))
 
 # TEST=0
 let ustProdEnv = projectRoot / "tests" / ".env.ust_prod"
 writeFile(ustProdEnv, readFile(projectRoot / ".env").replace("TEST=1", "TEST=0"))
-let (ustProdOut, ustProdRc) = run("./viking ust -i " & ustCsv & " -y 2025 --dry-run --env " & ustProdEnv)
+let (ustProdOut, ustProdRc) = run("./viking ust -c " & ustConf & " -i " & ustCsv & " -y 2025 --dry-run --env " & ustProdEnv)
 check("ust TEST=0 exits 0", ustProdRc == 0, ustProdOut)
 check("ust TEST=0 no Testmerker", not ustProdOut.contains("Testmerker"), ustProdOut)
 removeFile(ustProdEnv)
@@ -776,7 +828,7 @@ ustYears.sort()
 check("found USt plugins for 2025+", ustYears.len > 0, "plugins in: " & pluginPath)
 writeFile(ustCsv, "1000,19\n-500,19\n")
 for year in ustYears:
-  let (eyOut, eyRc) = run("./viking ust -i " & ustCsv & " -y " & $year & " --validate-only")
+  let (eyOut, eyRc) = run("./viking ust -c " & ustConf & " -i " & ustCsv & " -y " & $year & " --validate-only")
   let eySchemaOk = not eyOut.contains("610301200")
   let eyCertOk = not eyOut.contains("610001050")
   let eyHidBlocked = eyOut.contains("610301202")
@@ -790,7 +842,7 @@ for year in ustYears:
 
 # --- USt: full send path ---
 echo "--- ust (send) ---"
-let (ustSendOut, ustSendRc) = run("./viking ust -i " & ustCsv & " -y 2025")
+let (ustSendOut, ustSendRc) = run("./viking ust -c " & ustConf & " -i " & ustCsv & " -y 2025")
 let ustSendSchemaOk = not ustSendOut.contains("610301200")
 let ustSendCertOk = not ustSendOut.contains("610001050")
 check("ust send: no schema errors", ustSendSchemaOk, ustSendOut)
@@ -804,6 +856,7 @@ else:
   check("ust send: unexpected error", false, ustSendOut)
 
 removeFile(ustCsv)
+removeFile(ustConf)
 echo ""
 
 # =================================================================

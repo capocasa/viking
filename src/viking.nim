@@ -1,10 +1,11 @@
 ## viking - German VAT advance return (Umsatzsteuervoranmeldung) CLI
 ## Submit UStVA via ERiC library
 
-import std/[strutils, strformat, times, options, os, xmltree, xmlparser, sequtils]
+import std/[strutils, strformat, times, options, os, xmltree, xmlparser, sequtils, tables]
 import cligen, cligen/argcvt
 import dotenv
 import config, eric_ffi, otto_ffi, ustva_xml, euer_xml, est_xml, ust_xml, eric_setup, invoices, abholung_xml, nachricht_xml, bankverbindung_xml
+import viking_conf, deductions, kap
 
 const NimblePkgVersion {.strdefine.} = "dev"
 
@@ -521,102 +522,101 @@ proc euer(
 
     return 1
 
-proc parseKinderTsv(path: string): seq[ChildData] =
-  ## Parse a TSV file with children data.
-  ## Format: vorname\tgeburtsdatum\tidnr\tbetreuungskosten\tschulgeld
-  ## Header line is optional (detected by first field being "vorname").
-  result = @[]
-  let content = readFile(path).strip
-  if content.len == 0:
-    return
-  for line in content.splitLines:
-    let stripped = line.strip
-    if stripped.len == 0:
-      continue
-    let fields = stripped.split('\t')
-    if fields.len < 3:
-      echo &"Warning: skipping malformed kinder line (need at least 3 tab-separated fields): {stripped}"
-      continue
-    # Skip header
-    if fields[0].toLowerAscii == "vorname":
-      continue
-    var child = ChildData(
-      vorname: fields[0],
-      geburtsdatum: fields[1],
-      idnr: fields[2],
-    )
-    if fields.len > 3:
-      try: child.betreuungskosten = parseFloat(fields[3])
-      except ValueError: discard
-    if fields.len > 4:
-      try: child.schulgeld = parseFloat(fields[4])
-      except ValueError: discard
-    result.add(child)
-
 proc est(
-  invoice_file: string = "",
   year: int = 0,
-  steuernummer: string = "",
-  kinder: string = "",
+  conf: string = "",
+  euer: string = "",
+  deductions: string = "",
+  kapital: string = "",
   validate_only: bool = false,
   dry_run: bool = false,
   verbose: bool = false,
+  force: bool = false,
   env: string = ".env",
 ): int =
   ## Submit an ESt (Einkommensteuererklarung / income tax return)
   ##
-  ## Uses the same invoice file as EUeR to compute profit from self-employment.
-  ## Positive amounts = income, negative = expenses.
-  ## Personal deductions (Vorsorgeaufwand, Sonderausgaben, AgB, KAP) via .env.
-  ##
-  ## Requires: VORNAME, NACHNAME, GEBURTSDATUM, IBAN, EINKUNFTSART in .env
+  ## Personal data from viking.conf, income from euer.tsv,
+  ## deductions from deductions.tsv, capital gains from kap.tsv.
   ##
   ## Examples:
-  ##   viking est -i invoices.csv -y 2025
-  ##   viking est -i invoices.csv -y 2025 --steuernummer 144/178/00922
-  ##   viking est -i invoices.csv -y 2025 --kinder kinder.tsv
-  ##   viking est -i invoices.csv --dry-run
+  ##   viking est -y 2025 -c viking.conf --euer euer.tsv --deductions deductions.tsv
+  ##   viking est -y 2025 -c viking.conf --kapital kap.tsv
+  ##   viking est -y 2025 -c viking.conf --euer euer.tsv --dry-run
 
   let actualYear = if year == 0: now().year else: year
 
-  if invoiceFile == "":
-    echo "Error: --invoice-file is required for ESt submission"
+  if conf == "":
+    echo "Error: --conf is required for ESt submission (viking.conf file)"
     return 1
 
-  # Load and aggregate invoices (same as EUeR)
-  let (agg, ok) = loadAndAggregateForEuer(invoiceFile)
-  if not ok:
+  # Load viking.conf
+  var vikingConf: VikingConf
+  try:
+    vikingConf = loadVikingConf(conf)
+  except IOError as e:
+    echo &"Error: {e.msg}"
+    return 1
+  except ValueError as e:
+    echo &"Error parsing {conf}: {e.msg}"
     return 1
 
-  let totalIncome = agg.incomeNet + agg.incomeVat
-  let totalExpense = agg.expenseNet + agg.expenseVorsteuer
-  let profit = totalIncome - totalExpense
+  let confErrors = vikingConf.validateForEst()
+  if confErrors.len > 0:
+    echo "Configuration errors in " & conf & ":"
+    for e in confErrors:
+      echo &"  - {e}"
+    return 1
 
-  echo &"=== Invoices ==="
-  echo &"File:      {invoiceFile}"
-  echo &"Income:    {agg.incomeCount} invoices, {totalIncome:.2f} EUR"
-  echo &"Expenses:  {agg.expenseCount} invoices, {totalExpense:.2f} EUR"
-  echo &"Profit:    {profit:.2f} EUR"
-  echo ""
-
-  # Parse kinder TSV if provided
-  var kinderData: seq[ChildData] = @[]
-  if kinder != "":
-    if not fileExists(kinder):
-      echo &"Error: Kinder file not found: {kinder}"
+  # Load EÜR invoices (optional — ESt without income is valid for KAP-only)
+  var profit = 0.0
+  if euer != "":
+    if not fileExists(euer):
+      echo &"Error: EÜR file not found: {euer}"
       return 1
-    kinderData = parseKinderTsv(kinder)
-    if kinderData.len > 0:
-      echo &"=== Kinder ==="
-      for child in kinderData:
-        echo &"  {child.vorname} ({child.geburtsdatum})"
-        if child.betreuungskosten > 0:
-          echo &"    Betreuungskosten: {child.betreuungskosten:.2f} EUR"
-        if child.schulgeld > 0:
-          echo &"    Schulgeld:        {child.schulgeld:.2f} EUR"
-      echo ""
+    let (agg, ok) = loadAndAggregateForEuer(euer)
+    if not ok:
+      return 1
+    let totalIncome = agg.incomeNet + agg.incomeVat
+    let totalExpense = agg.expenseNet + agg.expenseVorsteuer
+    profit = totalIncome - totalExpense
 
-  # Load and validate configuration
+    echo &"=== EUeR ==="
+    echo &"File:      {euer}"
+    echo &"Income:    {agg.incomeCount} invoices, {totalIncome:.2f} EUR"
+    echo &"Expenses:  {agg.expenseCount} invoices, {totalExpense:.2f} EUR"
+    echo &"Profit:    {profit:.2f} EUR"
+    echo ""
+
+  # Load deductions (optional)
+  var ded: DeductionsByForm
+  if deductions != "":
+    if not fileExists(deductions):
+      echo &"Error: Deductions file not found: {deductions}"
+      return 1
+    try:
+      ded = loadDeductions(deductions, vikingConf.kidFirstnames)
+    except ValueError as e:
+      echo &"Error parsing deductions: {e.msg}"
+      return 1
+  elif not force:
+    echo "Warning: no deductions file provided. Filing without deductions."
+    echo "  Use --force to suppress this warning, or pass --deductions <file>"
+    echo ""
+
+  # Load KAP (optional)
+  var kapTotals: KapTotals
+  if kapital != "":
+    if not fileExists(kapital):
+      echo &"Error: KAP file not found: {kapital}"
+      return 1
+    try:
+      kapTotals = loadKapTsv(kapital)
+    except ValueError as e:
+      echo &"Error parsing kap.tsv: {e.msg}"
+      return 1
+
+  # Load technical .env config
   var cfg: Config
   try:
     cfg = loadConfig(env)
@@ -624,62 +624,68 @@ proc est(
     echo &"Error: {e.msg}"
     return 1
 
-  # Apply Steuernummer override (private tax number for ESt)
-  if steuernummer != "":
-    cfg.steuernummer = steuernummer
-  elif cfg.estSteuernummer != "":
-    cfg.steuernummer = cfg.estSteuernummer
-
-  let errors = if validateOnly and not dryRun: cfg.validateForEstValidateOnly()
-               else: cfg.validateForEstSubmission()
-
-  if errors.len > 0:
-    echo "Configuration errors:"
-    for e in errors:
+  # Validate technical config
+  let techErrors = if validateOnly and not dryRun: cfg.validateForValidateOnly()
+                   else: cfg.validate()
+  if techErrors.len > 0:
+    echo "Configuration errors in .env:"
+    for e in techErrors:
       echo &"  - {e}"
-    echo ""
-    echo "Please check your .env file. ESt requires VORNAME, NACHNAME, GEBURTSDATUM, IBAN, EINKUNFTSART."
     return 1
 
-  let bundesland = bundeslandFromSteuernummer(cfg.steuernummer)
+  let tp = vikingConf.taxpayer
+  let bundesland = bundeslandFromSteuernummer(tp.taxnumber)
 
-  # Generate XML
-  let xml = generateEst(
-    steuernummer = cfg.steuernummer,
-    jahr = actualYear,
-    profit = profit,
-    einkunftsart = cfg.einkunftsart,
-    herstellerId = cfg.herstellerId,
-    produktName = cfg.produktName,
-    vorname = cfg.vorname,
-    nachname = cfg.nachname,
-    geburtsdatum = cfg.geburtsdatum,
-    strasse = cfg.strasse,
-    hausnummer = cfg.hausnummer,
-    plz = cfg.plz,
-    ort = cfg.ort,
-    iban = cfg.iban,
-    religion = cfg.religion,
-    beruf = cfg.beruf,
-    krankenversicherung = cfg.krankenversicherung,
-    pflegeversicherung = cfg.pflegeversicherung,
-    rentenversicherung = cfg.rentenversicherung,
-    kvArt = cfg.kvArt,
-    zusatzKv = cfg.zusatzKv,
-    kfzHaftpflicht = cfg.kfzHaftpflicht,
-    unfallversicherung = cfg.unfallversicherung,
-    kirchensteuerGezahlt = cfg.kirchensteuerGezahlt,
-    kirchensteuerErstattet = cfg.kirchensteuerErstattet,
-    spenden = cfg.spenden,
-    agbKrankheit = cfg.agbKrankheit,
-    kapitalertraege = cfg.kapitalertraege,
-    kapitalertragsteuer = cfg.kapitalertragsteuer,
-    kapSoli = cfg.kapSoli,
-    sparerPauschbetrag = cfg.sparerPauschbetrag,
-    guenstigerpruefung = cfg.guenstigerpruefung,
-    kinder = kinderData,
-    test = cfg.test,
+  # Build ESt input
+  let estInput = EstInput(
+    conf: vikingConf,
+    year: actualYear,
+    profit: profit,
+    deductions: ded,
+    kapTotals: kapTotals,
+    test: cfg.test,
+    produktVersion: NimblePkgVersion,
   )
+
+  let xml = generateEst(estInput)
+
+  # Show summary
+  let anlageStr = if tp.income == "2": "Anlage G (Gewerbebetrieb)"
+                  else: "Anlage S (Selbstaendige Arbeit)"
+
+  echo &"=== Einkommensteuererklarung ==="
+  echo &"Year:        {actualYear}"
+  echo &"Tax number:  {tp.taxnumber}"
+  echo &"Bundesland:  {bundesland}"
+  echo &"Name:        {tp.firstname} {tp.lastname}"
+  if euer != "":
+    echo &"Anlage:      {anlageStr}"
+    echo ""
+    echo &"Profit:      {profit:.2f} EUR"
+  if ded.vor.len > 0:
+    echo ""
+    echo "Vorsorgeaufwand: " & $ded.vor.len & " entries"
+  if ded.sa.len > 0:
+    echo "Sonderausgaben: " & $ded.sa.len & " entries"
+  if ded.agb.len > 0:
+    echo "AgB: " & $ded.agb.len & " entries"
+  if kapTotals.gains > 0 or kapTotals.tax > 0:
+    echo ""
+    echo "Anlage KAP:"
+    if kapTotals.gains > 0:
+      echo &"  Ertraege:       {kapTotals.gains:.2f} EUR"
+    if kapTotals.tax > 0:
+      echo &"  KapESt:         {kapTotals.tax:.2f} EUR"
+    if kapTotals.soli > 0:
+      echo &"  Soli:           {kapTotals.soli:.2f} EUR"
+    if vikingConf.kap.guenstigerpruefung:
+      echo "  Guenstigerpruefung: Ja"
+  if vikingConf.kids.len > 0:
+    echo ""
+    echo &"Anlage Kind: {vikingConf.kids.len} Kinder"
+    for kid in vikingConf.kids:
+      echo &"  {kid.firstname} ({kid.birthdate})"
+  echo ""
 
   # Load ERiC library
   if not loadEricLib(cfg.ericLibPath):
@@ -687,10 +693,8 @@ proc est(
     return 1
   defer: unloadEricLib()
 
-  # Ensure log directory exists
   createDir(cfg.ericLogPath)
 
-  # Initialize ERiC
   let initRc = ericInitialisiere(cfg.ericPluginPath, cfg.ericLogPath)
   if initRc != 0:
     echo &"Error: ERiC initialization failed with code {initRc}"
@@ -698,7 +702,6 @@ proc est(
     return 1
   defer: discard ericBeende()
 
-  # Dry run mode
   if dryRun:
     echo "ERiC library loaded and initialized successfully."
     echo ""
@@ -707,7 +710,6 @@ proc est(
     echo "====================="
     return 0
 
-  # Create return buffers
   let responseBuf = ericRueckgabepufferErzeugen()
   let serverBuf = ericRueckgabepufferErzeugen()
   if responseBuf == nil or serverBuf == nil:
@@ -717,12 +719,10 @@ proc est(
     discard ericRueckgabepufferFreigabe(responseBuf)
     discard ericRueckgabepufferFreigabe(serverBuf)
 
-  # Determine flags
   var flags: uint32 = ERIC_VALIDIERE
   if not validateOnly:
     flags = flags or ERIC_SENDE
 
-  # Set up encryption parameters if sending
   var cryptParam: EricVerschluesselungsParameterT
   var cryptParamPtr: ptr EricVerschluesselungsParameterT = nil
   var certHandle: EricZertifikatHandle = 0
@@ -744,66 +744,6 @@ proc est(
     if certHandle != 0:
       discard ericCloseHandleToCertificate(certHandle)
 
-  # Determine Anlage type for display
-  let anlageStr = if cfg.einkunftsart == "2": "Anlage G (Gewerbebetrieb)"
-                  else: "Anlage S (Selbstaendige Arbeit)"
-
-  # Show summary
-  echo &"=== Einkommensteuererklarung ==="
-  echo &"Year:        {actualYear}"
-  echo &"Tax number:  {cfg.steuernummer}"
-  echo &"Bundesland:  {bundesland}"
-  echo &"Name:        {cfg.vorname} {cfg.nachname}"
-  echo &"Anlage:      {anlageStr}"
-  echo ""
-  echo &"Profit:      {profit:.2f} EUR"
-  let hasVorsorge = cfg.krankenversicherung > 0 or cfg.pflegeversicherung > 0 or
-                    cfg.rentenversicherung > 0 or cfg.zusatzKv > 0 or
-                    cfg.kfzHaftpflicht > 0 or cfg.unfallversicherung > 0
-  if hasVorsorge:
-    echo ""
-    echo "Vorsorgeaufwand:"
-    if cfg.krankenversicherung > 0:
-      echo &"  KV ({cfg.kvArt}): {cfg.krankenversicherung:.2f} EUR"
-    if cfg.pflegeversicherung > 0:
-      echo &"  PV:             {cfg.pflegeversicherung:.2f} EUR"
-    if cfg.rentenversicherung > 0:
-      echo &"  RV:             {cfg.rentenversicherung:.2f} EUR"
-    if cfg.zusatzKv > 0:
-      echo &"  Zusatz-KV:      {cfg.zusatzKv:.2f} EUR"
-    if cfg.kfzHaftpflicht > 0:
-      echo &"  KFZ-Haftpfl.:   {cfg.kfzHaftpflicht:.2f} EUR"
-    if cfg.unfallversicherung > 0:
-      echo &"  Unfallvers.:    {cfg.unfallversicherung:.2f} EUR"
-  if cfg.kirchensteuerGezahlt > 0 or cfg.kirchensteuerErstattet > 0 or cfg.spenden > 0:
-    echo ""
-    echo "Sonderausgaben:"
-    if cfg.kirchensteuerGezahlt > 0:
-      echo &"  KiSt gezahlt:   {cfg.kirchensteuerGezahlt:.2f} EUR"
-    if cfg.kirchensteuerErstattet > 0:
-      echo &"  KiSt erstattet: {cfg.kirchensteuerErstattet:.2f} EUR"
-    if cfg.spenden > 0:
-      echo &"  Spenden:        {cfg.spenden:.2f} EUR"
-  if cfg.agbKrankheit > 0:
-    echo ""
-    echo "Aussergewoehnliche Belastungen:"
-    echo &"  Krankheit:      {cfg.agbKrankheit:.2f} EUR"
-  if cfg.kapitalertraege > 0 or cfg.kapitalertragsteuer > 0 or cfg.guenstigerpruefung:
-    echo ""
-    echo "Anlage KAP:"
-    if cfg.kapitalertraege > 0:
-      echo &"  Ertraege:       {cfg.kapitalertraege:.2f} EUR"
-    if cfg.kapitalertragsteuer > 0:
-      echo &"  KapESt:         {cfg.kapitalertragsteuer:.2f} EUR"
-    if cfg.kapSoli > 0:
-      echo &"  Soli:           {cfg.kapSoli:.2f} EUR"
-    if cfg.guenstigerpruefung:
-      echo "  Guenstigerpruefung: Ja"
-  if kinderData.len > 0:
-    echo ""
-    echo &"Anlage Kind: {kinderData.len} Kinder"
-  echo ""
-
   let modeStr = if cfg.test: " (TEST)" else: ""
   if validateOnly:
     echo &"Mode: Validate only{modeStr}"
@@ -811,7 +751,6 @@ proc est(
     echo &"Mode: Send to ELSTER{modeStr}"
   echo ""
 
-  # Process
   var transferHandle: uint32 = 0
   let datenartVersion = &"ESt_{actualYear}"
   let rc = ericBearbeiteVorgang(
@@ -849,7 +788,6 @@ proc est(
       echo ""
       echo "Hint: The demo HerstellerID (74931) is blocked."
       echo "  Register at https://www.elster.de/elsterweb/entwickler"
-      echo "  and set HERSTELLER_ID in your .env file."
     of 610301200:
       echo ""
       echo "Hint: XML schema validation failed."
@@ -879,9 +817,10 @@ proc est(
     return 1
 
 proc ust(
-  invoice_file: string = "",
-  vorauszahlungen: float = 0.0,
   year: int = 0,
+  conf: string = "",
+  euer: string = "",
+  vorauszahlungen: float = 0.0,
   validate_only: bool = false,
   dry_run: bool = false,
   verbose: bool = false,
@@ -889,23 +828,48 @@ proc ust(
 ): int =
   ## Submit an annual VAT return (Umsatzsteuererklaerung)
   ##
-  ## Uses the same invoice file format as other commands.
   ## Positive amounts = revenue, negative = expenses (for Vorsteuer).
   ## Provide --vorauszahlungen with the total UStVA advance payments made.
   ##
   ## Examples:
-  ##   viking ust -i invoices.csv -y 2025 --vorauszahlungen=1200
-  ##   viking ust -i invoices.csv -y 2025 --validate-only
-  ##   viking ust -i invoices.csv --dry-run
+  ##   viking ust -y 2025 -c viking.conf --euer euer.tsv --vorauszahlungen=1200
+  ##   viking ust -y 2025 -c viking.conf --euer euer.tsv --validate-only
+  ##   viking ust -y 2025 -c viking.conf --euer euer.tsv --dry-run
 
   let actualYear = if year == 0: now().year else: year
 
-  if invoiceFile == "":
-    echo "Error: --invoice-file is required for USt submission"
+  if conf == "":
+    echo "Error: --conf is required for USt submission (viking.conf file)"
+    return 1
+
+  if euer == "":
+    echo "Error: --euer is required for USt submission"
+    return 1
+
+  # Load viking.conf
+  var vikingConf: VikingConf
+  try:
+    vikingConf = loadVikingConf(conf)
+  except IOError as e:
+    echo &"Error: {e.msg}"
+    return 1
+  except ValueError as e:
+    echo &"Error parsing {conf}: {e.msg}"
+    return 1
+
+  let tp = vikingConf.taxpayer
+  if tp.taxnumber == "":
+    echo "Error: taxpayer.taxnumber not set in viking.conf"
+    return 1
+  if tp.besteuerungsart != "1" and tp.besteuerungsart != "2" and tp.besteuerungsart != "3":
+    echo "Error: taxpayer.besteuerungsart must be 1, 2 or 3 in viking.conf"
     return 1
 
   # Load and aggregate invoices
-  let (agg, ok) = loadAndAggregateForUst(invoiceFile)
+  if not fileExists(euer):
+    echo &"Error: EÜR file not found: {euer}"
+    return 1
+  let (agg, ok) = loadAndAggregateForUst(euer)
   if not ok:
     return 1
 
@@ -916,7 +880,7 @@ proc ust(
   let remaining = totalVat - agg.vorsteuer - vorauszahlungen
 
   echo &"=== Invoices ==="
-  echo &"File:      {invoiceFile}"
+  echo &"File:      {euer}"
   echo &"Revenue:   {agg.incomeCount} invoices"
   if agg.has19:
     echo &"  19%:     {agg.income19:.2f} EUR net -> {vat19:.2f} EUR VAT"
@@ -928,7 +892,7 @@ proc ust(
     echo &"Expenses:  {agg.expenseCount} invoices, {agg.vorsteuer:.2f} EUR Vorsteuer"
   echo ""
 
-  # Load and validate configuration
+  # Load technical .env config
   var cfg: Config
   try:
     cfg = loadConfig(env)
@@ -936,22 +900,20 @@ proc ust(
     echo &"Error: {e.msg}"
     return 1
 
-  let errors = if validateOnly and not dryRun: cfg.validateForUstValidateOnly()
-               else: cfg.validateForUstSubmission()
-
-  if errors.len > 0:
-    echo "Configuration errors:"
-    for e in errors:
+  let techErrors = if validateOnly and not dryRun: cfg.validateForValidateOnly()
+                   else: cfg.validate()
+  if techErrors.len > 0:
+    echo "Configuration errors in .env:"
+    for e in techErrors:
       echo &"  - {e}"
-    echo ""
-    echo "Please check your .env file."
     return 1
 
-  let bundesland = bundeslandFromSteuernummer(cfg.steuernummer)
+  let fullName = tp.lastname & " " & tp.firstname
+  let bundesland = bundeslandFromSteuernummer(tp.taxnumber)
 
   # Generate XML
   let xml = generateUst(
-    steuernummer = cfg.steuernummer,
+    steuernummer = tp.taxnumber,
     jahr = actualYear,
     income19 = agg.income19,
     income7 = agg.income7,
@@ -961,15 +923,28 @@ proc ust(
     has0 = agg.has0,
     vorsteuer = agg.vorsteuer,
     vorauszahlungen = vorauszahlungen,
-    besteuerungsart = cfg.besteuerungsart,
-    herstellerId = cfg.herstellerId,
-    produktName = cfg.produktName,
-    name = cfg.name,
-    strasse = cfg.strasse,
-    plz = cfg.plz,
-    ort = cfg.ort,
+    besteuerungsart = tp.besteuerungsart,
+    herstellerId = HerstellerId,
+    produktName = ProduktName,
+    name = fullName,
+    strasse = tp.street & " " & tp.housenumber,
+    plz = tp.zip,
+    ort = tp.city,
     test = cfg.test,
   )
+
+  # Show summary
+  echo &"=== Umsatzsteuererklaerung ==="
+  echo &"Year:           {actualYear}"
+  echo &"Tax number:     {tp.taxnumber}"
+  echo ""
+  echo &"VAT computed:   {totalVat:.2f} EUR"
+  if agg.vorsteuer > 0:
+    echo &"Vorsteuer:     -{agg.vorsteuer:.2f} EUR"
+  if vorauszahlungen != 0:
+    echo &"Advance paid:  -{vorauszahlungen:.2f} EUR"
+  echo &"Remaining:      {remaining:.2f} EUR"
+  echo ""
 
   # Load ERiC library
   if not loadEricLib(cfg.ericLibPath):
@@ -977,10 +952,8 @@ proc ust(
     return 1
   defer: unloadEricLib()
 
-  # Ensure log directory exists
   createDir(cfg.ericLogPath)
 
-  # Initialize ERiC
   let initRc = ericInitialisiere(cfg.ericPluginPath, cfg.ericLogPath)
   if initRc != 0:
     echo &"Error: ERiC initialization failed with code {initRc}"
@@ -988,7 +961,6 @@ proc ust(
     return 1
   defer: discard ericBeende()
 
-  # Dry run mode
   if dryRun:
     echo "ERiC library loaded and initialized successfully."
     echo ""
@@ -997,7 +969,6 @@ proc ust(
     echo "====================="
     return 0
 
-  # Create return buffers
   let responseBuf = ericRueckgabepufferErzeugen()
   let serverBuf = ericRueckgabepufferErzeugen()
   if responseBuf == nil or serverBuf == nil:
@@ -1007,12 +978,10 @@ proc ust(
     discard ericRueckgabepufferFreigabe(responseBuf)
     discard ericRueckgabepufferFreigabe(serverBuf)
 
-  # Determine flags
   var flags: uint32 = ERIC_VALIDIERE
   if not validateOnly:
     flags = flags or ERIC_SENDE
 
-  # Set up encryption parameters if sending
   var cryptParam: EricVerschluesselungsParameterT
   var cryptParamPtr: ptr EricVerschluesselungsParameterT = nil
   var certHandle: EricZertifikatHandle = 0
@@ -1034,19 +1003,6 @@ proc ust(
     if certHandle != 0:
       discard ericCloseHandleToCertificate(certHandle)
 
-  # Show summary
-  echo &"=== Umsatzsteuererklaerung ==="
-  echo &"Year:           {actualYear}"
-  echo &"Tax number:     {cfg.steuernummer}"
-  echo ""
-  echo &"VAT computed:   {totalVat:.2f} EUR"
-  if agg.vorsteuer > 0:
-    echo &"Vorsteuer:     -{agg.vorsteuer:.2f} EUR"
-  if vorauszahlungen != 0:
-    echo &"Advance paid:  -{vorauszahlungen:.2f} EUR"
-  echo &"Remaining:      {remaining:.2f} EUR"
-  echo ""
-
   let modeStr = if cfg.test: " (TEST)" else: ""
   if validateOnly:
     echo &"Mode: Validate only{modeStr}"
@@ -1054,7 +1010,6 @@ proc ust(
     echo &"Mode: Send to ELSTER{modeStr}"
   echo ""
 
-  # Process
   var transferHandle: uint32 = 0
   let datenartVersion = &"USt_{actualYear}"
   let rc = ericBearbeiteVorgang(
@@ -1092,7 +1047,6 @@ proc ust(
       echo ""
       echo "Hint: The demo HerstellerID (74931) is blocked."
       echo "  Register at https://www.elster.de/elsterweb/entwickler"
-      echo "  and set HERSTELLER_ID in your .env file."
     of 610301200:
       echo ""
       echo "Hint: XML schema validation failed."
@@ -2128,40 +2082,46 @@ when isMainModule:
     ],
     [est,
       help = {
-        "invoice_file": "CSV/TSV invoice file (positive=income, negative=expenses)",
         "year": "Tax year (default: current year)",
-        "steuernummer": "Override Steuernummer (private tax number for ESt)",
-        "kinder": "TSV file with children data (vorname, geburtsdatum, idnr, betreuungskosten, schulgeld)",
+        "conf": "viking.conf file (taxpayer data)",
+        "euer": "EUeR income/expense TSV (optional)",
+        "deductions": "Deductions TSV with compound codes (optional)",
+        "kapital": "Capital gains TSV (optional)",
         "validate_only": "Only validate, don't send",
         "dry_run": "Show generated XML without processing",
         "verbose": "Show full server response XML",
+        "force": "Suppress warnings (e.g. no deductions)",
         "env": "Path to env file (default: .env)",
       },
       short = {
-        "invoice_file": 'i',
         "year": 'y',
-        "steuernummer": 's',
-        "kinder": 'k',
+        "conf": 'c',
+        "euer": 'i',
+        "deductions": 'D',
+        "kapital": 'K',
         "validate_only": 'n',
         "dry_run": 'd',
         "verbose": 'v',
+        "force": 'f',
         "env": 'e',
       }
     ],
     [ust,
       help = {
-        "invoice_file": "CSV/TSV invoice file (positive=revenue, negative=expenses)",
-        "vorauszahlungen": "Total UStVA advance payments made during the year",
         "year": "Tax year (default: current year)",
+        "conf": "viking.conf file (taxpayer data)",
+        "euer": "EUeR income/expense TSV (required)",
+        "vorauszahlungen": "Total UStVA advance payments made during the year",
         "validate_only": "Only validate, don't send",
         "dry_run": "Show generated XML without processing",
         "verbose": "Show full server response XML",
         "env": "Path to env file (default: .env)",
       },
       short = {
-        "invoice_file": 'i',
-        "vorauszahlungen": 'a',
         "year": 'y',
+        "conf": 'c',
+        "euer": 'i',
+        "vorauszahlungen": 'a',
         "validate_only": 'n',
         "dry_run": 'd',
         "verbose": 'v',

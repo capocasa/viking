@@ -1,77 +1,38 @@
 ## ESt XML Generation
 ## Generates ELSTER XML for Einkommensteuererklarung (income tax return)
 
-import std/[strutils, strformat, math]
-import config
+import std/[strutils, strformat, math, tables]
+import viking_conf, deductions, kap, config
 
 proc roundEuro(val: float): int =
-  ## Round to full euros
   int(round(val))
 
 proc formatEurDE(val: float): string =
-  ## Format amount with German comma decimal separator (e.g. 1234,50)
   let rounded = round(val * 100) / 100
   let s = formatFloat(rounded, ffDecimal, 2)
   s.replace('.', ',')
 
 type
-  ChildData* = object
-    vorname*: string
-    nachname*: string
-    geburtsdatum*: string
-    idnr*: string
-    betreuungskosten*: float
-    schulgeld*: float
+  EstInput* = object
+    conf*: VikingConf
+    year*: int
+    profit*: float
+    deductions*: DeductionsByForm
+    kapTotals*: KapTotals
+    test*: bool
+    produktVersion*: string
 
-proc generateEst*(
-  steuernummer: string,
-  jahr: int,
-  profit: float,
-  einkunftsart: string,
-  herstellerId: string,
-  produktName: string,
-  vorname: string,
-  nachname: string,
-  geburtsdatum: string,
-  strasse: string,
-  hausnummer: string,
-  plz: string,
-  ort: string,
-  iban: string,
-  religion: string = "11",
-  beruf: string = "",
-  krankenversicherung: float = 0.0,
-  pflegeversicherung: float = 0.0,
-  rentenversicherung: float = 0.0,
-  kvArt: string = "privat",
-  zusatzKv: float = 0.0,
-  kfzHaftpflicht: float = 0.0,
-  unfallversicherung: float = 0.0,
-  kirchensteuerGezahlt: float = 0.0,
-  kirchensteuerErstattet: float = 0.0,
-  spenden: float = 0.0,
-  agbKrankheit: float = 0.0,
-  kapitalertraege: float = 0.0,
-  kapitalertragsteuer: float = 0.0,
-  kapSoli: float = 0.0,
-  sparerPauschbetrag: float = 0.0,
-  guenstigerpruefung: bool = false,
-  kinder: seq[ChildData] = @[],
-  test: bool,
-): string =
-  ## Generate ELSTER XML for ESt (Einkommensteuererklarung)
+proc generateEst*(input: EstInput): string =
+  let tp = input.conf.taxpayer
+  let finanzamt = tp.taxnumber[0..3]
+  let bundesland = bundeslandFromSteuernummer(tp.taxnumber)
+  let testmerkerLine = if input.test: "\n    <Testmerker>700000004</Testmerker>" else: ""
+  let profitEuro = roundEuro(input.profit)
 
-  let finanzamt = steuernummer[0..3]
-  let bundesland = bundeslandFromSteuernummer(steuernummer)
-  let testmerkerLine = if test: "\n    <Testmerker>700000004</Testmerker>" else: ""
-
-  let profitEuro = roundEuro(profit)
-
-  # Build Anlage G or Anlage S based on einkunftsart
+  # Build Anlage G or Anlage S
   var anlage = ""
-  if einkunftsart == "2":
-    # Anlage G - Gewerbebetrieb
-    let taetigkeitStr = if beruf != "": beruf else: "Gewerbebetrieb"
+  if tp.income == "2":
+    let taetigkeitStr = if tp.profession != "": tp.profession else: "Gewerbebetrieb"
     anlage = &"""
         <G>
           <Person>PersonA</Person>
@@ -85,8 +46,7 @@ proc generateEst*(
           </Gew>
         </G>"""
   else:
-    # Anlage S - Selbstaendige Arbeit
-    let taetigkeitStr = if beruf != "": beruf else: "Freiberufliche Taetigkeit"
+    let taetigkeitStr = if tp.profession != "": tp.profession else: "Freiberufliche Taetigkeit"
     anlage = &"""
         <S>
           <Person>PersonA</Person>
@@ -98,67 +58,66 @@ proc generateEst*(
           </Gewinn>
         </S>"""
 
-  # Build Anlage Vorsorgeaufwand
+  # Build Anlage Vorsorgeaufwand (VOR) from deductions table
   var vorsorge = ""
-  let sonstigeVorsorge = kfzHaftpflicht + unfallversicherung
-  let hasVorsorge = krankenversicherung > 0 or pflegeversicherung > 0 or
-                    rentenversicherung > 0 or sonstigeVorsorge > 0 or zusatzKv > 0
-  if hasVorsorge:
+  let vor = input.deductions.vor
+  if vor.len > 0:
     var vorParts = ""
 
-    # Retirement insurance (Rentenversicherung)
-    if rentenversicherung > 0:
+    # AVor — Rentenversicherung (E2000601)
+    if "E2000601" in vor:
       vorParts.add(&"""
           <AVor>
             <Person>PersonA</Person>
-            <E2000601>{roundEuro(rentenversicherung)}</E2000601>
+            <E2000601>{roundEuro(vor["E2000601"])}</E2000601>
           </AVor>""")
 
-    # Health/nursing insurance
-    if krankenversicherung > 0 or pflegeversicherung > 0 or zusatzKv > 0:
-      if kvArt == "gesetzlich":
-        # Freiwillig gesetzlich versichert
-        var andPers = ""
-        if krankenversicherung > 0:
-          andPers.add(&"""
-              <E2001805>{roundEuro(krankenversicherung)}</E2001805>""")
-        if zusatzKv > 0:
-          andPers.add(&"""
-              <E2002206>{roundEuro(zusatzKv)}</E2002206>""")
-        if pflegeversicherung > 0:
-          andPers.add(&"""
-              <E2002105>{roundEuro(pflegeversicherung)}</E2002105>""")
-        vorParts.add(&"""
+    # Health/nursing insurance — gesetzlich vs privat
+    let hasGesetzlich = "E2001805" in vor or "E2002105" in vor or "E2002206" in vor
+    let hasPrivat = "E2003104" in vor or "E2003202" in vor or "E2003302" in vor
+
+    if hasGesetzlich:
+      var andPers = ""
+      if "E2001805" in vor:
+        andPers.add(&"""
+              <E2001805>{roundEuro(vor["E2001805"])}</E2001805>""")
+      if "E2002105" in vor:
+        andPers.add(&"""
+              <E2002105>{roundEuro(vor["E2002105"])}</E2002105>""")
+      if "E2002206" in vor:
+        andPers.add(&"""
+              <E2002206>{roundEuro(vor["E2002206"])}</E2002206>""")
+      vorParts.add(&"""
           <Beitr_g_KV_PV_Inl>
             <Person>PersonA</Person>
             <And_Pers>{andPers}
             </And_Pers>
           </Beitr_g_KV_PV_Inl>""")
-      else:
-        # Privat versichert
-        var privParts = ""
-        if krankenversicherung > 0:
-          privParts.add(&"""
-              <E2003104>{roundEuro(krankenversicherung)}</E2003104>""")
-        if pflegeversicherung > 0:
-          privParts.add(&"""
-              <E2003202>{roundEuro(pflegeversicherung)}</E2003202>""")
-        if zusatzKv > 0:
-          privParts.add(&"""
-              <E2003302>{roundEuro(zusatzKv)}</E2003302>""")
-        vorParts.add(&"""
+
+    if hasPrivat:
+      var privParts = ""
+      if "E2003104" in vor:
+        privParts.add(&"""
+              <E2003104>{roundEuro(vor["E2003104"])}</E2003104>""")
+      if "E2003202" in vor:
+        privParts.add(&"""
+              <E2003202>{roundEuro(vor["E2003202"])}</E2003202>""")
+      if "E2003302" in vor:
+        privParts.add(&"""
+              <E2003302>{roundEuro(vor["E2003302"])}</E2003302>""")
+      vorParts.add(&"""
           <Beitr_p_KV_PV_Inl>
             <Person>PersonA</Person>{privParts}
           </Beitr_p_KV_PV_Inl>""")
 
-    # Weitere sonstige Vorsorgeaufwendungen (Haftpflicht, Unfall)
-    if sonstigeVorsorge > 0:
+    # Weitere sonstige Vorsorgeaufwendungen (E2001803)
+    if "E2001803" in vor:
       vorParts.add(&"""
           <Weit_Sons_VorAW>
             <A_B_LP>
               <U_HP_Ris_Vers>
                 <Sum>
-                  <E2001803>{roundEuro(sonstigeVorsorge)}</E2001803>
+                  <E2001803>{roundEuro(vor["E2001803"])}</E2001803>
                 </Sum>
               </U_HP_Ris_Vers>
             </A_B_LP>
@@ -170,37 +129,38 @@ proc generateEst*(
 
   # Build Anlage Sonderausgaben (SA)
   var sonderausgaben = ""
-  let hasSA = kirchensteuerGezahlt > 0 or kirchensteuerErstattet > 0 or spenden > 0
-  if hasSA:
+  let sa = input.deductions.sa
+  if sa.len > 0:
     var saParts = ""
 
     # Kirchensteuer
-    if kirchensteuerGezahlt > 0 or kirchensteuerErstattet > 0:
+    let hasKist = "E0107601" in sa or "E0107602" in sa
+    if hasKist:
       var kistParts = ""
-      if kirchensteuerGezahlt > 0:
+      if "E0107601" in sa:
         kistParts.add(&"""
             <Gezahlt>
               <Sum>
-                <E0107601>{roundEuro(kirchensteuerGezahlt)}</E0107601>
+                <E0107601>{roundEuro(sa["E0107601"])}</E0107601>
               </Sum>
             </Gezahlt>""")
-      if kirchensteuerErstattet > 0:
+      if "E0107602" in sa:
         kistParts.add(&"""
             <Erstattet>
-              <E0107602>{roundEuro(kirchensteuerErstattet)}</E0107602>
+              <E0107602>{roundEuro(sa["E0107602"])}</E0107602>
             </Erstattet>""")
       saParts.add(&"""
           <KiSt>{kistParts}
           </KiSt>""")
 
-    # Spenden / Zuwendungen
-    if spenden > 0:
+    # Spenden
+    if "E0108105" in sa:
       saParts.add(&"""
           <Zuw>
             <Sp_MB>
               <Foerd_st_beg_Zw_Inl>
                 <Sum_Best>
-                  <E0108105>{roundEuro(spenden)}</E0108105>
+                  <E0108105>{roundEuro(sa["E0108105"])}</E0108105>
                 </Sum_Best>
               </Foerd_st_beg_Zw_Inl>
             </Sp_MB>
@@ -212,35 +172,36 @@ proc generateEst*(
 
   # Build Anlage Außergewöhnliche Belastungen (AgB)
   var agb = ""
-  if agbKrankheit > 0:
+  let agbT = input.deductions.agb
+  if "E0161304" in agbT:
     agb = &"""
         <AgB>
           <And_Aufw>
             <Krankh>
               <Sum>
-                <E0161304>{roundEuro(agbKrankheit)}</E0161304>
+                <E0161304>{roundEuro(agbT["E0161304"])}</E0161304>
               </Sum>
             </Krankh>
           </And_Aufw>
         </AgB>"""
 
-  # Build Anlage Kind (one per child)
+  # Build Anlage Kind (one per child from conf)
   var kinderXml = ""
-  for child in kinder:
+  for kid in input.conf.kids:
     var kindParts = ""
 
     # Basic child info
     var allgParts = ""
-    if child.idnr != "":
+    if kid.idnr != "":
       allgParts.add(&"""
-              <E0500406>{child.idnr}</E0500406>""")
+              <E0500406>{kid.idnr}</E0500406>""")
     allgParts.add(&"""
-              <E0500107>{child.vorname}</E0500107>""")
-    if child.nachname != "":
+              <E0500107>{kid.firstname}</E0500107>""")
+    if tp.lastname != "":
       allgParts.add(&"""
-              <E0500108>{child.nachname}</E0500108>""")
+              <E0500108>{tp.lastname}</E0500108>""")
     allgParts.add(&"""
-              <E0500701>{child.geburtsdatum}</E0500701>""")
+              <E0500701>{kid.birthdate}</E0500701>""")
 
     kindParts.add(&"""
           <Ang_Kind>
@@ -262,9 +223,15 @@ proc generateEst*(
             </K_Verh_A>
           </K_Verh>""")
 
-    # Kinderbetreuungskosten
-    if child.betreuungskosten > 0:
-      let betrag = roundEuro(child.betreuungskosten)
+    # Child-specific deductions from deductions.tsv
+    let kidDeductions = if kid.firstname in input.deductions.kids:
+                          input.deductions.kids[kid.firstname]
+                        else:
+                          initTable[string, float]()
+
+    # Kinderbetreuungskosten (E0506105)
+    if "E0506105" in kidDeductions:
+      let betrag = roundEuro(kidDeductions["E0506105"])
       kindParts.add(&"""
           <KBK>
             <Art>
@@ -274,9 +241,9 @@ proc generateEst*(
             </Art>
           </KBK>""")
 
-    # Schulgeld
-    if child.schulgeld > 0:
-      let betrag = roundEuro(child.schulgeld)
+    # Schulgeld (E0505607)
+    if "E0505607" in kidDeductions:
+      let betrag = roundEuro(kidDeductions["E0505607"])
       kindParts.add(&"""
           <Schulgeld>
             <Sum>
@@ -289,60 +256,58 @@ proc generateEst*(
         </Kind>""")
 
   # Build Anlage KAP
-  var kap = ""
-  let hasKAP = kapitalertraege > 0 or kapitalertragsteuer > 0 or guenstigerpruefung or
-               sparerPauschbetrag > 0
+  var kapXml = ""
+  let kt = input.kapTotals
+  let kc = input.conf.kap
+  let hasKAP = kt.gains > 0 or kt.tax > 0 or kc.guenstigerpruefung or kc.sparerPauschbetrag > 0
   if hasKAP:
     var kapParts = ""
 
-    # Günstigerprüfung
-    if guenstigerpruefung:
+    if kc.guenstigerpruefung:
       kapParts.add(&"""
           <Ant>
             <E1900401>1</E1900401>
           </Ant>""")
 
-    # Kapitalerträge (dem inländischen Steuerabzug unterlegen)
-    if kapitalertraege > 0:
+    if kt.gains > 0:
       kapParts.add(&"""
           <KapErt_inl_StAbz>
             <Betr_lt_StBesch>
-              <E1900701>{roundEuro(kapitalertraege)}</E1900701>
+              <E1900701>{roundEuro(kt.gains)}</E1900701>
             </Betr_lt_StBesch>
           </KapErt_inl_StAbz>""")
 
-    # Sparer-Pauschbetrag (required when Günstigerprüfung is set)
-    if sparerPauschbetrag > 0:
+    if kc.sparerPauschbetrag > 0:
       kapParts.add(&"""
           <Sp_PB>
-            <E1901401>{roundEuro(sparerPauschbetrag)}</E1901401>
+            <E1901401>{roundEuro(kc.sparerPauschbetrag)}</E1901401>
           </Sp_PB>""")
 
-    # Steuerabzugsbeträge
-    if kapitalertragsteuer > 0 or kapSoli > 0:
+    if kt.tax > 0 or kt.soli > 0:
       var stParts = ""
-      if kapitalertragsteuer > 0:
+      if kt.tax > 0:
         stParts.add(&"""
-              <E1904701>{formatEurDE(kapitalertragsteuer)}</E1904701>""")
-      if kapSoli > 0:
+              <E1904701>{formatEurDE(kt.tax)}</E1904701>""")
+      if kt.soli > 0:
         stParts.add(&"""
-              <E1904801>{formatEurDE(kapSoli)}</E1904801>""")
+              <E1904801>{formatEurDE(kt.soli)}</E1904801>""")
       kapParts.add(&"""
           <St_Abz_Betr_Inl_u_Inv_Ert>{stParts}
           </St_Abz_Betr_Inl_u_Inv_Ert>""")
 
-    kap = &"""
+    kapXml = &"""
         <KAP>
           <Person>PersonA</Person>{kapParts}
         </KAP>"""
 
-  # Optional fields (must follow XSD element order)
-  let religionLine = if religion != "": &"""
-                <E0100402>{religion}</E0100402>""" else: ""
-  let berufLine = if beruf != "": &"""
-                <E0100403>{beruf}</E0100403>""" else: ""
+  # Personal fields
+  let religionLine = if tp.religion != "": &"""
+                <E0100402>{tp.religion}</E0100402>""" else: ""
+  let berufLine = if tp.profession != "": &"""
+                <E0100403>{tp.profession}</E0100403>""" else: ""
 
-  let fullName = nachname & " " & vorname
+  let fullName = tp.lastname & " " & tp.firstname
+  let produktVersion = if input.produktVersion != "": input.produktVersion else: "0.1.0"
 
   let xml = &"""<?xml version="1.0" encoding="UTF-8"?>
 <Elster xmlns="http://www.elster.de/elsterxml/schema/v11">
@@ -351,7 +316,7 @@ proc generateEst*(
     <DatenArt>ESt</DatenArt>
     <Vorgang>send-Auth</Vorgang>{testmerkerLine}
     <Empfaenger id="L"><Ziel>{bundesland}</Ziel></Empfaenger>
-    <HerstellerID>{herstellerId}</HerstellerID>
+    <HerstellerID>{HerstellerId}</HerstellerID>
     <DatenLieferant>{fullName}</DatenLieferant>
     <Datei>
       <Verschluesselung>CMSEncryptedData</Verschluesselung>
@@ -365,44 +330,44 @@ proc generateEst*(
         <NutzdatenTicket>1</NutzdatenTicket>
         <Empfaenger id="F">{finanzamt}</Empfaenger>
         <Hersteller>
-          <ProduktName>{produktName}</ProduktName>
-          <ProduktVersion>0.1.0</ProduktVersion>
+          <ProduktName>{ProduktName}</ProduktName>
+          <ProduktVersion>{produktVersion}</ProduktVersion>
         </Hersteller>
       </NutzdatenHeader>
       <Nutzdaten>
-        <E10 xmlns="http://finkonsens.de/elster/elstererklaerung/est/e10/v{jahr}" version="{jahr}">
+        <E10 xmlns="http://finkonsens.de/elster/elstererklaerung/est/e10/v{input.year}" version="{input.year}">
           <ESt1A>
             <Art_Erkl>
               <E0100001>X</E0100001>
             </Art_Erkl>
             <Allg>
               <A>
-                <E0100401>{geburtsdatum}</E0100401>
-                <E0100201>{nachname}</E0100201>
-                <E0100301>{vorname}</E0100301>{religionLine}{berufLine}
-                <E0101104>{strasse}</E0101104>
-                <E0101206>{hausnummer}</E0101206>
-                <E0100601>{plz}</E0100601>
-                <E0100602>{ort}</E0100602>
+                <E0100401>{tp.birthdate}</E0100401>
+                <E0100201>{tp.lastname}</E0100201>
+                <E0100301>{tp.firstname}</E0100301>{religionLine}{berufLine}
+                <E0101104>{tp.street}</E0101104>
+                <E0101206>{tp.housenumber}</E0101206>
+                <E0100601>{tp.zip}</E0100601>
+                <E0100602>{tp.city}</E0100602>
               </A>
               <BV>
-                <E0102102>{iban}</E0102102>
+                <E0102102>{tp.iban}</E0102102>
                 <Kto_Inh>
                   <E0101601>X</E0101601>
                 </Kto_Inh>
               </BV>
             </Allg>
-          </ESt1A>{sonderausgaben}{agb}{kinderXml}{anlage}{kap}{vorsorge}
+          </ESt1A>{sonderausgaben}{agb}{kinderXml}{anlage}{kapXml}{vorsorge}
           <Vorsatz>
             <Unterfallart>10</Unterfallart>
             <Vorgang>01</Vorgang>
-            <StNr>{steuernummer}</StNr>
-            <Zeitraum>{jahr}</Zeitraum>
+            <StNr>{tp.taxnumber}</StNr>
+            <Zeitraum>{input.year}</Zeitraum>
             <AbsName>{fullName}</AbsName>
-            <AbsStr>{strasse} {hausnummer}</AbsStr>
-            <AbsPlz>{plz}</AbsPlz>
-            <AbsOrt>{ort}</AbsOrt>
-            <Copyright>(C) {produktName}</Copyright>
+            <AbsStr>{tp.street} {tp.housenumber}</AbsStr>
+            <AbsPlz>{tp.zip}</AbsPlz>
+            <AbsOrt>{tp.city}</AbsOrt>
+            <Copyright>(C) {ProduktName}</Copyright>
             <OrdNrArt>S</OrdNrArt>
             <Rueckuebermittlung>
               <Bescheid>2</Bescheid>

@@ -4,6 +4,9 @@
 import std/[os, osproc, strutils, tables]
 import dotenv
 
+const HerstellerId* = "40036"
+const ProduktName* = "Viking"
+
 type
   Config* = object
     ericLibPath*: string
@@ -64,6 +67,9 @@ proc loadConfig*(envFile: string = ".env"): Config =
     if envFile != ".env":
       raise newException(IOError, "Config file not found: " & path)
 
+  # XDG defaults for ERiC paths
+  let xdgDataDir = getEnv("XDG_DATA_HOME", getHomeDir() / ".local" / "share")
+  let defaultEricBase = xdgDataDir / "viking" / "eric"
   result.ericLibPath = getEnv("ERIC_LIB_PATH", "")
   result.ericPluginPath = getEnv("ERIC_PLUGIN_PATH", "")
   result.ericLogPath = getEnv("ERIC_LOG_PATH", "/tmp/eric_logs")
@@ -77,8 +83,8 @@ proc loadConfig*(envFile: string = ".env"): Config =
   else:
     result.certPin = getEnv("CERT_PIN", "")
   result.steuernummer = getEnv("STEUERNUMMER", "")
-  result.herstellerId = getEnv("HERSTELLER_ID", "40036")
-  result.produktName = getEnv("PRODUKT_NAME", "Viking")
+  result.herstellerId = getEnv("HERSTELLER_ID", HerstellerId)
+  result.produktName = getEnv("PRODUKT_NAME", ProduktName)
   result.name = getEnv("DATENLIEFERANT_NAME", "")
   result.strasse = getEnv("DATENLIEFERANT_STRASSE", "")
   result.plz = getEnv("DATENLIEFERANT_PLZ", "")
