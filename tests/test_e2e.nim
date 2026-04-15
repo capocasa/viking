@@ -1039,10 +1039,10 @@ check("download dry_run has PostfachAnfrage XML", dlDryOut.contains("<PostfachAn
 check("download dry_run has Datenabholung element", dlDryOut.contains("<Datenabholung"))
 check("download dry_run has DatenLieferant from conf", dlDryOut.contains("<DatenLieferant>Hans Maier</DatenLieferant>"))
 
-echo "--- list/download backward compat ---"
-let (listLegacy, listLegacyRc) = run("./viking list --dry_run")
-check("list without conf uses DATENLIEFERANT_NAME from .env", listLegacyRc == 0, listLegacy)
-check("list legacy has DatenLieferant from .env", listLegacy.contains("<DatenLieferant>"))
+echo "--- list/download without conf ---"
+let (listNoConf, listNoConfRc) = run("./viking list --dry_run")
+check("list without conf fails", listNoConfRc != 0)
+check("list without conf shows error", listNoConf.contains("--conf is required"))
 
 removeFile(abholConf)
 echo ""

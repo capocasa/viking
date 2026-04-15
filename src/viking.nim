@@ -1451,6 +1451,11 @@ proc displayBereitstellungen(bereitstellungen: seq[AbholBereitstellung]) =
 
 proc loadConfigAndEricForAbholung(conf: string, env: string): tuple[rc: int, cfg: Config, name: string] =
   ## Load config for Datenabholung commands. Personal data from viking.conf, technical from .env.
+  if conf == "":
+    echo "Error: --conf is required"
+    var cfg: Config
+    return (1, cfg, "")
+
   var cfg: Config
   try:
     cfg = loadConfig(env)
@@ -1458,34 +1463,26 @@ proc loadConfigAndEricForAbholung(conf: string, env: string): tuple[rc: int, cfg
     echo &"Error: {e.msg}"
     return (1, cfg, "")
 
-  var name: string
+  var vikingConf: VikingConf
+  try:
+    vikingConf = loadVikingConf(conf)
+  except IOError as e:
+    echo &"Error: {e.msg}"
+    return (1, cfg, "")
+  except ValueError as e:
+    echo &"Error parsing {conf}: {e.msg}"
+    return (1, cfg, "")
 
-  if conf != "":
-    var vikingConf: VikingConf
-    try:
-      vikingConf = loadVikingConf(conf)
-    except IOError as e:
-      echo &"Error: {e.msg}"
-      return (1, cfg, "")
-    except ValueError as e:
-      echo &"Error parsing {conf}: {e.msg}"
-      return (1, cfg, "")
+  let confErrors = vikingConf.validateForAbholung()
+  if confErrors.len > 0:
+    echo "Configuration errors in " & conf & ":"
+    for e in confErrors:
+      echo &"  - {e}"
+    return (1, cfg, "")
 
-    let confErrors = vikingConf.validateForAbholung()
-    if confErrors.len > 0:
-      echo "Configuration errors in " & conf & ":"
-      for e in confErrors:
-        echo &"  - {e}"
-      return (1, cfg, "")
+  let name = vikingConf.taxpayer.firstname & " " & vikingConf.taxpayer.lastname
 
-    name = vikingConf.taxpayer.firstname & " " & vikingConf.taxpayer.lastname
-  else:
-    if cfg.name == "":
-      echo "Error: --conf is required, or set DATENLIEFERANT_NAME in .env"
-      return (1, cfg, "")
-    name = cfg.name
-
-  let errors = cfg.validateForAbholung()
+  let errors = cfg.validate()
   if errors.len > 0:
     echo "Configuration errors in .env:"
     for e in errors:
