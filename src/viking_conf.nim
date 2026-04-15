@@ -190,6 +190,13 @@ proc validateForBankverbindung*(conf: VikingConf): seq[string] =
   if conf.taxpayer.taxnumber == "":
     result.add("taxpayer.taxnumber not set in viking.conf")
 
+proc validateForAbholung*(conf: VikingConf): seq[string] =
+  ## Validate config has required fields for Datenabholung (list/download).
+  if conf.taxpayer.firstname == "":
+    result.add("taxpayer.firstname not set in viking.conf")
+  if conf.taxpayer.lastname == "":
+    result.add("taxpayer.lastname not set in viking.conf")
+
 proc validateForEuer*(conf: VikingConf): seq[string] =
   ## Validate config has required fields for EÜR submission.
   if conf.taxpayer.firstname == "":

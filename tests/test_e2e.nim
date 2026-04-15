@@ -1015,20 +1015,36 @@ echo ""
 # Retrieve (Datenabholung) tests
 # =================================================================
 
+let abholConf = projectRoot / "tests" / "tmp_abhol_viking.conf"
+writeFile(abholConf, """[taxpayer]
+firstname = Hans
+lastname = Maier
+""")
+
 echo "--- list --dry_run ---"
-let (listDryOut, listDryRc) = run("./viking list --dry_run")
+let (listDryOut, listDryRc) = run("./viking list -c " & abholConf & " --dry_run")
 check("list dry_run exits 0", listDryRc == 0, listDryOut)
 check("list dry_run has PostfachAnfrage XML", listDryOut.contains("<PostfachAnfrage "))
 check("list dry_run has Datenabholung element", listDryOut.contains("<Datenabholung"))
 check("list dry_run has ElsterDatenabholung", listDryOut.contains("<Verfahren>ElsterDatenabholung</Verfahren>"))
 check("list dry_run has DatenArt PostfachAnfrage", listDryOut.contains("<DatenArt>PostfachAnfrage</DatenArt>"))
 check("list dry_run has Testmerker", listDryOut.contains("<Testmerker>700000004</Testmerker>"))
+check("list dry_run has DatenLieferant from conf", listDryOut.contains("<DatenLieferant>Hans Maier</DatenLieferant>"))
+check("list dry_run has HerstellerID constant", listDryOut.contains("<HerstellerID>40036</HerstellerID>"))
 
 echo "--- download --dry_run ---"
-let (dlDryOut, dlDryRc) = run("./viking download --dry_run")
+let (dlDryOut, dlDryRc) = run("./viking download -c " & abholConf & " --dry_run")
 check("download dry_run exits 0", dlDryRc == 0, dlDryOut)
 check("download dry_run has PostfachAnfrage XML", dlDryOut.contains("<PostfachAnfrage "))
 check("download dry_run has Datenabholung element", dlDryOut.contains("<Datenabholung"))
+check("download dry_run has DatenLieferant from conf", dlDryOut.contains("<DatenLieferant>Hans Maier</DatenLieferant>"))
+
+echo "--- list/download backward compat ---"
+let (listLegacy, listLegacyRc) = run("./viking list --dry_run")
+check("list without conf uses DATENLIEFERANT_NAME from .env", listLegacyRc == 0, listLegacy)
+check("list legacy has DatenLieferant from .env", listLegacy.contains("<DatenLieferant>"))
+
+removeFile(abholConf)
 echo ""
 
 # --- Summary ---

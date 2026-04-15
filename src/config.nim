@@ -15,8 +15,7 @@ type
     certPath*: string
     certPin*: string
     steuernummer*: string
-    herstellerId*: string
-    name*: string          # DatenLieferant name (retrieve/list/download)
+    name*: string          # DatenLieferant name (legacy fallback for list/download)
     test*: bool
 
 proc loadConfig*(envFile: string = ".env"): Config =
@@ -46,7 +45,6 @@ proc loadConfig*(envFile: string = ".env"): Config =
   else:
     result.certPin = getEnv("CERT_PIN", "")
   result.steuernummer = getEnv("STEUERNUMMER", "")
-  result.herstellerId = getEnv("HERSTELLER_ID", HerstellerId)
   result.name = getEnv("DATENLIEFERANT_NAME", "")
   result.test = getEnv("TEST", "0") == "1"
 
@@ -74,6 +72,28 @@ proc validate*(cfg: Config): seq[string] =
 
   if cfg.steuernummer == "":
     result.add("STEUERNUMMER not set")
+
+proc validateForAbholung*(cfg: Config): seq[string] =
+  ## Validate configuration for Datenabholung (no steuernummer needed).
+  result = @[]
+
+  if cfg.ericLibPath == "":
+    result.add("ERIC_LIB_PATH not set")
+  elif not fileExists(cfg.ericLibPath):
+    result.add("ERIC_LIB_PATH does not exist: " & cfg.ericLibPath)
+
+  if cfg.ericPluginPath == "":
+    result.add("ERIC_PLUGIN_PATH not set")
+  elif not dirExists(cfg.ericPluginPath):
+    result.add("ERIC_PLUGIN_PATH directory does not exist: " & cfg.ericPluginPath)
+
+  if cfg.certPath == "":
+    result.add("CERT_PATH not set")
+  elif not fileExists(cfg.certPath):
+    result.add("CERT_PATH does not exist: " & cfg.certPath)
+
+  if cfg.certPin == "":
+    result.add("CERT_PIN not set")
 
 proc validateForValidateOnly*(cfg: Config): seq[string] =
   ## Minimal validation for validate-only mode (no cert needed)

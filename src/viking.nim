@@ -1311,13 +1311,14 @@ proc parsePostfachAntwort(xmlDoc: XmlNode): seq[AbholBereitstellung] =
 
 proc sendPostfachAnfrage(
   cfg: Config,
+  name: string,
   cryptParam: ptr EricVerschluesselungsParameterT,
   einschraenkung: string,
   verbose: bool,
 ): tuple[rc: int, bereitstellungen: seq[AbholBereitstellung], serverResponse: string] =
   ## Send a single PostfachAnfrage with the given einschraenkung filter.
   let anfragXml = generatePostfachAnfrageXml(
-    cfg.herstellerId, cfg.name, cfg.test, einschraenkung,
+    name, cfg.test, NimblePkgVersion, einschraenkung,
   )
 
   var transferHandle: uint32 = 0
@@ -1377,7 +1378,7 @@ proc sendPostfachAnfrage(
   let bereitstellungen = parsePostfachAntwort(xmlDoc)
   return (0, bereitstellungen, serverResponse)
 
-proc initEricAndQueryPostfach(cfg: Config, verbose: bool): tuple[rc: int, bereitstellungen: seq[AbholBereitstellung], serverResponse: string] =
+proc initEricAndQueryPostfach(cfg: Config, name: string, verbose: bool): tuple[rc: int, bereitstellungen: seq[AbholBereitstellung], serverResponse: string] =
   ## Shared helper: initialize ERiC, send PostfachAnfrage, parse response.
   ## Queries "neue" first to identify unread items, then "alle" for full list.
   ## Returns rc=0 on success with parsed bereitstellungen, or rc>0 on error.
@@ -1401,7 +1402,7 @@ proc initEricAndQueryPostfach(cfg: Config, verbose: bool): tuple[rc: int, bereit
   echo "Fetching Postfach..."
 
   # Query "neue" (unconfirmed) first to identify unread items
-  let (neueRc, neueBereitstellungen, _) = sendPostfachAnfrage(cfg, addr cryptParam, "neue", verbose)
+  let (neueRc, neueBereitstellungen, _) = sendPostfachAnfrage(cfg, name, addr cryptParam, "neue", verbose)
   if neueRc != 0:
     return (neueRc, @[], "")
 
@@ -1410,7 +1411,7 @@ proc initEricAndQueryPostfach(cfg: Config, verbose: bool): tuple[rc: int, bereit
     neueIds.add(b.id)
 
   # Query "alle" (all) for the full listing
-  let (alleRc, alleBereitstellungen, serverResponse) = sendPostfachAnfrage(cfg, addr cryptParam, "alle", verbose)
+  let (alleRc, alleBereitstellungen, serverResponse) = sendPostfachAnfrage(cfg, name, addr cryptParam, "alle", verbose)
   if alleRc != 0:
     return (alleRc, @[], "")
 
@@ -1448,26 +1449,52 @@ proc displayBereitstellungen(bereitstellungen: seq[AbholBereitstellung]) =
     for a in b.anhaenge:
       echo &"    - {a.dateibezeichnung} ({a.dateityp}, {a.dateiGroesse} bytes)"
 
-proc loadConfigAndEric(env: string): tuple[rc: int, cfg: Config] =
+proc loadConfigAndEricForAbholung(conf: string, env: string): tuple[rc: int, cfg: Config, name: string] =
+  ## Load config for Datenabholung commands. Personal data from viking.conf, technical from .env.
   var cfg: Config
   try:
     cfg = loadConfig(env)
   except IOError as e:
     echo &"Error: {e.msg}"
-    return (1, cfg)
+    return (1, cfg, "")
 
-  let errors = cfg.validate()
+  var name: string
+
+  if conf != "":
+    var vikingConf: VikingConf
+    try:
+      vikingConf = loadVikingConf(conf)
+    except IOError as e:
+      echo &"Error: {e.msg}"
+      return (1, cfg, "")
+    except ValueError as e:
+      echo &"Error parsing {conf}: {e.msg}"
+      return (1, cfg, "")
+
+    let confErrors = vikingConf.validateForAbholung()
+    if confErrors.len > 0:
+      echo "Configuration errors in " & conf & ":"
+      for e in confErrors:
+        echo &"  - {e}"
+      return (1, cfg, "")
+
+    name = vikingConf.taxpayer.firstname & " " & vikingConf.taxpayer.lastname
+  else:
+    if cfg.name == "":
+      echo "Error: --conf is required, or set DATENLIEFERANT_NAME in .env"
+      return (1, cfg, "")
+    name = cfg.name
+
+  let errors = cfg.validateForAbholung()
   if errors.len > 0:
-    echo "Configuration errors:"
+    echo "Configuration errors in .env:"
     for e in errors:
       echo &"  - {e}"
-    echo ""
-    echo "Please check your .env file."
-    return (1, cfg)
+    return (1, cfg, "")
 
   if not loadEricLib(cfg.ericLibPath):
     echo &"Error: Failed to load ERiC library from {cfg.ericLibPath}"
-    return (1, cfg)
+    return (1, cfg, "")
 
   createDir(cfg.ericLogPath)
 
@@ -1476,24 +1503,25 @@ proc loadConfigAndEric(env: string): tuple[rc: int, cfg: Config] =
     echo &"Error: ERiC initialization failed with code {initRc}"
     echo &"  {ericHoleFehlerText(initRc)}"
     unloadEricLib()
-    return (1, cfg)
+    return (1, cfg, "")
 
-  return (0, cfg)
+  return (0, cfg, name)
 
 proc list(
+  conf: string = "",
   verbose: bool = false,
   dry_run: bool = false,
   env: string = ".env",
 ): int =
   ## List available documents in the tax office Postfach
   ##
-  ## Queries the ELSTER Postfach without downloading or confirming anything.
+  ## Personal data from viking.conf, technical config from .env.
   ##
   ## Examples:
-  ##   viking list
-  ##   viking list --verbose
+  ##   viking list -c viking.conf
+  ##   viking list -c viking.conf --verbose
 
-  let (cfgRc, cfg) = loadConfigAndEric(env)
+  let (cfgRc, cfg, name) = loadConfigAndEricForAbholung(conf, env)
   if cfgRc != 0: return cfgRc
   defer:
     discard ericBeende()
@@ -1501,20 +1529,21 @@ proc list(
 
   if dry_run:
     let anfragXml = generatePostfachAnfrageXml(
-      cfg.herstellerId, cfg.name, cfg.test,
+      name, cfg.test, NimblePkgVersion,
     )
     echo "=== PostfachAnfrage XML ==="
     echo anfragXml
     echo "==========================="
     return 0
 
-  let (rc, bereitstellungen, _) = initEricAndQueryPostfach(cfg, verbose)
+  let (rc, bereitstellungen, _) = initEricAndQueryPostfach(cfg, name, verbose)
   if rc != 0: return rc
 
   displayBereitstellungen(bereitstellungen)
   return 0
 
 proc download(
+  conf: string = "",
   output_dir: string = "",
   verbose: bool = false,
   dry_run: bool = false,
@@ -1522,15 +1551,16 @@ proc download(
 ): int =
   ## Download all documents from the tax office Postfach
   ##
+  ## Personal data from viking.conf, technical config from .env.
   ## Queries the ELSTER Postfach, downloads all documents via OTTER,
   ## and confirms retrieval. Use 'viking list' first to see what's available.
   ##
   ## Examples:
-  ##   viking download
-  ##   viking download --output_dir=./bescheide
-  ##   viking download --dry_run
+  ##   viking download -c viking.conf
+  ##   viking download -c viking.conf --output_dir=./bescheide
+  ##   viking download -c viking.conf --dry_run
 
-  let (cfgRc, cfg) = loadConfigAndEric(env)
+  let (cfgRc, cfg, name) = loadConfigAndEricForAbholung(conf, env)
   if cfgRc != 0: return cfgRc
   defer:
     discard ericBeende()
@@ -1538,14 +1568,14 @@ proc download(
 
   if dry_run:
     let anfragXml = generatePostfachAnfrageXml(
-      cfg.herstellerId, cfg.name, cfg.test,
+      name, cfg.test, NimblePkgVersion,
     )
     echo "=== PostfachAnfrage XML ==="
     echo anfragXml
     echo "==========================="
     return 0
 
-  let (rc, bereitstellungen, _) = initEricAndQueryPostfach(cfg, verbose)
+  let (rc, bereitstellungen, _) = initEricAndQueryPostfach(cfg, name, verbose)
   if rc != 0: return rc
 
   displayBereitstellungen(bereitstellungen)
@@ -1601,7 +1631,7 @@ proc download(
 
       let dlRc = ottoDatenAbholen(
         ottoInstanz, a.dateiReferenzId, a.dateiGroesse.uint32,
-        cfg.certPath, cfg.certPin, cfg.herstellerId, ottoBuf,
+        cfg.certPath, cfg.certPin, HerstellerId, ottoBuf,
       )
 
       if dlRc != 0:
@@ -1649,7 +1679,7 @@ proc download(
     cryptParam.pin = cfg.certPin.cstring
 
     let bestXml = generatePostfachBestaetigungXml(
-      confirmedIds, cfg.herstellerId, cfg.name, cfg.test,
+      confirmedIds, name, cfg.test, NimblePkgVersion,
     )
 
     if verbose:
@@ -2270,11 +2300,13 @@ when isMainModule:
     ],
     [list,
       help = {
+        "conf": "viking.conf file with taxpayer data",
         "dry_run": "Show generated XML without sending",
         "verbose": "Show full server response XML",
         "env": "Path to env file (default: .env)",
       },
       short = {
+        "conf": 'c',
         "dry_run": 'd',
         "verbose": 'v',
         "env": 'e',
@@ -2282,12 +2314,14 @@ when isMainModule:
     ],
     [download,
       help = {
+        "conf": "viking.conf file with taxpayer data",
         "output_dir": "Output directory for downloaded files (default: current dir)",
         "dry_run": "Show generated XML without sending",
         "verbose": "Show full server response and confirmation XML",
         "env": "Path to env file (default: .env)",
       },
       short = {
+        "conf": 'c',
         "output_dir": 'o',
         "dry_run": 'd',
         "verbose": 'v',

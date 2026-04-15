@@ -2,17 +2,20 @@
 ## Generates ELSTER XML for Postfach operations (Datenabholung v31)
 
 import std/[strformat]
+import config
 
 const datenabholungNs = "http://finkonsens.de/elster/elsterdatenabholung/v3"
 const elsterNs = "http://www.elster.de/elsterxml/schema/v11"
 
 proc generateAbholungXml*(
   nutzdatenContent: string,
-  herstellerId: string,
   name: string,
   test: bool,
+  produktVersion: string = "0.1.0",
   datenArt: string = "PostfachAnfrage",
 ): string =
+  let herstellerId = HerstellerId
+  let produktName = ProduktName
   let testmerkerLine = if test: "\n    <Testmerker>700000004</Testmerker>" else: ""
   result = &"""<?xml version="1.0" encoding="UTF-8"?>
 <Elster xmlns="{elsterNs}">
@@ -34,8 +37,8 @@ proc generateAbholungXml*(
         <NutzdatenTicket>1</NutzdatenTicket>
         <Empfaenger id="L">CS</Empfaenger>
         <Hersteller>
-          <ProduktName>Viking</ProduktName>
-          <ProduktVersion>0.1.0</ProduktVersion>
+          <ProduktName>{produktName}</ProduktName>
+          <ProduktVersion>{produktVersion}</ProduktVersion>
         </Hersteller>
       </NutzdatenHeader>
       <Nutzdaten>
@@ -48,9 +51,9 @@ proc generateAbholungXml*(
 </Elster>"""
 
 proc generatePostfachAnfrageXml*(
-  herstellerId: string,
   name: string,
   test: bool,
+  produktVersion: string = "0.1.0",
   einschraenkung: string = "alle",
 ): string =
   # Request all standard document types:
@@ -65,13 +68,13 @@ proc generatePostfachAnfrageXml*(
                 "DivaBescheidFEIN", "DivaSonstigerVA"]:
     content.add(&"            <DatenartBereitstellung name=\"{name}\"/>\n")
   content.add("          </PostfachAnfrage>")
-  generateAbholungXml(content, herstellerId, name, test, "PostfachAnfrage")
+  generateAbholungXml(content, name, test, produktVersion, "PostfachAnfrage")
 
 proc generatePostfachBestaetigungXml*(
   bereitstellungIds: seq[string],
-  herstellerId: string,
   name: string,
   test: bool,
+  produktVersion: string = "0.1.0",
 ): string =
   var content = "          <PostfachBestaetigung>\n"
   content.add("            <Bereitstellungen>\n")
@@ -79,4 +82,4 @@ proc generatePostfachBestaetigungXml*(
     content.add(&"              <Bereitstellung id=\"{id}\"/>\n")
   content.add("            </Bereitstellungen>\n")
   content.add("          </PostfachBestaetigung>")
-  generateAbholungXml(content, herstellerId, name, test, "PostfachBestaetigung")
+  generateAbholungXml(content, name, test, produktVersion, "PostfachBestaetigung")
