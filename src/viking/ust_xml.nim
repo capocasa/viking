@@ -3,7 +3,7 @@
 ## Uses E50 schema with USt2A form + Anlage UN
 
 import std/[strformat]
-import config
+import viking/config
 
 proc generateUst*(
   steuernummer: string,

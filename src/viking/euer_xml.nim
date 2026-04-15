@@ -2,7 +2,7 @@
 ## Generates ELSTER XML for Einnahmenüberschussrechnung (profit/loss statement)
 
 import std/[strformat]
-import config
+import viking/config
 
 proc generateEuer*(
   steuernummer: string,

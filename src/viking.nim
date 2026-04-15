@@ -4,8 +4,8 @@
 import std/[strutils, strformat, times, options, os, tables, xmltree, xmlparser, sequtils]
 import cligen, cligen/argcvt
 import dotenv
-import config, eric_ffi, otto_ffi, ustva_xml, euer_xml, est_xml, ust_xml, eric_setup, invoices, abholung_xml, nachricht_xml, bankverbindung_xml
-import viking_conf, deductions, kap
+import viking/[config, eric_ffi, otto_ffi, ustva_xml, euer_xml, est_xml, ust_xml, eric_setup, invoices, abholung_xml, nachricht_xml, bankverbindung_xml]
+import viking/[viking_conf, deductions, kap]
 
 const NimblePkgVersion {.strdefine.} = "dev"
 

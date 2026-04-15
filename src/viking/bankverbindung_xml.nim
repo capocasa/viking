@@ -2,7 +2,7 @@
 ## Generates ELSTER XML for changing bank account (IBAN) at the Finanzamt
 
 import std/[strformat]
-import config
+import viking/config
 
 const bankverbindungNs = "http://finkonsens.de/elster/elsternachricht/aenderungbankverbindung/v20"
 const elsterNs = "http://www.elster.de/elsterxml/schema/v11"

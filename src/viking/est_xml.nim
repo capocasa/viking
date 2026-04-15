@@ -2,7 +2,7 @@
 ## Generates ELSTER XML for Einkommensteuererklarung (income tax return)
 
 import std/[strformat, tables]
-import viking_conf, deductions, kap, config
+import viking/[viking_conf, deductions, kap, config]
 
 type
   EstInput* = object

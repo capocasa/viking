@@ -2,7 +2,7 @@
 ## Generates ELSTER XML for sending a message to the Finanzamt
 
 import std/[strformat]
-import config
+import viking/config
 
 const nachrichtNs = "http://finkonsens.de/elster/elsternachricht/sonstigenachrichten/v21"
 const elsterNs = "http://www.elster.de/elsterxml/schema/v11"

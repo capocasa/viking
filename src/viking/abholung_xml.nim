@@ -2,7 +2,7 @@
 ## Generates ELSTER XML for Postfach operations (Datenabholung v31)
 
 import std/[strformat]
-import config
+import viking/config
 
 const datenabholungNs = "http://finkonsens.de/elster/elsterdatenabholung/v3"
 const elsterNs = "http://www.elster.de/elsterxml/schema/v11"

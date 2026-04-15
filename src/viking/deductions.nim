@@ -2,7 +2,7 @@
 ## Parses deductions.tsv with compound codes (e.g. vor326, sa140, lena174)
 
 import std/[strutils, tables]
-import kz_map
+import viking/kz_map
 
 type
   DeductionEntry* = object

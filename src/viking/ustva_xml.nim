@@ -2,7 +2,7 @@
 ## Generates ELSTER XML for Umsatzsteuervoranmeldung
 
 import std/[strutils, strformat, times, options]
-import config
+import viking/config
 
 proc formatAmount(val: float): string =
   ## Format amount for XML (2 decimal places, no thousands separator)
