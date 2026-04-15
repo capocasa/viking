@@ -23,19 +23,20 @@ proc generateEuer*(
   expenseVorsteuer: float,
   rechtsform: string,
   einkunftsart: string,
-  herstellerId: string,
-  produktName: string,
   name: string,
   strasse: string,
   plz: string,
   ort: string,
   test: bool,
+  produktVersion: string = "0.1.0",
 ): string =
   ## Generate ELSTER XML for EÜR (Einnahmenüberschussrechnung)
 
   let finanzamt = steuernummer[0..3]
   let bundesland = bundeslandFromSteuernummer(steuernummer)
   let testmerkerLine = if test: "\n    <Testmerker>700000004</Testmerker>" else: ""
+  let herstellerId = HerstellerId
+  let produktName = ProduktName
 
   # Compute totals
   let totalIncome = roundCents(incomeNet + incomeVat)
@@ -64,7 +65,7 @@ proc generateEuer*(
         <Empfaenger id="F">{finanzamt}</Empfaenger>
         <Hersteller>
           <ProduktName>{produktName}</ProduktName>
-          <ProduktVersion>0.1.0</ProduktVersion>
+          <ProduktVersion>{produktVersion}</ProduktVersion>
         </Hersteller>
       </NutzdatenHeader>
       <Nutzdaten>

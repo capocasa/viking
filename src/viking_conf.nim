@@ -44,7 +44,7 @@ proc loadVikingConf*(path: string): VikingConf =
 
   result.taxpayer.religion = "11"
   result.taxpayer.kvArt = "privat"
-  result.taxpayer.rechtsform = "1"
+  result.taxpayer.rechtsform = "120"
   result.taxpayer.besteuerungsart = "2"
 
   let stream = newFileStream(path, fmRead)
@@ -145,10 +145,65 @@ proc validateForEst*(conf: VikingConf): seq[string] =
   if conf.taxpayer.kvArt != "privat" and conf.taxpayer.kvArt != "gesetzlich":
     result.add("taxpayer.kv_art must be 'privat' or 'gesetzlich'")
 
-proc validateForEuer*(conf: VikingConf): seq[string] =
-  ## Validate config has required fields for EÜR submission.
+proc validateForUstva*(conf: VikingConf): seq[string] =
+  ## Validate config has required fields for UStVA submission.
+  if conf.taxpayer.firstname == "":
+    result.add("taxpayer.firstname not set in viking.conf")
+  if conf.taxpayer.lastname == "":
+    result.add("taxpayer.lastname not set in viking.conf")
   if conf.taxpayer.taxnumber == "":
     result.add("taxpayer.taxnumber not set in viking.conf")
+  if conf.taxpayer.street == "":
+    result.add("taxpayer.street not set in viking.conf")
+  if conf.taxpayer.zip == "":
+    result.add("taxpayer.zip not set in viking.conf")
+  if conf.taxpayer.city == "":
+    result.add("taxpayer.city not set in viking.conf")
+
+proc validateForNachricht*(conf: VikingConf): seq[string] =
+  ## Validate config has required fields for SonstigeNachricht submission.
+  if conf.taxpayer.firstname == "":
+    result.add("taxpayer.firstname not set in viking.conf")
+  if conf.taxpayer.lastname == "":
+    result.add("taxpayer.lastname not set in viking.conf")
+  if conf.taxpayer.taxnumber == "":
+    result.add("taxpayer.taxnumber not set in viking.conf")
+  if conf.taxpayer.street == "":
+    result.add("taxpayer.street not set in viking.conf")
+  if conf.taxpayer.housenumber == "":
+    result.add("taxpayer.housenumber not set in viking.conf")
+  if conf.taxpayer.zip == "":
+    result.add("taxpayer.zip not set in viking.conf")
+  if conf.taxpayer.city == "":
+    result.add("taxpayer.city not set in viking.conf")
+
+proc validateForBankverbindung*(conf: VikingConf): seq[string] =
+  ## Validate config has required fields for AenderungBankverbindung submission.
+  if conf.taxpayer.firstname == "":
+    result.add("taxpayer.firstname not set in viking.conf")
+  if conf.taxpayer.lastname == "":
+    result.add("taxpayer.lastname not set in viking.conf")
+  if conf.taxpayer.birthdate == "":
+    result.add("taxpayer.birthdate not set in viking.conf")
+  if conf.taxpayer.idnr == "":
+    result.add("taxpayer.idnr not set in viking.conf")
+  if conf.taxpayer.taxnumber == "":
+    result.add("taxpayer.taxnumber not set in viking.conf")
+
+proc validateForEuer*(conf: VikingConf): seq[string] =
+  ## Validate config has required fields for EÜR submission.
+  if conf.taxpayer.firstname == "":
+    result.add("taxpayer.firstname not set in viking.conf")
+  if conf.taxpayer.lastname == "":
+    result.add("taxpayer.lastname not set in viking.conf")
+  if conf.taxpayer.taxnumber == "":
+    result.add("taxpayer.taxnumber not set in viking.conf")
+  if conf.taxpayer.street == "":
+    result.add("taxpayer.street not set in viking.conf")
+  if conf.taxpayer.zip == "":
+    result.add("taxpayer.zip not set in viking.conf")
+  if conf.taxpayer.city == "":
+    result.add("taxpayer.city not set in viking.conf")
   if conf.taxpayer.rechtsform == "":
     result.add("taxpayer.rechtsform not set in viking.conf")
   if conf.taxpayer.income == "":

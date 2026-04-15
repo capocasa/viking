@@ -28,6 +28,7 @@ proc submit(
   invoice_file: string = "",
   period: string = "",
   year: int = 0,
+  conf: string = "",
   validate_only: bool = false,
   dry_run: bool = false,
   verbose: bool = false,
@@ -35,13 +36,38 @@ proc submit(
 ): int =
   ## Submit a German VAT advance return (Umsatzsteuervoranmeldung)
   ##
+  ## Personal data from viking.conf, technical config from .env.
+  ##
   ## Examples:
-  ##   viking --amount19=1000.00 --period=01 --year=2025
-  ##   viking --amount19=1000 --amount7=500 --period=41 --year=2025
-  ##   viking --amount19=100 --period=01 --validate-only
+  ##   viking submit -c viking.conf --amount19=1000.00 --period=01 --year=2025
+  ##   viking submit -c viking.conf --amount19=1000 --amount7=500 --period=41 --year=2025
+  ##   viking submit -c viking.conf --amount19=100 --period=01 --validate-only
 
   # Determine year
   let actualYear = if year == 0: now().year else: year
+
+  # Validate conf
+  if conf == "":
+    echo "Error: --conf is required (viking.conf file)"
+    return 1
+
+  # Load viking.conf
+  var vikingConf: VikingConf
+  try:
+    vikingConf = loadVikingConf(conf)
+  except IOError as e:
+    echo &"Error: {e.msg}"
+    return 1
+  except ValueError as e:
+    echo &"Error parsing {conf}: {e.msg}"
+    return 1
+
+  let confErrors = vikingConf.validateForUstva()
+  if confErrors.len > 0:
+    echo "Configuration errors in " & conf & ":"
+    for e in confErrors:
+      echo &"  - {e}"
+    return 1
 
   # Validate period
   if period == "":
@@ -94,7 +120,7 @@ proc submit(
       echo &"Sum 0%:   {agg.amount0.get:.2f} EUR"
     echo ""
 
-  # Load and validate configuration
+  # Load technical .env config
   var cfg: Config
   try:
     cfg = loadConfig(env)
@@ -102,15 +128,13 @@ proc submit(
     echo &"Error: {e.msg}"
     return 1
   # Dry-run validates everything to ensure setup is correct
-  let errors = if validateOnly and not dryRun: cfg.validateForValidateOnly()
-               else: cfg.validateForSubmission()
+  let techErrors = if validateOnly and not dryRun: cfg.validateForValidateOnly()
+                   else: cfg.validate()
 
-  if errors.len > 0:
-    echo "Configuration errors:"
-    for e in errors:
+  if techErrors.len > 0:
+    echo "Configuration errors in .env:"
+    for e in techErrors:
       echo &"  - {e}"
-    echo ""
-    echo "Please check your .env file. See .env.example for required settings."
     return 1
 
   # Extract amounts (default to 0 if provided but for XML generation)
@@ -118,21 +142,24 @@ proc submit(
   let amt7 = finalAmount7.get(0.0)
   let amt0 = finalAmount0.get(0.0)
 
+  let tp = vikingConf.taxpayer
+  let fullName = tp.firstname & " " & tp.lastname
+  let fullStreet = tp.street & " " & tp.housenumber
+
   # Generate XML
   let xml = generateUstva(
-    steuernummer = cfg.steuernummer,
+    steuernummer = tp.taxnumber,
     jahr = actualYear,
     zeitraum = period,
     kz81 = finalAmount19,
     kz86 = finalAmount7,
     kz45 = finalAmount0,
-    herstellerId = cfg.herstellerId,
-    produktName = cfg.produktName,
-    name = cfg.name,
-    strasse = cfg.strasse,
-    plz = cfg.plz,
-    ort = cfg.ort,
+    name = fullName,
+    strasse = fullStreet,
+    plz = tp.zip,
+    ort = tp.city,
     test = cfg.test,
+    produktVersion = NimblePkgVersion,
   )
 
   # Load ERiC library
@@ -208,7 +235,7 @@ proc submit(
   echo &"=== Umsatzsteuervoranmeldung ==="
   echo &"Year:        {actualYear}"
   echo &"Period:      {period} ({periodDescription(period)})"
-  echo &"Tax number:  {cfg.steuernummer}"
+  echo &"Tax number:  {tp.taxnumber}"
   echo ""
   if finalAmount0.isSome:
     echo &"Kz45 (0%):   {amt0:.2f} EUR (non-taxable)"
@@ -264,9 +291,8 @@ proc submit(
     case rc
     of 610301202:
       echo ""
-      echo "Hint: The demo HerstellerID (74931) is blocked."
+      echo "Hint: The HerstellerID is blocked."
       echo "  Register at https://www.elster.de/elsterweb/entwickler"
-      echo "  and set HERSTELLER_ID in your .env file."
     of 610301200:
       echo ""
       echo "Hint: XML schema validation failed."
@@ -296,8 +322,9 @@ proc submit(
     return 1
 
 proc euer(
-  invoice_file: string = "",
   year: int = 0,
+  conf: string = "",
+  euer: string = "",
   validate_only: bool = false,
   dry_run: bool = false,
   verbose: bool = false,
@@ -305,31 +332,57 @@ proc euer(
 ): int =
   ## Submit an EÜR (Einnahmenüberschussrechnung / profit-loss statement)
   ##
+  ## Personal data from viking.conf, invoices from euer.tsv.
   ## Positive invoice amounts = income, negative = expenses.
   ##
   ## Examples:
-  ##   viking euer -i invoices.csv -y 2025
-  ##   viking euer -i invoices.csv -y 2025 --validate-only
-  ##   viking euer -i invoices.csv --dry-run
+  ##   viking euer -y 2025 -c viking.conf --euer euer.tsv
+  ##   viking euer -y 2025 -c viking.conf --euer euer.tsv --validate-only
+  ##   viking euer -y 2025 -c viking.conf --euer euer.tsv --dry-run
 
   let actualYear = if year == 0: now().year else: year
 
-  if invoiceFile == "":
-    echo "Error: --invoice-file is required for EÜR submission"
+  if conf == "":
+    echo "Error: --conf is required for EÜR submission (viking.conf file)"
+    return 1
+
+  if euer == "":
+    echo "Error: --euer is required for EÜR submission (invoice TSV file)"
+    return 1
+
+  # Load viking.conf
+  var vikingConf: VikingConf
+  try:
+    vikingConf = loadVikingConf(conf)
+  except IOError as e:
+    echo &"Error: {e.msg}"
+    return 1
+  except ValueError as e:
+    echo &"Error parsing {conf}: {e.msg}"
+    return 1
+
+  let confErrors = vikingConf.validateForEuer()
+  if confErrors.len > 0:
+    echo "Configuration errors in " & conf & ":"
+    for e in confErrors:
+      echo &"  - {e}"
     return 1
 
   # Load and aggregate invoices
-  let (agg, ok) = loadAndAggregateForEuer(invoiceFile)
+  if not fileExists(euer):
+    echo &"Error: EÜR file not found: {euer}"
+    return 1
+  let (agg, ok) = loadAndAggregateForEuer(euer)
   if not ok:
     return 1
 
   echo &"=== Invoices ==="
-  echo &"File:      {invoiceFile}"
+  echo &"File:      {euer}"
   echo &"Income:    {agg.incomeCount} invoices, {agg.incomeNet:.2f} EUR net + {agg.incomeVat:.2f} EUR VAT"
   echo &"Expenses:  {agg.expenseCount} invoices, {agg.expenseNet:.2f} EUR net + {agg.expenseVorsteuer:.2f} EUR Vorsteuer"
   echo ""
 
-  # Load and validate configuration
+  # Load technical .env config
   var cfg: Config
   try:
     cfg = loadConfig(env)
@@ -337,36 +390,35 @@ proc euer(
     echo &"Error: {e.msg}"
     return 1
 
-  let errors = if validateOnly and not dryRun: cfg.validateForEuerValidateOnly()
-               else: cfg.validateForEuerSubmission()
-
-  if errors.len > 0:
-    echo "Configuration errors:"
-    for e in errors:
+  let techErrors = if validateOnly and not dryRun: cfg.validateForValidateOnly()
+                   else: cfg.validate()
+  if techErrors.len > 0:
+    echo "Configuration errors in .env:"
+    for e in techErrors:
       echo &"  - {e}"
-    echo ""
-    echo "Please check your .env file. EÜR requires RECHTSFORM and EINKUNFTSART."
     return 1
 
-  let bundesland = bundeslandFromSteuernummer(cfg.steuernummer)
+  let tp = vikingConf.taxpayer
+  let bundesland = bundeslandFromSteuernummer(tp.taxnumber)
+  let fullName = tp.firstname & " " & tp.lastname
+  let fullStreet = tp.street & " " & tp.housenumber
 
   # Generate XML
   let xml = generateEuer(
-    steuernummer = cfg.steuernummer,
+    steuernummer = tp.taxnumber,
     jahr = actualYear,
     incomeNet = agg.incomeNet,
     incomeVat = agg.incomeVat,
     expenseNet = agg.expenseNet,
     expenseVorsteuer = agg.expenseVorsteuer,
-    rechtsform = cfg.rechtsform,
-    einkunftsart = cfg.einkunftsart,
-    herstellerId = cfg.herstellerId,
-    produktName = cfg.produktName,
-    name = cfg.name,
-    strasse = cfg.strasse,
-    plz = cfg.plz,
-    ort = cfg.ort,
+    rechtsform = tp.rechtsform,
+    einkunftsart = tp.income,
+    name = fullName,
+    strasse = fullStreet,
+    plz = tp.zip,
+    ort = tp.city,
     test = cfg.test,
+    produktVersion = NimblePkgVersion,
   )
 
   # Load ERiC library
@@ -440,8 +492,9 @@ proc euer(
   # Show summary
   echo &"=== Einnahmenüberschussrechnung ==="
   echo &"Year:        {actualYear}"
-  echo &"Tax number:  {cfg.steuernummer}"
+  echo &"Tax number:  {tp.taxnumber}"
   echo &"Bundesland:  {bundesland}"
+  echo &"Name:        {fullName}"
   echo ""
   echo &"Income:      {totalIncome:.2f} EUR ({agg.incomeNet:.2f} net + {agg.incomeVat:.2f} VAT)"
   echo &"Expenses:    {totalExpense:.2f} EUR ({agg.expenseNet:.2f} net + {agg.expenseVorsteuer:.2f} Vorsteuer)"
@@ -1651,6 +1704,7 @@ proc download(
 
 proc iban(
   new_iban: string = "",
+  conf: string = "",
   validate_only: bool = false,
   dry_run: bool = false,
   verbose: bool = false,
@@ -1658,15 +1712,40 @@ proc iban(
 ): int =
   ## Change bank account (IBAN) at the Finanzamt
   ##
+  ## Personal data from viking.conf, technical config from .env.
+  ##
   ## Examples:
-  ##   viking iban --new-iban DE89370400440532013000
-  ##   viking iban --new-iban DE89370400440532013000 --dry-run
+  ##   viking iban -c viking.conf --new-iban DE89370400440532013000
+  ##   viking iban -c viking.conf --new-iban DE89370400440532013000 --dry-run
 
   if new_iban == "":
     echo "Error: --new-iban is required"
     return 1
 
-  # Load config
+  # Validate conf
+  if conf == "":
+    echo "Error: --conf is required (viking.conf file)"
+    return 1
+
+  # Load viking.conf
+  var vikingConf: VikingConf
+  try:
+    vikingConf = loadVikingConf(conf)
+  except IOError as e:
+    echo &"Error: {e.msg}"
+    return 1
+  except ValueError as e:
+    echo &"Error parsing {conf}: {e.msg}"
+    return 1
+
+  let confErrors = vikingConf.validateForBankverbindung()
+  if confErrors.len > 0:
+    echo "Configuration errors in " & conf & ":"
+    for e in confErrors:
+      echo &"  - {e}"
+    return 1
+
+  # Load technical .env config
   var cfg: Config
   try:
     cfg = loadConfig(env)
@@ -1674,29 +1753,23 @@ proc iban(
     echo &"Error: {e.msg}"
     return 1
 
-  let errors = if validateOnly and not dryRun: cfg.validateForEstValidateOnly()
-               else: cfg.validateForEstSubmission()
-  if errors.len > 0:
-    echo "Configuration errors:"
-    for e in errors:
+  let techErrors = if validateOnly and not dryRun: cfg.validateForValidateOnly()
+                   else: cfg.validate()
+  if techErrors.len > 0:
+    echo "Configuration errors in .env:"
+    for e in techErrors:
       echo &"  - {e}"
-    echo ""
-    echo "Please check your .env file. See .env.example for required settings."
     return 1
 
-  if cfg.idnr == "":
-    echo "Error: IDNR not set (11-digit tax identification number)"
-    echo "  Add IDNR=... to your .env file."
-    return 1
-
+  let tp = vikingConf.taxpayer
+  let fullName = tp.firstname & " " & tp.lastname
   let xml = generateBankverbindungXml(
-    steuernummer = cfg.steuernummer,
-    herstellerId = cfg.herstellerId,
-    name = cfg.name,
-    vorname = cfg.vorname,
-    nachname = cfg.nachname,
-    idnr = cfg.idnr,
-    geburtsdatum = cfg.geburtsdatum,
+    steuernummer = tp.taxnumber,
+    name = fullName,
+    vorname = tp.firstname,
+    nachname = tp.lastname,
+    idnr = tp.idnr,
+    geburtsdatum = tp.birthdate,
     iban = new_iban,
     test = cfg.test,
   )
@@ -1760,7 +1833,7 @@ proc iban(
       discard ericCloseHandleToCertificate(certHandle)
 
   echo "=== IBAN-Änderung ==="
-  echo &"Tax number: {cfg.steuernummer}"
+  echo &"Tax number: {tp.taxnumber}"
   echo &"New IBAN:   {new_iban}"
   echo ""
 
@@ -1832,6 +1905,7 @@ proc message(
   subject: string = "",
   text: string = "",
   text_file: string = "",
+  conf: string = "",
   validate_only: bool = false,
   dry_run: bool = false,
   verbose: bool = false,
@@ -1839,9 +1913,11 @@ proc message(
 ): int =
   ## Send a message (Sonstige Nachricht) to the Finanzamt
   ##
+  ## Personal data from viking.conf, technical config from .env.
+  ##
   ## Examples:
-  ##   viking message --subject "Rückfrage" --text "Sehr geehrte Damen und Herren, ..."
-  ##   viking message --subject "Rückfrage" --text-file brief.txt
+  ##   viking message -c viking.conf --subject "Rückfrage" --text "Sehr geehrte Damen und Herren, ..."
+  ##   viking message -c viking.conf --subject "Rückfrage" --text-file brief.txt
 
   if subject == "":
     echo "Error: --subject is required"
@@ -1873,7 +1949,30 @@ proc message(
     echo &"Error: Message text exceeds 15000 characters ({messageText.len})"
     return 1
 
-  # Load config
+  # Validate conf
+  if conf == "":
+    echo "Error: --conf is required (viking.conf file)"
+    return 1
+
+  # Load viking.conf
+  var vikingConf: VikingConf
+  try:
+    vikingConf = loadVikingConf(conf)
+  except IOError as e:
+    echo &"Error: {e.msg}"
+    return 1
+  except ValueError as e:
+    echo &"Error parsing {conf}: {e.msg}"
+    return 1
+
+  let confErrors = vikingConf.validateForNachricht()
+  if confErrors.len > 0:
+    echo "Configuration errors in " & conf & ":"
+    for e in confErrors:
+      echo &"  - {e}"
+    return 1
+
+  # Load technical .env config
   var cfg: Config
   try:
     cfg = loadConfig(env)
@@ -1881,27 +1980,27 @@ proc message(
     echo &"Error: {e.msg}"
     return 1
 
-  let errors = if validateOnly and not dryRun: cfg.validateForNachrichtValidateOnly()
-               else: cfg.validateForNachrichtSubmission()
-  if errors.len > 0:
-    echo "Configuration errors:"
-    for e in errors:
+  let techErrors = if validateOnly and not dryRun: cfg.validateForValidateOnly()
+                   else: cfg.validate()
+  if techErrors.len > 0:
+    echo "Configuration errors in .env:"
+    for e in techErrors:
       echo &"  - {e}"
-    echo ""
-    echo "Please check your .env file. See .env.example for required settings."
     return 1
 
+  let tp = vikingConf.taxpayer
+  let fullName = tp.firstname & " " & tp.lastname
   let xml = generateNachrichtXml(
-    steuernummer = cfg.steuernummer,
-    herstellerId = cfg.herstellerId,
-    name = cfg.name,
-    strasse = cfg.strasse,
-    hausnummer = cfg.hausnummer,
-    plz = cfg.plz,
-    ort = cfg.ort,
+    steuernummer = tp.taxnumber,
+    name = fullName,
+    strasse = tp.street,
+    hausnummer = tp.housenumber,
+    plz = tp.zip,
+    ort = tp.city,
     betreff = subject,
     text = messageText,
     test = cfg.test,
+    produktVersion = NimblePkgVersion,
   )
 
   # Load ERiC library
@@ -1963,7 +2062,7 @@ proc message(
       discard ericCloseHandleToCertificate(certHandle)
 
   echo "=== Sonstige Nachricht ==="
-  echo &"Tax number:  {cfg.steuernummer}"
+  echo &"Tax number:  {tp.taxnumber}"
   echo &"Subject:     {subject}"
   echo &"Text length: {messageText.len} characters"
   echo ""
@@ -2044,6 +2143,7 @@ when isMainModule:
         "invoice_file": "CSV/TSV invoice file (- for stdin)",
         "period": "Period: 01-12 (monthly) or 41-44 (quarterly)",
         "year": "Tax year (default: current year)",
+        "conf": "viking.conf file with taxpayer data",
         "validate_only": "Only validate, don't send",
         "dry_run": "Show generated XML without processing",
         "verbose": "Show full server response XML",
@@ -2056,6 +2156,7 @@ when isMainModule:
         "invoice_file": 'i',
         "period": 'p',
         "year": 'y',
+        "conf": 'c',
         "validate_only": 'n',
         "dry_run": 'd',
         "verbose": 'v',
@@ -2064,16 +2165,17 @@ when isMainModule:
     ],
     [euer,
       help = {
-        "invoice_file": "CSV/TSV invoice file (positive=income, negative=expenses)",
         "year": "Tax year (default: current year)",
+        "conf": "viking.conf file with taxpayer data",
+        "euer": "TSV invoice file (positive=income, negative=expenses)",
         "validate_only": "Only validate, don't send",
         "dry_run": "Show generated XML without processing",
         "verbose": "Show full server response XML",
         "env": "Path to env file (default: .env)",
       },
       short = {
-        "invoice_file": 'i',
         "year": 'y',
+        "conf": 'c',
         "validate_only": 'n',
         "dry_run": 'd',
         "verbose": 'v',
@@ -2131,6 +2233,7 @@ when isMainModule:
     [iban,
       help = {
         "new_iban": "New IBAN for the Finanzamt",
+        "conf": "Path to viking.conf (taxpayer data)",
         "validate_only": "Only validate, don't send",
         "dry_run": "Show generated XML without processing",
         "verbose": "Show full server response XML",
@@ -2138,6 +2241,7 @@ when isMainModule:
       },
       short = {
         "new_iban": 'i',
+        "conf": 'c',
         "validate_only": 'n',
         "dry_run": 'd',
         "verbose": 'v',

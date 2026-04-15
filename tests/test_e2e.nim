@@ -53,9 +53,25 @@ check("fetch --check succeeds", fetchCheckRc == 0)
 check("fetch --check shows version", fetchCheck.contains("ERiC"))
 echo ""
 
+# viking.conf for submit tests
+let submitConf = projectRoot / "tests" / "tmp_submit_viking.conf"
+writeFile(submitConf, """[taxpayer]
+firstname = Hans
+lastname = Maier
+birthdate = 05.05.1955
+idnr = 04452397687
+taxnumber = 9198011310010
+income = 2
+street = Musterstr.
+housenumber = 1
+zip = 10115
+city = Berlin
+iban = DE91100000000123456789
+""")
+
 # --- Submit: dry-run ---
 echo "--- submit --dry-run ---"
-let (dryOut, dryRc) = run("./viking submit --p 41 --amount19 1000 --dry-run")
+let (dryOut, dryRc) = run("./viking submit -c " & submitConf & " --p 41 --amount19 1000 --dry-run")
 check("dry-run exits 0", dryRc == 0, "exit code: " & $dryRc)
 check("dry-run loads ERiC", dryOut.contains("ERiC library loaded"))
 check("dry-run shows XML", dryOut.contains("<Elster"))
@@ -72,11 +88,11 @@ echo "--- TEST flag ---"
 # Create a minimal env with TEST=0 (production)
 let prodEnv = projectRoot / "tests" / ".env.test_prod"
 writeFile(prodEnv, readFile(projectRoot / ".env").replace("TEST=1", "TEST=0"))
-let (prodOut, prodRc) = run("./viking submit --p 41 --amount19 0 --dry-run --env " & prodEnv)
+let (prodOut, prodRc) = run("./viking submit -c " & submitConf & " --p 41 --amount19 0 --dry-run --env " & prodEnv)
 check("TEST=0 dry-run exits 0", prodRc == 0, prodOut)
 check("TEST=0 no Testmerker", not prodOut.contains("Testmerker"), prodOut)
 
-let (testOut, testRc) = run("./viking submit --p 41 --amount19 0 --dry-run")
+let (testOut, testRc) = run("./viking submit -c " & submitConf & " --p 41 --amount19 0 --dry-run")
 check("TEST=1 dry-run exits 0", testRc == 0, testOut)
 check("TEST=1 has Testmerker", testOut.contains("<Testmerker>700000004</Testmerker>"))
 removeFile(prodEnv)
@@ -84,7 +100,7 @@ echo ""
 
 # --- Submit: dry-run with both rates ---
 echo "--- submit --dry-run (19% + 7%) ---"
-let (dryBoth, dryBothRc) = run("./viking submit --p 01 --amount19 500 --amount7 200 --dry-run")
+let (dryBoth, dryBothRc) = run("./viking submit -c " & submitConf & " --p 01 --amount19 500 --amount7 200 --dry-run")
 check("dual-rate dry-run exits 0", dryBothRc == 0)
 check("dual-rate has Kz81", dryBoth.contains("<Kz81>500</Kz81>"))
 check("dual-rate has Kz86", dryBoth.contains("<Kz86>200</Kz86>"))
@@ -96,7 +112,7 @@ echo ""
 
 # --- Submit: validate-only ---
 echo "--- submit --validate-only ---"
-let (valOut, valRc) = run("./viking submit --p 41 --amount19 0 --validate-only")
+let (valOut, valRc) = run("./viking submit -c " & submitConf & " --p 41 --amount19 0 --validate-only")
 # This may fail with HerstellerID error (610301202) which is expected
 # if the demo ID is blocked. But it should NOT fail with schema errors (610301200)
 # or certificate errors (610001050).
@@ -116,7 +132,7 @@ echo ""
 
 # --- Submit: full send path ---
 echo "--- submit (send) ---"
-let (sendOut, sendRc) = run("./viking submit --p 41 --amount19 0")
+let (sendOut, sendRc) = run("./viking submit -c " & submitConf & " --p 41 --amount19 0")
 let sendSchemaOk = not sendOut.contains("610301200")
 let sendCertOk = not sendOut.contains("610001050")
 check("send: no XML schema errors", sendSchemaOk, sendOut)
@@ -126,7 +142,7 @@ if sendRc == 0:
   check("send: succeeds", true)
 elif sendHidBlocked:
   check("send: only HerstellerID issue (expected with demo ID)", true)
-  check("send: shows actionable hint", sendOut.contains("HERSTELLER_ID"))
+  check("send: shows actionable hint", sendOut.contains("HerstellerID"))
 else:
   check("send: unexpected error", false, sendOut)
 echo ""
@@ -166,7 +182,7 @@ let combos = @[
 
 for year in years:
   for combo in combos:
-    let cmd = "./viking submit --p 41 " & combo.args & " --year " & $year & " --validate-only"
+    let cmd = "./viking submit -c " & submitConf & " --p 41 " & combo.args & " --year " & $year & " --validate-only"
     let (comboOut, comboRc) = run(cmd)
     let schemaOk = not comboOut.contains("610301200")
     let hidBlocked = comboOut.contains("610301202")
@@ -179,15 +195,19 @@ echo ""
 
 # --- Submit: input validation ---
 echo "--- input validation ---"
-let (noperiod, noperiodRc) = run("./viking submit --amount19 100")
+let (noconf, noconfRc) = run("./viking submit --amount19 100 --p 01")
+check("missing --conf is rejected", noconfRc != 0)
+check("missing --conf shows error", noconf.contains("--conf is required"))
+
+let (noperiod, noperiodRc) = run("./viking submit -c " & submitConf & " --amount19 100")
 check("missing --period is rejected", noperiodRc != 0)
 check("missing --period shows error", noperiod.contains("--period is required"))
 
-let (noamt, noamtRc) = run("./viking submit --p 41")
+let (noamt, noamtRc) = run("./viking submit -c " & submitConf & " --p 41")
 check("missing amounts is rejected", noamtRc != 0)
 check("missing amounts shows error", noamt.contains("--amount19") or noamt.contains("--invoice-file"))
 
-let (badperiod, badperiodRc) = run("./viking submit --p 99 --amount19 100")
+let (badperiod, badperiodRc) = run("./viking submit -c " & submitConf & " --p 99 --amount19 100")
 check("invalid period is rejected", badperiodRc != 0)
 check("invalid period shows error", badperiod.contains("Invalid period"))
 echo ""
@@ -198,7 +218,7 @@ let invCsv = projectRoot / "tests" / "tmp_invoices.csv"
 
 # Test 1: CSV with header + mixed rates + negative amount
 writeFile(invCsv, "amount,rate,date,invoice-id,description\n1000,19,2026-01-15,INV-001,January sales\n500,7,2026-01-20,INV-002,Reduced rate\n-200,19,2026-01-25,CR-001,Credit note\n")
-let (csvOut, csvRc) = run("./viking submit -i " & invCsv & " --p 01 --dry-run")
+let (csvOut, csvRc) = run("./viking submit -c " & submitConf & " -i " & invCsv & " --p 01 --dry-run")
 check("CSV mixed rates exits 0", csvRc == 0, csvOut)
 check("CSV shows invoice count", csvOut.contains("Count:    3"))
 check("CSV Kz81 = 800 (1000-200)", csvOut.contains("<Kz81>800</Kz81>"))
@@ -213,7 +233,7 @@ echo ""
 echo "--- invoice input (TSV) ---"
 let invTsv = projectRoot / "tests" / "tmp_invoices.tsv"
 writeFile(invTsv, "750\t19\n250\t7\n")
-let (tsvOut, tsvRc) = run("./viking submit -i " & invTsv & " --p 01 --dry-run")
+let (tsvOut, tsvRc) = run("./viking submit -c " & submitConf & " -i " & invTsv & " --p 01 --dry-run")
 check("TSV auto-detect exits 0", tsvRc == 0, tsvOut)
 check("TSV Kz81 = 750", tsvOut.contains("<Kz81>750</Kz81>"))
 check("TSV Kz86 = 250", tsvOut.contains("<Kz86>250</Kz86>"))
@@ -223,7 +243,7 @@ echo ""
 # Test 3: Amount-only (single column, default rate 19%)
 echo "--- invoice input (amount-only) ---"
 writeFile(invCsv, "100\n200\n300\n")
-let (amtOut, amtRc) = run("./viking submit -i " & invCsv & " --p 01 --dry-run")
+let (amtOut, amtRc) = run("./viking submit -c " & submitConf & " -i " & invCsv & " --p 01 --dry-run")
 check("amount-only exits 0", amtRc == 0, amtOut)
 check("amount-only Kz81 = 600", amtOut.contains("<Kz81>600</Kz81>"))
 check("amount-only no Kz86", not amtOut.contains("<Kz86>"))
@@ -232,7 +252,7 @@ echo ""
 # Test 4: Mutual exclusivity (--invoices + --amount19 rejected)
 echo "--- invoice mutual exclusivity ---"
 writeFile(invCsv, "100\n")
-let (mutexOut, mutexRc) = run("./viking submit -i " & invCsv & " --amount19 100 --p 01 --dry-run")
+let (mutexOut, mutexRc) = run("./viking submit -c " & submitConf & " -i " & invCsv & " --amount19 100 --p 01 --dry-run")
 check("mutex rejected", mutexRc != 0)
 check("mutex shows error", mutexOut.contains("mutually exclusive"))
 echo ""
@@ -240,7 +260,7 @@ echo ""
 # Test 5: Empty file -> zero submission
 echo "--- invoice empty file ---"
 writeFile(invCsv, "")
-let (emptyOut, emptyRc) = run("./viking submit -i " & invCsv & " --p 01 --dry-run")
+let (emptyOut, emptyRc) = run("./viking submit -c " & submitConf & " -i " & invCsv & " --p 01 --dry-run")
 check("empty file exits 0", emptyRc == 0, emptyOut)
 check("empty file count 0", emptyOut.contains("Count:    0"))
 check("empty file has Kz81 = 0", emptyOut.contains("<Kz81>0</Kz81>"))
@@ -249,7 +269,7 @@ echo ""
 # Test 6: Validation errors (bad amount, bad rate)
 echo "--- invoice validation errors ---"
 writeFile(invCsv, "100,19\nabc,19\n100,99\n")
-let (valErrOut, valErrRc) = run("./viking submit -i " & invCsv & " --p 01 --dry-run")
+let (valErrOut, valErrRc) = run("./viking submit -c " & submitConf & " -i " & invCsv & " --p 01 --dry-run")
 check("validation errors rejected", valErrRc != 0)
 check("bad amount reported", valErrOut.contains("line 2") and valErrOut.contains("invalid amount"))
 check("bad rate reported", valErrOut.contains("line 3") and valErrOut.contains("invalid rate"))
@@ -258,7 +278,7 @@ echo ""
 # Test: 0% rate (Kz45 - non-taxable)
 echo "--- invoice 0% rate (Kz45) ---"
 writeFile(invCsv, "1000,19\n500,0\n")
-let (kz45Out, kz45Rc) = run("./viking submit -i " & invCsv & " --p 01 --dry-run")
+let (kz45Out, kz45Rc) = run("./viking submit -c " & submitConf & " -i " & invCsv & " --p 01 --dry-run")
 check("0% rate exits 0", kz45Rc == 0, kz45Out)
 check("0% rate has Kz45 = 500", kz45Out.contains("<Kz45>500</Kz45>"))
 check("0% rate has Kz81 = 1000", kz45Out.contains("<Kz81>1000</Kz81>"))
@@ -272,33 +292,33 @@ echo "--- invoice period filtering ---"
 writeFile(invCsv, "amount,rate,date,invoice-id,description\n1000,19,2026-01-15,INV-001,Jan\n500,19,2026-02-10,INV-002,Feb\n300,7,2026-04-05,INV-003,Apr\n200,19,2026-06-20,INV-004,Jun\n")
 
 # Q1 should get Jan + Feb only
-let (q1Out, q1Rc) = run("./viking submit -i " & invCsv & " --p 41 -y 2026 --dry-run")
+let (q1Out, q1Rc) = run("./viking submit -c " & submitConf & " -i " & invCsv & " --p 41 -y 2026 --dry-run")
 check("Q1 filter exits 0", q1Rc == 0, q1Out)
 check("Q1 filter Kz81 = 1500", q1Out.contains("<Kz81>1500</Kz81>"))
 check("Q1 filter no Kz86", not q1Out.contains("<Kz86>"))
 check("Q1 filter shows filtered count", q1Out.contains("filtered to 2"))
 
 # Q2 should get Apr + Jun
-let (q2Out, q2Rc) = run("./viking submit -i " & invCsv & " --p 42 -y 2026 --dry-run")
+let (q2Out, q2Rc) = run("./viking submit -c " & submitConf & " -i " & invCsv & " --p 42 -y 2026 --dry-run")
 check("Q2 filter exits 0", q2Rc == 0, q2Out)
 check("Q2 filter Kz81 = 200", q2Out.contains("<Kz81>200</Kz81>"))
 check("Q2 filter Kz86 = 300", q2Out.contains("<Kz86>300</Kz86>"))
 check("Q2 filter shows filtered count", q2Out.contains("filtered to 2"))
 
 # Monthly: January only
-let (janOut, janRc) = run("./viking submit -i " & invCsv & " --p 01 -y 2026 --dry-run")
+let (janOut, janRc) = run("./viking submit -c " & submitConf & " -i " & invCsv & " --p 01 -y 2026 --dry-run")
 check("Jan filter exits 0", janRc == 0, janOut)
 check("Jan filter Kz81 = 1000", janOut.contains("<Kz81>1000</Kz81>"))
 check("Jan filter shows filtered count", janOut.contains("filtered to 1"))
 
 # Wrong year -> zero submission
-let (wrongYrOut, wrongYrRc) = run("./viking submit -i " & invCsv & " --p 41 -y 2025 --dry-run")
+let (wrongYrOut, wrongYrRc) = run("./viking submit -c " & submitConf & " -i " & invCsv & " --p 41 -y 2025 --dry-run")
 check("wrong year filter exits 0", wrongYrRc == 0, wrongYrOut)
 check("wrong year shows filtered to 0", wrongYrOut.contains("filtered to 0"))
 
 # Undated invoices excluded with warning
 writeFile(invCsv, "1000,19,2026-01-15,INV-001,dated\n500,19\n")
-let (undatedOut, undatedRc) = run("./viking submit -i " & invCsv & " --p 01 -y 2026 --dry-run 2>&1")
+let (undatedOut, undatedRc) = run("./viking submit -c " & submitConf & " -i " & invCsv & " --p 01 -y 2026 --dry-run 2>&1")
 check("undated filter exits 0", undatedRc == 0, undatedOut)
 check("undated shows warning", undatedOut.contains("without date"))
 check("undated Kz81 = 1000", undatedOut.contains("<Kz81>1000</Kz81>"))
@@ -307,7 +327,7 @@ echo ""
 # Test 7: Header-only file -> zero submission
 echo "--- invoice header-only ---"
 writeFile(invCsv, "amount,rate,date\n")
-let (hdrOut, hdrRc) = run("./viking submit -i " & invCsv & " --p 01 --dry-run")
+let (hdrOut, hdrRc) = run("./viking submit -c " & submitConf & " -i " & invCsv & " --p 01 --dry-run")
 check("header-only exits 0", hdrRc == 0, hdrOut)
 check("header-only count 0", hdrOut.contains("Count:    0"))
 echo ""
@@ -315,24 +335,41 @@ echo ""
 # Test 8: Comment lines skipped
 echo "--- invoice comments ---"
 writeFile(invCsv, "# This is a comment\n100,19\n# Another comment\n200,7\n")
-let (cmtOut, cmtRc) = run("./viking submit -i " & invCsv & " --p 01 --dry-run")
+let (cmtOut, cmtRc) = run("./viking submit -c " & submitConf & " -i " & invCsv & " --p 01 --dry-run")
 check("comments exits 0", cmtRc == 0, cmtOut)
 check("comments count 2", cmtOut.contains("Count:    2"))
 check("comments Kz81 = 100", cmtOut.contains("<Kz81>100</Kz81>"))
 check("comments Kz86 = 200", cmtOut.contains("<Kz86>200</Kz86>"))
 
 removeFile(invCsv)
+removeFile(submitConf)
 echo ""
 
 # =================================================================
 # EÜR (Einnahmenüberschussrechnung) tests
 # =================================================================
 
+# viking.conf for EÜR tests
+let euerConf = projectRoot / "tests" / "tmp_euer_viking.conf"
+writeFile(euerConf, """[taxpayer]
+firstname = Hans
+lastname = Maier
+birthdate = 05.05.1955
+idnr = 04452397687
+taxnumber = 9198011310010
+income = 2
+street = Musterstr.
+housenumber = 1
+zip = 10115
+city = Berlin
+iban = DE91100000000123456789
+""")
+
 # --- EÜR: dry-run with income only ---
 echo "--- euer --dry-run (income only) ---"
 let euerCsv = projectRoot / "tests" / "tmp_euer.csv"
 writeFile(euerCsv, "1000,19\n500,7\n")
-let (euerDryOut, euerDryRc) = run("./viking euer -i " & euerCsv & " -y 2025 --dry-run")
+let (euerDryOut, euerDryRc) = run("./viking euer -c " & euerConf & " --euer " & euerCsv & " -y 2025 --dry-run")
 check("euer dry-run exits 0", euerDryRc == 0, euerDryOut)
 check("euer dry-run loads ERiC", euerDryOut.contains("ERiC library loaded"))
 check("euer dry-run has E77 root", euerDryOut.contains("<E77"))
@@ -351,7 +388,7 @@ echo ""
 echo "--- euer income/expense split ---"
 # 1000 at 19% (income), -300 at 19% (expense)
 writeFile(euerCsv, "1000,19\n-300,19\n")
-let (splitOut, splitRc) = run("./viking euer -i " & euerCsv & " -y 2025 --dry-run")
+let (splitOut, splitRc) = run("./viking euer -c " & euerConf & " --euer " & euerCsv & " -y 2025 --dry-run")
 check("split exits 0", splitRc == 0, splitOut)
 # Income: 1000 net, 190 VAT -> total 1190 (German comma format)
 check("split income net 1000", splitOut.contains("<E6000401>1000,00</E6000401>"))
@@ -370,29 +407,32 @@ echo ""
 # --- EÜR: empty file (zero submission) ---
 echo "--- euer empty file ---"
 writeFile(euerCsv, "")
-let (euerEmptyOut, euerEmptyRc) = run("./viking euer -i " & euerCsv & " -y 2025 --dry-run")
+let (euerEmptyOut, euerEmptyRc) = run("./viking euer -c " & euerConf & " --euer " & euerCsv & " -y 2025 --dry-run")
 check("euer empty exits 0", euerEmptyRc == 0, euerEmptyOut)
 check("euer empty income 0", euerEmptyOut.contains("<E6000401>0,00</E6000401>"))
 check("euer empty profit 0", euerEmptyOut.contains("<E6007202>0,00</E6007202>"))
 echo ""
 
-# --- EÜR: missing invoice file ---
+# --- EÜR: missing conf/euer args ---
 echo "--- euer input validation ---"
-let (euerNoFile, euerNoFileRc) = run("./viking euer -y 2025 --dry-run")
-check("euer missing invoice rejected", euerNoFileRc != 0)
-check("euer missing invoice error", euerNoFile.contains("--invoice-file is required"))
+let (euerNoConf, euerNoConfRc) = run("./viking euer -y 2025 --dry-run")
+check("euer missing conf rejected", euerNoConfRc != 0)
+check("euer missing conf error", euerNoConf.contains("--conf is required"))
+let (euerNoFile, euerNoFileRc) = run("./viking euer -c " & euerConf & " -y 2025 --dry-run")
+check("euer missing euer rejected", euerNoFileRc != 0)
+check("euer missing euer error", euerNoFile.contains("--euer is required"))
 echo ""
 
 # --- EÜR: Testmerker ---
 echo "--- euer Testmerker ---"
 writeFile(euerCsv, "100,19\n")
-let (euerTestOut, euerTestRc) = run("./viking euer -i " & euerCsv & " -y 2025 --dry-run")
+let (euerTestOut, euerTestRc) = run("./viking euer -c " & euerConf & " --euer " & euerCsv & " -y 2025 --dry-run")
 check("euer TEST=1 has Testmerker", euerTestOut.contains("<Testmerker>700000004</Testmerker>"))
 
 # TEST=0
 let euerProdEnv = projectRoot / "tests" / ".env.euer_prod"
 writeFile(euerProdEnv, readFile(projectRoot / ".env").replace("TEST=1", "TEST=0"))
-let (euerProdOut, euerProdRc) = run("./viking euer -i " & euerCsv & " -y 2025 --dry-run --env " & euerProdEnv)
+let (euerProdOut, euerProdRc) = run("./viking euer -c " & euerConf & " --euer " & euerCsv & " -y 2025 --dry-run --env " & euerProdEnv)
 check("euer TEST=0 exits 0", euerProdRc == 0, euerProdOut)
 check("euer TEST=0 no Testmerker", not euerProdOut.contains("Testmerker"), euerProdOut)
 removeFile(euerProdEnv)
@@ -416,7 +456,7 @@ euerYears.sort()
 check("found EUER plugins for 2025+", euerYears.len > 0, "plugins in: " & pluginPath)
 writeFile(euerCsv, "1000,19\n-500,19\n")
 for year in euerYears:
-  let (eyOut, eyRc) = run("./viking euer -i " & euerCsv & " -y " & $year & " --validate-only")
+  let (eyOut, eyRc) = run("./viking euer -c " & euerConf & " --euer " & euerCsv & " -y " & $year & " --validate-only")
   let eySchemaOk = not eyOut.contains("610301200")
   let eyCertOk = not eyOut.contains("610001050")
   let eyHidBlocked = eyOut.contains("610301202")
@@ -429,6 +469,7 @@ for year in euerYears:
     check("euer " & $year & " passes validation", false, eyOut)
 
 removeFile(euerCsv)
+removeFile(euerConf)
 echo ""
 
 # =================================================================
@@ -863,8 +904,23 @@ echo ""
 # Message (SonstigeNachrichten) tests
 # =================================================================
 
+# viking.conf for message tests
+let messageConf = projectRoot / "tests" / "tmp_message_viking.conf"
+writeFile(messageConf, """[taxpayer]
+firstname = Hans
+lastname = Maier
+birthdate = 05.05.1955
+idnr = 04452397687
+taxnumber = 9198011310010
+street = Testweg
+housenumber = 42
+zip = 80331
+city = Muenchen
+iban = DE91100000000123456789
+""")
+
 echo "--- message --dry_run ---"
-let (msgDryOut, msgDryRc) = run("./viking message --subject \"Test Betreff\" --text \"Test Nachricht\" --dry_run")
+let (msgDryOut, msgDryRc) = run("./viking message -c " & messageConf & " --subject \"Test Betreff\" --text \"Test Nachricht\" --dry_run")
 check("message dry_run exits 0", msgDryRc == 0, msgDryOut)
 check("message dry_run has Nachricht element", msgDryOut.contains("<Nachricht xmlns="))
 check("message dry_run has ElsterNachricht", msgDryOut.contains("<Verfahren>ElsterNachricht</Verfahren>"))
@@ -879,36 +935,52 @@ check("message dry_run has Finanzamt in NutzdatenHeader", msgDryOut.contains("<E
 echo ""
 
 echo "--- message --validate_only ---"
-let (msgValOut, msgValRc) = run("./viking message --subject \"Test\" --text \"Testnachricht\" --validate_only")
+let (msgValOut, msgValRc) = run("./viking message -c " & messageConf & " --subject \"Test\" --text \"Testnachricht\" --validate_only")
 check("message validate_only exits 0", msgValRc == 0, msgValOut)
 check("message validate_only succeeds", msgValOut.contains("Validation successful"))
 echo ""
 
 echo "--- message validation ---"
-let (msgNoSubj, msgNoSubjRc) = run("./viking message --text \"Test\"")
+let (msgNoConf, msgNoConfRc) = run("./viking message --subject \"Test\" --text \"Test\"")
+check("message without conf fails", msgNoConfRc != 0)
+check("message without conf shows error", msgNoConf.contains("--conf is required"))
+
+let (msgNoSubj, msgNoSubjRc) = run("./viking message -c " & messageConf & " --text \"Test\"")
 check("message without subject fails", msgNoSubjRc != 0)
 check("message without subject shows error", msgNoSubj.contains("--subject is required"))
 
-let (msgNoText, msgNoTextRc) = run("./viking message --subject \"Test\"")
+let (msgNoText, msgNoTextRc) = run("./viking message -c " & messageConf & " --subject \"Test\"")
 check("message without text fails", msgNoTextRc != 0)
 check("message without text shows error", msgNoText.contains("--text or --text-file is required"))
 
-let (msgBothInput, msgBothInputRc) = run("./viking message --subject \"Test\" --text \"a\" --text_file \"b\"")
+let (msgBothInput, msgBothInputRc) = run("./viking message -c " & messageConf & " --subject \"Test\" --text \"a\" --text_file \"b\"")
 check("message with both text and text_file fails", msgBothInputRc != 0)
 check("message with both inputs shows error", msgBothInput.contains("mutually exclusive"))
 
 let longSubject = 'A'.repeat(100)
-let (msgLongSubj, msgLongSubjRc) = run("./viking message --subject \"" & longSubject & "\" --text \"Test\"")
+let (msgLongSubj, msgLongSubjRc) = run("./viking message -c " & messageConf & " --subject \"" & longSubject & "\" --text \"Test\"")
 check("message with long subject fails", msgLongSubjRc != 0)
 check("message long subject shows error", msgLongSubj.contains("at most 99"))
+
+removeFile(messageConf)
 echo ""
 
 # =================================================================
 # IBAN change (AenderungBankverbindung) tests
 # =================================================================
 
+# viking.conf for iban tests
+let ibanConf = projectRoot / "tests" / "tmp_iban_viking.conf"
+writeFile(ibanConf, """[taxpayer]
+firstname = Hans
+lastname = Maier
+birthdate = 05.05.1955
+idnr = 04452397687
+taxnumber = 9198011310010
+""")
+
 echo "--- iban --dry_run ---"
-let (ibanDryOut, ibanDryRc) = run("./viking iban --new_iban DE89370400440532013000 --dry_run")
+let (ibanDryOut, ibanDryRc) = run("./viking iban -c " & ibanConf & " --new_iban DE89370400440532013000 --dry_run")
 check("iban dry_run exits 0", ibanDryRc == 0, ibanDryOut)
 check("iban dry_run has AenderungBankverbindung", ibanDryOut.contains("<AenderungBankverbindung xmlns="))
 check("iban dry_run has ElsterNachricht", ibanDryOut.contains("<Verfahren>ElsterNachricht</Verfahren>"))
@@ -922,15 +994,21 @@ check("iban dry_run has Identifikationsnummer", ibanDryOut.contains("<Identifika
 echo ""
 
 echo "--- iban --validate_only ---"
-let (ibanValOut, ibanValRc) = run("./viking iban --new_iban DE89370400440532013000 --validate_only")
+let (ibanValOut, ibanValRc) = run("./viking iban -c " & ibanConf & " --new_iban DE89370400440532013000 --validate_only")
 check("iban validate_only exits 0", ibanValRc == 0, ibanValOut)
 check("iban validate_only succeeds", ibanValOut.contains("Validation successful"))
 echo ""
 
 echo "--- iban validation ---"
-let (ibanNoIban, ibanNoIbanRc) = run("./viking iban")
+let (ibanNoIban, ibanNoIbanRc) = run("./viking iban -c " & ibanConf)
 check("iban without new_iban fails", ibanNoIbanRc != 0)
 check("iban without new_iban shows error", ibanNoIban.contains("--new-iban is required"))
+
+let (ibanNoConf, ibanNoConfRc) = run("./viking iban --new_iban DE89370400440532013000")
+check("iban without conf fails", ibanNoConfRc != 0)
+check("iban without conf shows error", ibanNoConf.contains("--conf is required"))
+
+removeFile(ibanConf)
 echo ""
 
 # =================================================================

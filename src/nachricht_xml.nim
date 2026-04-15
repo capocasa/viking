@@ -18,7 +18,6 @@ proc xmlEscape(s: string): string =
 
 proc generateNachrichtXml*(
   steuernummer: string,
-  herstellerId: string,
   name: string,
   strasse: string,
   hausnummer: string,
@@ -27,7 +26,9 @@ proc generateNachrichtXml*(
   betreff: string,
   text: string,
   test: bool,
+  produktVersion: string = "0.1.0",
 ): string =
+  let herstellerId = HerstellerId
   let finanzamt = steuernummer[0..3]
   let bundesland = bundeslandFromSteuernummer(steuernummer)
   let testmerkerLine = if test: "\n    <Testmerker>700000004</Testmerker>" else: ""

@@ -2,6 +2,7 @@
 ## Generates ELSTER XML for Umsatzsteuervoranmeldung
 
 import std/[strutils, strformat, math, times, options]
+import config
 
 proc roundCents(val: float): float =
   ## Round to 2 decimal places (cents)
@@ -22,13 +23,12 @@ proc generateUstva*(
   kz81: Option[float] = none(float),
   kz86: Option[float] = none(float),
   kz45: Option[float] = none(float),
-  herstellerId: string,
-  produktName: string,
   name: string,
   strasse: string,
   plz: string,
   ort: string,
   test: bool,
+  produktVersion: string = "0.1.0",
 ): string =
   ## Generate ELSTER XML for Umsatzsteuervoranmeldung
   ##
@@ -42,6 +42,9 @@ proc generateUstva*(
   ##
   ## Returns:
   ##   Complete ELSTER XML document as string
+
+  let herstellerId = HerstellerId
+  let produktName = ProduktName
 
   # Extract amounts (0 if not provided)
   let amt81 = kz81.get(0.0)
@@ -99,7 +102,7 @@ proc generateUstva*(
         <Empfaenger id="F">{finanzamt}</Empfaenger>
         <Hersteller>
           <ProduktName>{produktName}</ProduktName>
-          <ProduktVersion>0.1.0</ProduktVersion>
+          <ProduktVersion>{produktVersion}</ProduktVersion>
         </Hersteller>
       </NutzdatenHeader>
       <Nutzdaten>

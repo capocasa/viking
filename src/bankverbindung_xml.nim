@@ -9,7 +9,6 @@ const elsterNs = "http://www.elster.de/elsterxml/schema/v11"
 
 proc generateBankverbindungXml*(
   steuernummer: string,
-  herstellerId: string,
   name: string,
   vorname: string,
   nachname: string,
@@ -18,6 +17,7 @@ proc generateBankverbindungXml*(
   iban: string,
   test: bool,
 ): string =
+  let herstellerId = HerstellerId
   let finanzamt = steuernummer[0..3]
   let bundesland = bundeslandFromSteuernummer(steuernummer)
   let testmerkerLine = if test: "\n    <Testmerker>700000004</Testmerker>" else: ""
