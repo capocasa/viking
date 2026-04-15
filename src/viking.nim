@@ -2161,6 +2161,117 @@ proc message(
 
     return 1
 
+proc initFiles(
+  dir: string = ".",
+  force: bool = false,
+): int =
+  ## Create skeleton viking.conf, deductions.tsv, kap.tsv, and euer.tsv
+  ##
+  ## Generates template files with all known fields and codes set to
+  ## placeholder values. Edit the generated files with your data.
+  ##
+  ## Examples:
+  ##   viking init
+  ##   viking init --dir myproject
+  ##   viking init --force          # overwrite existing files
+
+  let confPath = dir / "viking.conf"
+  let deductionsPath = dir / "deductions.tsv"
+  let kapPath = dir / "kap.tsv"
+  let euerPath = dir / "euer.tsv"
+
+  if not dirExists(dir):
+    echo &"Error: directory '{dir}' does not exist"
+    return 1
+
+  var created: seq[string]
+  var skipped: seq[string]
+
+  # viking.conf
+  if not force and fileExists(confPath):
+    skipped.add(confPath)
+  else:
+    writeFile(confPath, """[taxpayer]
+firstname = ""
+lastname = ""
+birthdate = ""
+idnr = ""
+taxnumber = ""
+income = 3
+street = ""
+housenumber = ""
+zip = ""
+city = ""
+iban = ""
+religion = 11
+profession = ""
+kv_art = privat
+rechtsform = 120
+besteuerungsart = 2
+
+[kap]
+guenstigerpruefung = 0
+sparer_pauschbetrag = 1000
+
+# Add one [kid] section per child (optional)
+# [kid]
+# firstname = ""
+# birthdate = ""
+# idnr = ""
+""")
+    created.add(confPath)
+
+  # deductions.tsv
+  if not force and fileExists(deductionsPath):
+    skipped.add(deductionsPath)
+  else:
+    writeFile(deductionsPath, "code\tamount\tdescription\n" &
+      "vor300\t0\tRentenversicherung\n" &
+      "vor326\t0\tKrankenversicherung gesetzlich\n" &
+      "vor329\t0\tPflegeversicherung gesetzlich\n" &
+      "vor338\t0\tZusatzbeitrag KV gesetzlich\n" &
+      "vor316\t0\tKrankenversicherung privat\n" &
+      "vor319\t0\tPflegeversicherung privat\n" &
+      "vor328\t0\tZusatzbeitrag KV privat\n" &
+      "vor502\t0\tHaftpflicht/Unfallversicherung\n" &
+      "sa140\t0\tKirchensteuer gezahlt\n" &
+      "sa141\t0\tKirchensteuer erstattet\n" &
+      "sa131\t0\tSpenden\n" &
+      "agb187\t0\tKrankheitskosten\n")
+    created.add(deductionsPath)
+
+  # kap.tsv
+  if not force and fileExists(kapPath):
+    skipped.add(kapPath)
+  else:
+    writeFile(kapPath, "gains\ttax\tsoli\tkirchensteuer\tdescription\n" &
+      "0\t0\t0\t\tBroker Name\n")
+    created.add(kapPath)
+
+  # euer.tsv
+  if not force and fileExists(euerPath):
+    skipped.add(euerPath)
+  else:
+    writeFile(euerPath, "amount\trate\tdate\tid\tdescription\n" &
+      "0\t19\t2025-01-01\tINV-001\tExample invoice\n" &
+      "-0\t19\t2025-01-01\tEXP-001\tExample expense\n")
+    created.add(euerPath)
+
+  if created.len > 0:
+    echo "Created:"
+    for f in created:
+      echo &"  {f}"
+  if skipped.len > 0:
+    echo "Skipped (already exist, use --force to overwrite):"
+    for f in skipped:
+      echo &"  {f}"
+
+  if created.len == 0 and skipped.len > 0:
+    echo ""
+    echo "All files already exist. Use --force to overwrite."
+
+  return 0
+
 when isMainModule:
   import cligen
   clCfg.version = NimblePkgVersion
@@ -2338,6 +2449,16 @@ when isMainModule:
         "file": 'f',
         "check": 'c',
         "env": 'e',
+      }
+    ],
+    [initFiles, cmdName = "init",
+      help = {
+        "dir": "Directory to create files in (default: current dir)",
+        "force": "Overwrite existing files",
+      },
+      short = {
+        "dir": 'd',
+        "force": 'f',
       }
     ]
   )

@@ -1047,6 +1047,55 @@ check("list legacy has DatenLieferant from .env", listLegacy.contains("<DatenLie
 removeFile(abholConf)
 echo ""
 
+# --- init ---
+echo "--- init ---"
+let initDir = "tests/tmp_init"
+createDir(initDir)
+
+let (initOut, initRc) = run("./viking init --dir " & initDir)
+check("init creates files", initRc == 0, initOut)
+check("init creates viking.conf", fileExists(initDir / "viking.conf"))
+check("init creates deductions.tsv", fileExists(initDir / "deductions.tsv"))
+check("init creates kap.tsv", fileExists(initDir / "kap.tsv"))
+check("init creates euer.tsv", fileExists(initDir / "euer.tsv"))
+
+# Check viking.conf content
+let confContent = readFile(initDir / "viking.conf")
+check("init conf has [taxpayer]", confContent.contains("[taxpayer]"))
+check("init conf has firstname", confContent.contains("firstname ="))
+check("init conf has taxnumber", confContent.contains("taxnumber ="))
+check("init conf has [kap]", confContent.contains("[kap]"))
+check("init conf has [kid] comment", confContent.contains("# [kid]"))
+
+# Check deductions.tsv content
+let dedContent = readFile(initDir / "deductions.tsv")
+check("init deductions has header", dedContent.contains("code\tamount\tdescription"))
+check("init deductions has vor300", dedContent.contains("vor300"))
+check("init deductions has sa140", dedContent.contains("sa140"))
+check("init deductions has agb187", dedContent.contains("agb187"))
+
+# Check skip behavior
+let (skipOut, skipRc) = run("./viking init --dir " & initDir)
+check("init skips existing files", skipRc == 0, skipOut)
+check("init skip message", skipOut.contains("Skipped"))
+
+# Check force overwrite
+let (forceOut, forceRc) = run("./viking init --dir " & initDir & " --force")
+check("init force overwrites", forceRc == 0, forceOut)
+check("init force creates", forceOut.contains("Created"))
+
+# Check invalid dir
+let (badDirOut, badDirRc) = run("./viking init --dir /nonexistent/path")
+check("init bad dir fails", badDirRc != 0, badDirOut)
+
+# Check generated conf is parseable
+let (initEstDry, initEstDryRc) = run("./viking est -c " & initDir / "viking.conf" & " --dry-run -y 2025")
+check("init conf is parseable", initEstDryRc != 0)  # fails validation but parses
+check("init conf validation errors", initEstDry.contains("not set"))
+
+removeDir(initDir)
+echo ""
+
 # --- Summary ---
 echo "=== Results ==="
 echo "  Passed: ", passes

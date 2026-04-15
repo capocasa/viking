@@ -14,7 +14,6 @@ type
     ericLogPath*: string
     certPath*: string
     certPin*: string
-    steuernummer*: string
     name*: string          # DatenLieferant name (legacy fallback for list/download)
     test*: bool
 
@@ -44,7 +43,6 @@ proc loadConfig*(envFile: string = ".env"): Config =
     result.certPin = output.strip
   else:
     result.certPin = getEnv("CERT_PIN", "")
-  result.steuernummer = getEnv("STEUERNUMMER", "")
   result.name = getEnv("DATENLIEFERANT_NAME", "")
   result.test = getEnv("TEST", "0") == "1"
 
@@ -69,9 +67,6 @@ proc validate*(cfg: Config): seq[string] =
 
   if cfg.certPin == "":
     result.add("CERT_PIN not set")
-
-  if cfg.steuernummer == "":
-    result.add("STEUERNUMMER not set")
 
 proc validateForAbholung*(cfg: Config): seq[string] =
   ## Validate configuration for Datenabholung (no steuernummer needed).
@@ -108,9 +103,6 @@ proc validateForValidateOnly*(cfg: Config): seq[string] =
     result.add("ERIC_PLUGIN_PATH not set")
   elif not dirExists(cfg.ericPluginPath):
     result.add("ERIC_PLUGIN_PATH directory does not exist: " & cfg.ericPluginPath)
-
-  if cfg.steuernummer == "":
-    result.add("STEUERNUMMER not set")
 
 const BundeslandMap = {
   "10": "BE", "11": "BB",
