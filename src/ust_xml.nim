@@ -2,19 +2,8 @@
 ## Generates ELSTER XML for Umsatzsteuererklaerung (annual VAT return)
 ## Uses E50 schema with USt2A form + Anlage UN
 
-import std/[strutils, strformat, math]
+import std/[strformat]
 import config
-
-proc roundCents(val: float): float =
-  round(val * 100) / 100
-
-proc formatEurDE(val: float): string =
-  let rounded = round(val * 100) / 100
-  let s = formatFloat(rounded, ffDecimal, 2)
-  s.replace('.', ',')
-
-proc roundEuro(val: float): int =
-  int(round(val))
 
 proc generateUst*(
   steuernummer: string,
@@ -28,16 +17,17 @@ proc generateUst*(
   vorsteuer: float = 0.0,
   vorauszahlungen: float = 0.0,
   besteuerungsart: string = "2",
-  herstellerId: string,
-  produktName: string,
   name: string,
   strasse: string,
   plz: string,
   ort: string,
   test: bool,
+  produktVersion: string = "0.1.0",
 ): string =
   ## Generate ELSTER XML for annual Umsatzsteuererklaerung (E50 schema)
 
+  let herstellerId = HerstellerId
+  let produktName = ProduktName
   let finanzamt = steuernummer[0..3]
   let bundesland = bundeslandFromSteuernummer(steuernummer)
   let testmerkerLine = if test: "\n    <Testmerker>700000004</Testmerker>" else: ""
@@ -132,7 +122,7 @@ proc generateUst*(
         <Empfaenger id="F">{finanzamt}</Empfaenger>
         <Hersteller>
           <ProduktName>{produktName}</ProduktName>
-          <ProduktVersion>0.1.0</ProduktVersion>
+          <ProduktVersion>{produktVersion}</ProduktVersion>
         </Hersteller>
       </NutzdatenHeader>
       <Nutzdaten>

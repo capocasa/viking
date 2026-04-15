@@ -1,12 +1,8 @@
 ## UStVA XML Generation
 ## Generates ELSTER XML for Umsatzsteuervoranmeldung
 
-import std/[strutils, strformat, math, times, options]
+import std/[strutils, strformat, times, options]
 import config
-
-proc roundCents(val: float): float =
-  ## Round to 2 decimal places (cents)
-  round(val * 100) / 100
 
 proc formatAmount(val: float): string =
   ## Format amount for XML (2 decimal places, no thousands separator)
@@ -14,7 +10,7 @@ proc formatAmount(val: float): string =
 
 proc formatAmountInt(val: float): string =
   ## Format amount as integer (no decimal places) for base amounts
-  $int(round(val))
+  $roundEuro(val)
 
 proc generateUstva*(
   steuernummer: string,

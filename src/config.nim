@@ -1,11 +1,24 @@
 ## Configuration module
 ## Loads configuration from .env file
 
-import std/[os, osproc, strutils, tables]
+import std/[os, osproc, strutils, tables, math]
 import dotenv
 
 const HerstellerId* = "40036"
 const ProduktName* = "Viking"
+
+proc roundCents*(val: float): float =
+  ## Round to 2 decimal places (cents)
+  round(val * 100) / 100
+
+proc roundEuro*(val: float): int =
+  ## Round to nearest whole euro
+  int(round(val))
+
+proc formatEurDE*(val: float): string =
+  ## Format amount for ELSTER XML: German locale with comma decimal separator.
+  let s = formatFloat(roundCents(val), ffDecimal, 2)
+  s.replace('.', ',')
 
 type
   Config* = object

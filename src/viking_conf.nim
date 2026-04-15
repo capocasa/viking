@@ -126,92 +126,55 @@ proc kidFirstnames*(conf: VikingConf): seq[string] =
   for kid in conf.kids:
     result.add(kid.firstname)
 
+proc validateFields(tp: TaxpayerConf, fields: openArray[string]): seq[string] =
+  ## Check that the given taxpayer fields are non-empty.
+  for field in fields:
+    let val = case field
+      of "firstname": tp.firstname
+      of "lastname": tp.lastname
+      of "birthdate": tp.birthdate
+      of "idnr": tp.idnr
+      of "taxnumber": tp.taxnumber
+      of "income": tp.income
+      of "street": tp.street
+      of "housenumber": tp.housenumber
+      of "zip": tp.zip
+      of "city": tp.city
+      of "iban": tp.iban
+      of "rechtsform": tp.rechtsform
+      else: ""
+    if val == "":
+      result.add("taxpayer." & field & " not set in viking.conf")
+
 proc validateForEst*(conf: VikingConf): seq[string] =
-  ## Validate config has required fields for ESt submission.
-  if conf.taxpayer.firstname == "":
-    result.add("taxpayer.firstname not set in viking.conf")
-  if conf.taxpayer.lastname == "":
-    result.add("taxpayer.lastname not set in viking.conf")
-  if conf.taxpayer.birthdate == "":
-    result.add("taxpayer.birthdate not set in viking.conf")
-  if conf.taxpayer.taxnumber == "":
-    result.add("taxpayer.taxnumber not set in viking.conf")
-  if conf.taxpayer.income == "":
-    result.add("taxpayer.income not set in viking.conf (2=Gewerbebetrieb, 3=Selbstaendige)")
-  elif conf.taxpayer.income != "2" and conf.taxpayer.income != "3":
+  result = conf.taxpayer.validateFields(
+    ["firstname", "lastname", "birthdate", "taxnumber", "income", "iban"])
+  if conf.taxpayer.income != "" and conf.taxpayer.income != "2" and conf.taxpayer.income != "3":
     result.add("taxpayer.income must be 2 (Gewerbebetrieb) or 3 (Selbstaendige Arbeit)")
-  if conf.taxpayer.iban == "":
-    result.add("taxpayer.iban not set in viking.conf")
   if conf.taxpayer.kvArt != "privat" and conf.taxpayer.kvArt != "gesetzlich":
     result.add("taxpayer.kv_art must be 'privat' or 'gesetzlich'")
 
 proc validateForUstva*(conf: VikingConf): seq[string] =
-  ## Validate config has required fields for UStVA submission.
-  if conf.taxpayer.firstname == "":
-    result.add("taxpayer.firstname not set in viking.conf")
-  if conf.taxpayer.lastname == "":
-    result.add("taxpayer.lastname not set in viking.conf")
-  if conf.taxpayer.taxnumber == "":
-    result.add("taxpayer.taxnumber not set in viking.conf")
-  if conf.taxpayer.street == "":
-    result.add("taxpayer.street not set in viking.conf")
-  if conf.taxpayer.zip == "":
-    result.add("taxpayer.zip not set in viking.conf")
-  if conf.taxpayer.city == "":
-    result.add("taxpayer.city not set in viking.conf")
+  conf.taxpayer.validateFields(
+    ["firstname", "lastname", "taxnumber", "street", "zip", "city"])
+
+proc validateForUst*(conf: VikingConf): seq[string] =
+  result = conf.taxpayer.validateFields(
+    ["firstname", "lastname", "taxnumber", "street", "zip", "city"])
+  if conf.taxpayer.besteuerungsart notin ["1", "2", "3"]:
+    result.add("taxpayer.besteuerungsart must be 1, 2 or 3")
 
 proc validateForNachricht*(conf: VikingConf): seq[string] =
-  ## Validate config has required fields for SonstigeNachricht submission.
-  if conf.taxpayer.firstname == "":
-    result.add("taxpayer.firstname not set in viking.conf")
-  if conf.taxpayer.lastname == "":
-    result.add("taxpayer.lastname not set in viking.conf")
-  if conf.taxpayer.taxnumber == "":
-    result.add("taxpayer.taxnumber not set in viking.conf")
-  if conf.taxpayer.street == "":
-    result.add("taxpayer.street not set in viking.conf")
-  if conf.taxpayer.housenumber == "":
-    result.add("taxpayer.housenumber not set in viking.conf")
-  if conf.taxpayer.zip == "":
-    result.add("taxpayer.zip not set in viking.conf")
-  if conf.taxpayer.city == "":
-    result.add("taxpayer.city not set in viking.conf")
+  conf.taxpayer.validateFields(
+    ["firstname", "lastname", "taxnumber", "street", "housenumber", "zip", "city"])
 
 proc validateForBankverbindung*(conf: VikingConf): seq[string] =
-  ## Validate config has required fields for AenderungBankverbindung submission.
-  if conf.taxpayer.firstname == "":
-    result.add("taxpayer.firstname not set in viking.conf")
-  if conf.taxpayer.lastname == "":
-    result.add("taxpayer.lastname not set in viking.conf")
-  if conf.taxpayer.birthdate == "":
-    result.add("taxpayer.birthdate not set in viking.conf")
-  if conf.taxpayer.idnr == "":
-    result.add("taxpayer.idnr not set in viking.conf")
-  if conf.taxpayer.taxnumber == "":
-    result.add("taxpayer.taxnumber not set in viking.conf")
+  conf.taxpayer.validateFields(
+    ["firstname", "lastname", "birthdate", "idnr", "taxnumber"])
 
 proc validateForAbholung*(conf: VikingConf): seq[string] =
-  ## Validate config has required fields for Datenabholung (list/download).
-  if conf.taxpayer.firstname == "":
-    result.add("taxpayer.firstname not set in viking.conf")
-  if conf.taxpayer.lastname == "":
-    result.add("taxpayer.lastname not set in viking.conf")
+  conf.taxpayer.validateFields(["firstname", "lastname"])
 
 proc validateForEuer*(conf: VikingConf): seq[string] =
-  ## Validate config has required fields for EÜR submission.
-  if conf.taxpayer.firstname == "":
-    result.add("taxpayer.firstname not set in viking.conf")
-  if conf.taxpayer.lastname == "":
-    result.add("taxpayer.lastname not set in viking.conf")
-  if conf.taxpayer.taxnumber == "":
-    result.add("taxpayer.taxnumber not set in viking.conf")
-  if conf.taxpayer.street == "":
-    result.add("taxpayer.street not set in viking.conf")
-  if conf.taxpayer.zip == "":
-    result.add("taxpayer.zip not set in viking.conf")
-  if conf.taxpayer.city == "":
-    result.add("taxpayer.city not set in viking.conf")
-  if conf.taxpayer.rechtsform == "":
-    result.add("taxpayer.rechtsform not set in viking.conf")
-  if conf.taxpayer.income == "":
-    result.add("taxpayer.income not set in viking.conf")
+  conf.taxpayer.validateFields(
+    ["firstname", "lastname", "taxnumber", "street", "zip", "city", "rechtsform", "income"])

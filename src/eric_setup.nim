@@ -540,8 +540,7 @@ ERIC_LOG_PATH=/tmp/eric_logs
   else:
     result.add("CERT_PIN=your-certificate-pin\n")
 
-  result.add("\n# Tax Information (test tax number for sandbox)\n")
-  result.add("STEUERNUMMER=9198011310010\n")
+  result.add("\n# Personal data goes in viking.conf (see 'viking init')\n")
 
 proc updateEnvFile*(installation: EricInstallation, certPath: string = "", certPin: string = "", envPath: string = ".env") =
   ## Update or create .env file with ERiC configuration
@@ -552,7 +551,7 @@ proc updateEnvFile*(installation: EricInstallation, certPath: string = "", certP
     content = readFile(envPath)
     existingLines = content.splitLines()
 
-    var foundLib, foundPlugin, foundLog, foundCert, foundPin, foundStnr = false
+    var foundLib, foundPlugin, foundLog, foundCert, foundPin = false
 
     for i, line in existingLines:
       if line.startsWith("ERIC_LIB_PATH="):
@@ -569,8 +568,6 @@ proc updateEnvFile*(installation: EricInstallation, certPath: string = "", certP
       elif line.startsWith("CERT_PIN=") and certPin != "":
         existingLines[i] = &"CERT_PIN={certPin}"
         foundPin = true
-      elif line.startsWith("STEUERNUMMER="):
-        foundStnr = true
 
     if not foundLib:
       existingLines.add(&"ERIC_LIB_PATH={installation.libPath / \"libericapi.so\"}")
@@ -582,8 +579,6 @@ proc updateEnvFile*(installation: EricInstallation, certPath: string = "", certP
       existingLines.add(&"CERT_PATH={certPath}")
     if not foundPin and certPin != "":
       existingLines.add(&"CERT_PIN={certPin}")
-    if not foundStnr:
-      existingLines.add("STEUERNUMMER=9198011310010")
 
     content = existingLines.join("\n")
   else:

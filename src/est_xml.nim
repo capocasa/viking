@@ -1,16 +1,8 @@
 ## ESt XML Generation
 ## Generates ELSTER XML for Einkommensteuererklarung (income tax return)
 
-import std/[strutils, strformat, math, tables]
+import std/[strformat, tables]
 import viking_conf, deductions, kap, config
-
-proc roundEuro(val: float): int =
-  int(round(val))
-
-proc formatEurDE(val: float): string =
-  let rounded = round(val * 100) / 100
-  let s = formatFloat(rounded, ffDecimal, 2)
-  s.replace('.', ',')
 
 type
   EstInput* = object

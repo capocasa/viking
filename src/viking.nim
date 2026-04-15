@@ -1,7 +1,7 @@
 ## viking - German VAT advance return (Umsatzsteuervoranmeldung) CLI
 ## Submit UStVA via ERiC library
 
-import std/[strutils, strformat, times, options, os, xmltree, xmlparser, sequtils, tables]
+import std/[strutils, strformat, times, options, os, tables, xmltree, xmlparser, sequtils]
 import cligen, cligen/argcvt
 import dotenv
 import config, eric_ffi, otto_ffi, ustva_xml, euer_xml, est_xml, ust_xml, eric_setup, invoices, abholung_xml, nachricht_xml, bankverbindung_xml
@@ -20,6 +20,130 @@ proc argParse(dst: var Option[float], dfl: Option[float], a: var ArgcvtParams): 
 
 proc argHelp(dfl: Option[float], a: var ArgcvtParams): seq[string] =
   @[a.parNm, "float", if dfl.isSome: $dfl.get else: ""]
+
+proc loadConf(conf: string, validate: proc(conf: VikingConf): seq[string]): tuple[ok: bool, conf: VikingConf] =
+  ## Load viking.conf and validate with the given validator. Prints errors on failure.
+  var vikingConf: VikingConf
+  try:
+    vikingConf = loadVikingConf(conf)
+  except IOError as e:
+    echo &"Error: {e.msg}"
+    return (false, vikingConf)
+  except ValueError as e:
+    echo &"Error parsing {conf}: {e.msg}"
+    return (false, vikingConf)
+  let errors = validate(vikingConf)
+  if errors.len > 0:
+    echo "Configuration errors in " & conf & ":"
+    for e in errors:
+      echo &"  - {e}"
+    return (false, vikingConf)
+  return (true, vikingConf)
+
+proc loadTechConfig(env: string, validateOnly: bool, dryRun: bool): tuple[ok: bool, cfg: Config] =
+  ## Load .env tech config and validate. Prints errors on failure.
+  var cfg: Config
+  try:
+    cfg = loadConfig(env)
+  except IOError as e:
+    echo &"Error: {e.msg}"
+    return (false, cfg)
+  let errors = if validateOnly and not dryRun: cfg.validateForValidateOnly()
+               else: cfg.validate()
+  if errors.len > 0:
+    echo "Configuration errors in .env:"
+    for e in errors:
+      echo &"  - {e}"
+    return (false, cfg)
+  return (true, cfg)
+
+proc handleEricError(rc: int, response, serverResponse: string, ericLogPath: string) =
+  ## Print error details for a failed ERiC operation.
+  echo &"Error: Operation failed with code {rc}"
+  echo &"  {ericHoleFehlerText(rc)}"
+  case rc
+  of 610301202:
+    echo ""
+    echo "Hint: The HerstellerID is blocked."
+    echo "  Register at https://www.elster.de/elsterweb/entwickler"
+  of 610301200:
+    echo ""
+    echo "Hint: XML schema validation failed."
+    let logFile = ericLogPath / "eric.log"
+    if fileExists(logFile):
+      let logContent = readFile(logFile).strip
+      if logContent.len > 0:
+        echo ""
+        echo "ERiC log:"
+        echo logContent
+  of 610001050:
+    echo ""
+    echo "Hint: Buffer instance mismatch - this is likely a bug in the FFI bindings."
+  else:
+    discard
+  if response.len > 0:
+    echo ""
+    echo "Details:"
+    echo response
+  if serverResponse.len > 0:
+    echo ""
+    echo "Server response:"
+    echo serverResponse
+
+template initEric(cfg: Config, dryRun: bool, xml: string) =
+  ## Load ERiC library, initialize, handle dry-run.
+  if not loadEricLib(cfg.ericLibPath):
+    echo &"Error: Failed to load ERiC library from {cfg.ericLibPath}"
+    return 1
+  defer: unloadEricLib()
+  createDir(cfg.ericLogPath)
+  block:
+    let ericInitRc {.inject.} = ericInitialisiere(cfg.ericPluginPath, cfg.ericLogPath)
+    if ericInitRc != 0:
+      echo &"Error: ERiC initialization failed with code {ericInitRc}"
+      echo &"  {ericHoleFehlerText(ericInitRc)}"
+      return 1
+  defer: discard ericBeende()
+  if dryRun:
+    echo "ERiC library loaded and initialized successfully."
+    echo ""
+    echo "=== Generated XML ==="
+    echo xml
+    echo "====================="
+    return 0
+
+template initBuffersAndCert(cfg: Config, validateOnly: bool) =
+  ## Create ERiC return buffers and open certificate. Injects responseBuf, serverBuf,
+  ## flags, cryptParamPtr into caller scope.
+  let responseBuf {.inject.} = ericRueckgabepufferErzeugen()
+  let serverBuf {.inject.} = ericRueckgabepufferErzeugen()
+  if responseBuf == nil or serverBuf == nil:
+    echo "Error: Failed to create return buffers"
+    return 1
+  defer:
+    discard ericRueckgabepufferFreigabe(responseBuf)
+    discard ericRueckgabepufferFreigabe(serverBuf)
+  var flags {.inject.}: uint32 = ERIC_VALIDIERE
+  if not validateOnly:
+    flags = flags or ERIC_SENDE
+  var cryptParam: EricVerschluesselungsParameterT
+  var cryptParamPtr {.inject.}: ptr EricVerschluesselungsParameterT = nil
+  var certHandle: EricZertifikatHandle = 0
+  if not validateOnly:
+    block:
+      let (ericCertRc {.inject.}, ericCertHandle {.inject.}) = ericGetHandleToCertificate(cfg.certPath)
+      if ericCertRc != 0:
+        echo &"Error: Failed to open certificate with code {ericCertRc}"
+        echo &"  {ericHoleFehlerText(ericCertRc)}"
+        return 1
+      certHandle = ericCertHandle
+    cryptParam.version = 3
+    cryptParam.zertifikatHandle = certHandle
+    cryptParam.pin = cfg.certPin.cstring
+    cryptParamPtr = addr cryptParam
+  defer:
+    if certHandle != 0:
+      discard ericCloseHandleToCertificate(certHandle)
 
 proc submit(
   amount19: Option[float] = none(float),
@@ -46,28 +170,11 @@ proc submit(
   # Determine year
   let actualYear = if year == 0: now().year else: year
 
-  # Validate conf
   if conf == "":
     echo "Error: --conf is required (viking.conf file)"
     return 1
-
-  # Load viking.conf
-  var vikingConf: VikingConf
-  try:
-    vikingConf = loadVikingConf(conf)
-  except IOError as e:
-    echo &"Error: {e.msg}"
-    return 1
-  except ValueError as e:
-    echo &"Error parsing {conf}: {e.msg}"
-    return 1
-
-  let confErrors = vikingConf.validateForUstva()
-  if confErrors.len > 0:
-    echo "Configuration errors in " & conf & ":"
-    for e in confErrors:
-      echo &"  - {e}"
-    return 1
+  let (confOk, vikingConf) = loadConf(conf, validateForUstva)
+  if not confOk: return 1
 
   # Validate period
   if period == "":
@@ -120,22 +227,8 @@ proc submit(
       echo &"Sum 0%:   {agg.amount0.get:.2f} EUR"
     echo ""
 
-  # Load technical .env config
-  var cfg: Config
-  try:
-    cfg = loadConfig(env)
-  except IOError as e:
-    echo &"Error: {e.msg}"
-    return 1
-  # Dry-run validates everything to ensure setup is correct
-  let techErrors = if validateOnly and not dryRun: cfg.validateForValidateOnly()
-                   else: cfg.validate()
-
-  if techErrors.len > 0:
-    echo "Configuration errors in .env:"
-    for e in techErrors:
-      echo &"  - {e}"
-    return 1
+  let (techOk, cfg) = loadTechConfig(env, validateOnly, dryRun)
+  if not techOk: return 1
 
   # Extract amounts (default to 0 if provided but for XML generation)
   let amt19 = finalAmount19.get(0.0)
@@ -162,69 +255,8 @@ proc submit(
     produktVersion = NimblePkgVersion,
   )
 
-  # Load ERiC library
-  if not loadEricLib(cfg.ericLibPath):
-    echo &"Error: Failed to load ERiC library from {cfg.ericLibPath}"
-    return 1
-  defer: unloadEricLib()
-
-  # Ensure log directory exists
-  createDir(cfg.ericLogPath)
-
-  # Initialize ERiC
-  let initRc = ericInitialisiere(cfg.ericPluginPath, cfg.ericLogPath)
-  if initRc != 0:
-    echo &"Error: ERiC initialization failed with code {initRc}"
-    echo &"  {ericHoleFehlerText(initRc)}"
-    return 1
-  defer: discard ericBeende()
-
-  # Dry run mode - verify setup and show XML without submitting
-  if dryRun:
-    echo "ERiC library loaded and initialized successfully."
-    echo ""
-    echo "=== Generated XML ==="
-    echo xml
-    echo "====================="
-    return 0
-
-  # Create return buffers
-  let responseBuf = ericRueckgabepufferErzeugen()
-  let serverBuf = ericRueckgabepufferErzeugen()
-  if responseBuf == nil or serverBuf == nil:
-    echo "Error: Failed to create return buffers"
-    return 1
-  defer:
-    discard ericRueckgabepufferFreigabe(responseBuf)
-    discard ericRueckgabepufferFreigabe(serverBuf)
-
-  # Determine flags
-  var flags: uint32 = ERIC_VALIDIERE
-  if not validateOnly:
-    flags = flags or ERIC_SENDE
-
-  # Set up encryption parameters if sending
-  var cryptParam: EricVerschluesselungsParameterT
-  var cryptParamPtr: ptr EricVerschluesselungsParameterT = nil
-  var certHandle: EricZertifikatHandle = 0
-
-  if not validateOnly:
-    # Open certificate
-    let (certRc, handle) = ericGetHandleToCertificate(cfg.certPath)
-    if certRc != 0:
-      echo &"Error: Failed to open certificate with code {certRc}"
-      echo &"  {ericHoleFehlerText(certRc)}"
-      return 1
-    certHandle = handle
-
-    cryptParam.version = 3
-    cryptParam.zertifikatHandle = certHandle
-    cryptParam.pin = cfg.certPin.cstring
-    cryptParamPtr = addr cryptParam
-
-  defer:
-    if certHandle != 0:
-      discard ericCloseHandleToCertificate(certHandle)
+  initEric(cfg, dryRun, xml)
+  initBuffersAndCert(cfg, validateOnly)
 
   # Calculate VAT for display
   let vat19 = amt19 * 0.19
@@ -276,49 +308,13 @@ proc submit(
       echo "Validation successful!"
     else:
       echo "Submission successful!"
-
     if verbose and serverResponse.len > 0:
       echo ""
       echo "Server response:"
       echo serverResponse
-
     return 0
   else:
-    echo &"Error: Operation failed with code {rc}"
-    echo &"  {ericHoleFehlerText(rc)}"
-
-    # Actionable hints for known error codes
-    case rc
-    of 610301202:
-      echo ""
-      echo "Hint: The HerstellerID is blocked."
-      echo "  Register at https://www.elster.de/elsterweb/entwickler"
-    of 610301200:
-      echo ""
-      echo "Hint: XML schema validation failed."
-      let logFile = cfg.ericLogPath / "eric.log"
-      if fileExists(logFile):
-        let logContent = readFile(logFile).strip
-        if logContent.len > 0:
-          echo ""
-          echo "ERiC log:"
-          echo logContent
-    of 610001050:
-      echo ""
-      echo "Hint: Buffer instance mismatch - this is likely a bug in the FFI bindings."
-    else:
-      discard
-
-    if response.len > 0:
-      echo ""
-      echo "Details:"
-      echo response
-
-    if serverResponse.len > 0:
-      echo ""
-      echo "Server response:"
-      echo serverResponse
-
+    handleEricError(rc, response, serverResponse, cfg.ericLogPath)
     return 1
 
 proc euer(
@@ -351,23 +347,8 @@ proc euer(
     echo "Error: --euer is required for EÜR submission (invoice TSV file)"
     return 1
 
-  # Load viking.conf
-  var vikingConf: VikingConf
-  try:
-    vikingConf = loadVikingConf(conf)
-  except IOError as e:
-    echo &"Error: {e.msg}"
-    return 1
-  except ValueError as e:
-    echo &"Error parsing {conf}: {e.msg}"
-    return 1
-
-  let confErrors = vikingConf.validateForEuer()
-  if confErrors.len > 0:
-    echo "Configuration errors in " & conf & ":"
-    for e in confErrors:
-      echo &"  - {e}"
-    return 1
+  let (confOk, vikingConf) = loadConf(conf, validateForEuer)
+  if not confOk: return 1
 
   # Load and aggregate invoices from all euer files
   var aggregations: seq[tuple[file: string, agg: EuerAggregation]] = @[]
@@ -386,21 +367,8 @@ proc euer(
     echo &"Expenses:  {agg.expenseCount} invoices, {agg.expenseNet:.2f} EUR net + {agg.expenseVorsteuer:.2f} EUR Vorsteuer"
     echo ""
 
-  # Load technical .env config
-  var cfg: Config
-  try:
-    cfg = loadConfig(env)
-  except IOError as e:
-    echo &"Error: {e.msg}"
-    return 1
-
-  let techErrors = if validateOnly and not dryRun: cfg.validateForValidateOnly()
-                   else: cfg.validate()
-  if techErrors.len > 0:
-    echo "Configuration errors in .env:"
-    for e in techErrors:
-      echo &"  - {e}"
-    return 1
+  let (techOk, cfg) = loadTechConfig(env, validateOnly, dryRun)
+  if not techOk: return 1
 
   let tp = vikingConf.taxpayer
   let bundesland = bundeslandFromSteuernummer(tp.taxnumber)
@@ -428,24 +396,8 @@ proc euer(
     )
     xmls.add(xml)
 
-  # Load ERiC library
-  if not loadEricLib(cfg.ericLibPath):
-    echo &"Error: Failed to load ERiC library from {cfg.ericLibPath}"
-    return 1
-  defer: unloadEricLib()
-
-  # Ensure log directory exists
-  createDir(cfg.ericLogPath)
-
-  # Initialize ERiC
-  let initRc = ericInitialisiere(cfg.ericPluginPath, cfg.ericLogPath)
-  if initRc != 0:
-    echo &"Error: ERiC initialization failed with code {initRc}"
-    echo &"  {ericHoleFehlerText(initRc)}"
-    return 1
-  defer: discard ericBeende()
-
-  # Dry run mode
+  # Initialize ERiC (custom dry-run for multi-XML)
+  initEric(cfg, false, "")  # never dry-run here, handle below
   if dryRun:
     echo "ERiC library loaded and initialized successfully."
     for i, xml in xmls:
@@ -459,42 +411,7 @@ proc euer(
       echo "====================="
     return 0
 
-  # Create return buffers
-  let responseBuf = ericRueckgabepufferErzeugen()
-  let serverBuf = ericRueckgabepufferErzeugen()
-  if responseBuf == nil or serverBuf == nil:
-    echo "Error: Failed to create return buffers"
-    return 1
-  defer:
-    discard ericRueckgabepufferFreigabe(responseBuf)
-    discard ericRueckgabepufferFreigabe(serverBuf)
-
-  # Determine flags
-  var flags: uint32 = ERIC_VALIDIERE
-  if not validateOnly:
-    flags = flags or ERIC_SENDE
-
-  # Set up encryption parameters if sending
-  var cryptParam: EricVerschluesselungsParameterT
-  var cryptParamPtr: ptr EricVerschluesselungsParameterT = nil
-  var certHandle: EricZertifikatHandle = 0
-
-  if not validateOnly:
-    let (certRc, handle) = ericGetHandleToCertificate(cfg.certPath)
-    if certRc != 0:
-      echo &"Error: Failed to open certificate with code {certRc}"
-      echo &"  {ericHoleFehlerText(certRc)}"
-      return 1
-    certHandle = handle
-
-    cryptParam.version = 3
-    cryptParam.zertifikatHandle = certHandle
-    cryptParam.pin = cfg.certPin.cstring
-    cryptParamPtr = addr cryptParam
-
-  defer:
-    if certHandle != 0:
-      discard ericCloseHandleToCertificate(certHandle)
+  initBuffersAndCert(cfg, validateOnly)
 
   # Process each EÜR
   for i, xml in xmls:
@@ -550,50 +467,14 @@ proc euer(
         echo "Validation successful!"
       else:
         echo "Submission successful!"
-
       if verbose and serverResponse.len > 0:
         echo ""
         echo "Server response:"
         echo serverResponse
-
       if i < xmls.len - 1:
         echo ""
     else:
-      echo &"Error: Operation failed with code {rc}"
-      echo &"  {ericHoleFehlerText(rc)}"
-
-      case rc
-      of 610301202:
-        echo ""
-        echo "Hint: The demo HerstellerID (74931) is blocked."
-        echo "  Register at https://www.elster.de/elsterweb/entwickler"
-        echo "  and set HERSTELLER_ID in your .env file."
-      of 610301200:
-        echo ""
-        echo "Hint: XML schema validation failed."
-        let logFile = cfg.ericLogPath / "eric.log"
-        if fileExists(logFile):
-          let logContent = readFile(logFile).strip
-          if logContent.len > 0:
-            echo ""
-            echo "ERiC log:"
-            echo logContent
-      of 610001050:
-        echo ""
-        echo "Hint: Buffer instance mismatch - this is likely a bug in the FFI bindings."
-      else:
-        discard
-
-      if response.len > 0:
-        echo ""
-        echo "Details:"
-        echo response
-
-      if serverResponse.len > 0:
-        echo ""
-        echo "Server response:"
-        echo serverResponse
-
+      handleEricError(rc, response, serverResponse, cfg.ericLogPath)
       return 1
 
   return 0
@@ -628,23 +509,8 @@ proc est(
     echo "Error: --conf is required for ESt submission (viking.conf file)"
     return 1
 
-  # Load viking.conf
-  var vikingConf: VikingConf
-  try:
-    vikingConf = loadVikingConf(conf)
-  except IOError as e:
-    echo &"Error: {e.msg}"
-    return 1
-  except ValueError as e:
-    echo &"Error parsing {conf}: {e.msg}"
-    return 1
-
-  let confErrors = vikingConf.validateForEst()
-  if confErrors.len > 0:
-    echo "Configuration errors in " & conf & ":"
-    for e in confErrors:
-      echo &"  - {e}"
-    return 1
+  let (confOk, vikingConf) = loadConf(conf, validateForEst)
+  if not confOk: return 1
 
   # Load EÜR invoices (optional — ESt without income is valid for KAP-only)
   var profits: seq[float] = @[]
@@ -695,22 +561,8 @@ proc est(
       echo &"Error parsing kap.tsv: {e.msg}"
       return 1
 
-  # Load technical .env config
-  var cfg: Config
-  try:
-    cfg = loadConfig(env)
-  except IOError as e:
-    echo &"Error: {e.msg}"
-    return 1
-
-  # Validate technical config
-  let techErrors = if validateOnly and not dryRun: cfg.validateForValidateOnly()
-                   else: cfg.validate()
-  if techErrors.len > 0:
-    echo "Configuration errors in .env:"
-    for e in techErrors:
-      echo &"  - {e}"
-    return 1
+  let (techOk, cfg) = loadTechConfig(env, validateOnly, dryRun)
+  if not techOk: return 1
 
   let tp = vikingConf.taxpayer
   let bundesland = bundeslandFromSteuernummer(tp.taxnumber)
@@ -770,62 +622,8 @@ proc est(
       echo &"  {kid.firstname} ({kid.birthdate})"
   echo ""
 
-  # Load ERiC library
-  if not loadEricLib(cfg.ericLibPath):
-    echo &"Error: Failed to load ERiC library from {cfg.ericLibPath}"
-    return 1
-  defer: unloadEricLib()
-
-  createDir(cfg.ericLogPath)
-
-  let initRc = ericInitialisiere(cfg.ericPluginPath, cfg.ericLogPath)
-  if initRc != 0:
-    echo &"Error: ERiC initialization failed with code {initRc}"
-    echo &"  {ericHoleFehlerText(initRc)}"
-    return 1
-  defer: discard ericBeende()
-
-  if dryRun:
-    echo "ERiC library loaded and initialized successfully."
-    echo ""
-    echo "=== Generated XML ==="
-    echo xml
-    echo "====================="
-    return 0
-
-  let responseBuf = ericRueckgabepufferErzeugen()
-  let serverBuf = ericRueckgabepufferErzeugen()
-  if responseBuf == nil or serverBuf == nil:
-    echo "Error: Failed to create return buffers"
-    return 1
-  defer:
-    discard ericRueckgabepufferFreigabe(responseBuf)
-    discard ericRueckgabepufferFreigabe(serverBuf)
-
-  var flags: uint32 = ERIC_VALIDIERE
-  if not validateOnly:
-    flags = flags or ERIC_SENDE
-
-  var cryptParam: EricVerschluesselungsParameterT
-  var cryptParamPtr: ptr EricVerschluesselungsParameterT = nil
-  var certHandle: EricZertifikatHandle = 0
-
-  if not validateOnly:
-    let (certRc, handle) = ericGetHandleToCertificate(cfg.certPath)
-    if certRc != 0:
-      echo &"Error: Failed to open certificate with code {certRc}"
-      echo &"  {ericHoleFehlerText(certRc)}"
-      return 1
-    certHandle = handle
-
-    cryptParam.version = 3
-    cryptParam.zertifikatHandle = certHandle
-    cryptParam.pin = cfg.certPin.cstring
-    cryptParamPtr = addr cryptParam
-
-  defer:
-    if certHandle != 0:
-      discard ericCloseHandleToCertificate(certHandle)
+  initEric(cfg, dryRun, xml)
+  initBuffersAndCert(cfg, validateOnly)
 
   let modeStr = if cfg.test: " (TEST)" else: ""
   if validateOnly:
@@ -855,48 +653,13 @@ proc est(
       echo "Validation successful!"
     else:
       echo "Submission successful!"
-
     if verbose and serverResponse.len > 0:
       echo ""
       echo "Server response:"
       echo serverResponse
-
     return 0
   else:
-    echo &"Error: Operation failed with code {rc}"
-    echo &"  {ericHoleFehlerText(rc)}"
-
-    case rc
-    of 610301202:
-      echo ""
-      echo "Hint: The demo HerstellerID (74931) is blocked."
-      echo "  Register at https://www.elster.de/elsterweb/entwickler"
-    of 610301200:
-      echo ""
-      echo "Hint: XML schema validation failed."
-      let logFile = cfg.ericLogPath / "eric.log"
-      if fileExists(logFile):
-        let logContent = readFile(logFile).strip
-        if logContent.len > 0:
-          echo ""
-          echo "ERiC log:"
-          echo logContent
-    of 610001050:
-      echo ""
-      echo "Hint: Buffer instance mismatch - this is likely a bug in the FFI bindings."
-    else:
-      discard
-
-    if response.len > 0:
-      echo ""
-      echo "Details:"
-      echo response
-
-    if serverResponse.len > 0:
-      echo ""
-      echo "Server response:"
-      echo serverResponse
-
+    handleEricError(rc, response, serverResponse, cfg.ericLogPath)
     return 1
 
 proc ust(
@@ -930,24 +693,10 @@ proc ust(
     echo "Error: --euer is required for USt submission"
     return 1
 
-  # Load viking.conf
-  var vikingConf: VikingConf
-  try:
-    vikingConf = loadVikingConf(conf)
-  except IOError as e:
-    echo &"Error: {e.msg}"
-    return 1
-  except ValueError as e:
-    echo &"Error parsing {conf}: {e.msg}"
-    return 1
+  let (confOk, vikingConf) = loadConf(conf, validateForUst)
+  if not confOk: return 1
 
   let tp = vikingConf.taxpayer
-  if tp.taxnumber == "":
-    echo "Error: taxpayer.taxnumber not set in viking.conf"
-    return 1
-  if tp.besteuerungsart != "1" and tp.besteuerungsart != "2" and tp.besteuerungsart != "3":
-    echo "Error: taxpayer.besteuerungsart must be 1, 2 or 3 in viking.conf"
-    return 1
 
   # Load and aggregate invoices from all euer files
   var agg: UstAggregation
@@ -989,21 +738,8 @@ proc ust(
   let totalVat = vat19 + vat7
   let remaining = totalVat - agg.vorsteuer - vorauszahlungen
 
-  # Load technical .env config
-  var cfg: Config
-  try:
-    cfg = loadConfig(env)
-  except IOError as e:
-    echo &"Error: {e.msg}"
-    return 1
-
-  let techErrors = if validateOnly and not dryRun: cfg.validateForValidateOnly()
-                   else: cfg.validate()
-  if techErrors.len > 0:
-    echo "Configuration errors in .env:"
-    for e in techErrors:
-      echo &"  - {e}"
-    return 1
+  let (techOk, cfg) = loadTechConfig(env, validateOnly, dryRun)
+  if not techOk: return 1
 
   let fullName = tp.lastname & " " & tp.firstname
   let bundesland = bundeslandFromSteuernummer(tp.taxnumber)
@@ -1021,13 +757,12 @@ proc ust(
     vorsteuer = agg.vorsteuer,
     vorauszahlungen = vorauszahlungen,
     besteuerungsart = tp.besteuerungsart,
-    herstellerId = HerstellerId,
-    produktName = ProduktName,
     name = fullName,
     strasse = tp.street & " " & tp.housenumber,
     plz = tp.zip,
     ort = tp.city,
     test = cfg.test,
+    produktVersion = NimblePkgVersion,
   )
 
   # Show summary
@@ -1043,62 +778,8 @@ proc ust(
   echo &"Remaining:      {remaining:.2f} EUR"
   echo ""
 
-  # Load ERiC library
-  if not loadEricLib(cfg.ericLibPath):
-    echo &"Error: Failed to load ERiC library from {cfg.ericLibPath}"
-    return 1
-  defer: unloadEricLib()
-
-  createDir(cfg.ericLogPath)
-
-  let initRc = ericInitialisiere(cfg.ericPluginPath, cfg.ericLogPath)
-  if initRc != 0:
-    echo &"Error: ERiC initialization failed with code {initRc}"
-    echo &"  {ericHoleFehlerText(initRc)}"
-    return 1
-  defer: discard ericBeende()
-
-  if dryRun:
-    echo "ERiC library loaded and initialized successfully."
-    echo ""
-    echo "=== Generated XML ==="
-    echo xml
-    echo "====================="
-    return 0
-
-  let responseBuf = ericRueckgabepufferErzeugen()
-  let serverBuf = ericRueckgabepufferErzeugen()
-  if responseBuf == nil or serverBuf == nil:
-    echo "Error: Failed to create return buffers"
-    return 1
-  defer:
-    discard ericRueckgabepufferFreigabe(responseBuf)
-    discard ericRueckgabepufferFreigabe(serverBuf)
-
-  var flags: uint32 = ERIC_VALIDIERE
-  if not validateOnly:
-    flags = flags or ERIC_SENDE
-
-  var cryptParam: EricVerschluesselungsParameterT
-  var cryptParamPtr: ptr EricVerschluesselungsParameterT = nil
-  var certHandle: EricZertifikatHandle = 0
-
-  if not validateOnly:
-    let (certRc, handle) = ericGetHandleToCertificate(cfg.certPath)
-    if certRc != 0:
-      echo &"Error: Failed to open certificate with code {certRc}"
-      echo &"  {ericHoleFehlerText(certRc)}"
-      return 1
-    certHandle = handle
-
-    cryptParam.version = 3
-    cryptParam.zertifikatHandle = certHandle
-    cryptParam.pin = cfg.certPin.cstring
-    cryptParamPtr = addr cryptParam
-
-  defer:
-    if certHandle != 0:
-      discard ericCloseHandleToCertificate(certHandle)
+  initEric(cfg, dryRun, xml)
+  initBuffersAndCert(cfg, validateOnly)
 
   let modeStr = if cfg.test: " (TEST)" else: ""
   if validateOnly:
@@ -1128,48 +809,13 @@ proc ust(
       echo "Validation successful!"
     else:
       echo "Submission successful!"
-
     if verbose and serverResponse.len > 0:
       echo ""
       echo "Server response:"
       echo serverResponse
-
     return 0
   else:
-    echo &"Error: Operation failed with code {rc}"
-    echo &"  {ericHoleFehlerText(rc)}"
-
-    case rc
-    of 610301202:
-      echo ""
-      echo "Hint: The demo HerstellerID (74931) is blocked."
-      echo "  Register at https://www.elster.de/elsterweb/entwickler"
-    of 610301200:
-      echo ""
-      echo "Hint: XML schema validation failed."
-      let logFile = cfg.ericLogPath / "eric.log"
-      if fileExists(logFile):
-        let logContent = readFile(logFile).strip
-        if logContent.len > 0:
-          echo ""
-          echo "ERiC log:"
-          echo logContent
-    of 610001050:
-      echo ""
-      echo "Hint: Buffer instance mismatch - this is likely a bug in the FFI bindings."
-    else:
-      discard
-
-    if response.len > 0:
-      echo ""
-      echo "Details:"
-      echo response
-
-    if serverResponse.len > 0:
-      echo ""
-      echo "Server response:"
-      echo serverResponse
-
+    handleEricError(rc, response, serverResponse, cfg.ericLogPath)
     return 1
 
 proc fetch(file: string = "", check: bool = false, env: string = ".env"): int =
@@ -1500,38 +1146,15 @@ proc loadConfigAndEricForAbholung(conf: string, env: string): tuple[rc: int, cfg
     var cfg: Config
     return (1, cfg, "")
 
-  var cfg: Config
-  try:
-    cfg = loadConfig(env)
-  except IOError as e:
-    echo &"Error: {e.msg}"
+  let (confOk, vikingConf) = loadConf(conf, validateForAbholung)
+  if not confOk:
+    var cfg: Config
     return (1, cfg, "")
 
-  var vikingConf: VikingConf
-  try:
-    vikingConf = loadVikingConf(conf)
-  except IOError as e:
-    echo &"Error: {e.msg}"
-    return (1, cfg, "")
-  except ValueError as e:
-    echo &"Error parsing {conf}: {e.msg}"
-    return (1, cfg, "")
-
-  let confErrors = vikingConf.validateForAbholung()
-  if confErrors.len > 0:
-    echo "Configuration errors in " & conf & ":"
-    for e in confErrors:
-      echo &"  - {e}"
-    return (1, cfg, "")
+  let (techOk, cfg) = loadTechConfig(env, false, false)
+  if not techOk: return (1, cfg, "")
 
   let name = vikingConf.taxpayer.firstname & " " & vikingConf.taxpayer.lastname
-
-  let errors = cfg.validate()
-  if errors.len > 0:
-    echo "Configuration errors in .env:"
-    for e in errors:
-      echo &"  - {e}"
-    return (1, cfg, "")
 
   if not loadEricLib(cfg.ericLibPath):
     echo &"Error: Failed to load ERiC library from {cfg.ericLibPath}"
@@ -1793,44 +1416,13 @@ proc iban(
     echo "Error: --new-iban is required"
     return 1
 
-  # Validate conf
   if conf == "":
     echo "Error: --conf is required (viking.conf file)"
     return 1
-
-  # Load viking.conf
-  var vikingConf: VikingConf
-  try:
-    vikingConf = loadVikingConf(conf)
-  except IOError as e:
-    echo &"Error: {e.msg}"
-    return 1
-  except ValueError as e:
-    echo &"Error parsing {conf}: {e.msg}"
-    return 1
-
-  let confErrors = vikingConf.validateForBankverbindung()
-  if confErrors.len > 0:
-    echo "Configuration errors in " & conf & ":"
-    for e in confErrors:
-      echo &"  - {e}"
-    return 1
-
-  # Load technical .env config
-  var cfg: Config
-  try:
-    cfg = loadConfig(env)
-  except IOError as e:
-    echo &"Error: {e.msg}"
-    return 1
-
-  let techErrors = if validateOnly and not dryRun: cfg.validateForValidateOnly()
-                   else: cfg.validate()
-  if techErrors.len > 0:
-    echo "Configuration errors in .env:"
-    for e in techErrors:
-      echo &"  - {e}"
-    return 1
+  let (confOk, vikingConf) = loadConf(conf, validateForBankverbindung)
+  if not confOk: return 1
+  let (techOk, cfg) = loadTechConfig(env, validateOnly, dryRun)
+  if not techOk: return 1
 
   let tp = vikingConf.taxpayer
   let fullName = tp.firstname & " " & tp.lastname
@@ -1845,63 +1437,8 @@ proc iban(
     test = cfg.test,
   )
 
-  # Load ERiC library
-  if not loadEricLib(cfg.ericLibPath):
-    echo &"Error: Failed to load ERiC library from {cfg.ericLibPath}"
-    return 1
-  defer: unloadEricLib()
-
-  createDir(cfg.ericLogPath)
-
-  let initRc = ericInitialisiere(cfg.ericPluginPath, cfg.ericLogPath)
-  if initRc != 0:
-    echo &"Error: ERiC initialization failed with code {initRc}"
-    echo &"  {ericHoleFehlerText(initRc)}"
-    return 1
-  defer: discard ericBeende()
-
-  if dryRun:
-    echo "ERiC library loaded and initialized successfully."
-    echo ""
-    echo "=== Generated XML ==="
-    echo xml
-    echo "====================="
-    return 0
-
-  # Create return buffers
-  let responseBuf = ericRueckgabepufferErzeugen()
-  let serverBuf = ericRueckgabepufferErzeugen()
-  if responseBuf == nil or serverBuf == nil:
-    echo "Error: Failed to create return buffers"
-    return 1
-  defer:
-    discard ericRueckgabepufferFreigabe(responseBuf)
-    discard ericRueckgabepufferFreigabe(serverBuf)
-
-  var flags: uint32 = ERIC_VALIDIERE
-  if not validateOnly:
-    flags = flags or ERIC_SENDE
-
-  var cryptParam: EricVerschluesselungsParameterT
-  var cryptParamPtr: ptr EricVerschluesselungsParameterT = nil
-  var certHandle: EricZertifikatHandle = 0
-
-  if not validateOnly:
-    let (certRc, handle) = ericGetHandleToCertificate(cfg.certPath)
-    if certRc != 0:
-      echo &"Error: Failed to open certificate with code {certRc}"
-      echo &"  {ericHoleFehlerText(certRc)}"
-      return 1
-    certHandle = handle
-
-    cryptParam.version = 3
-    cryptParam.zertifikatHandle = certHandle
-    cryptParam.pin = cfg.certPin.cstring
-    cryptParamPtr = addr cryptParam
-
-  defer:
-    if certHandle != 0:
-      discard ericCloseHandleToCertificate(certHandle)
+  initEric(cfg, dryRun, xml)
+  initBuffersAndCert(cfg, validateOnly)
 
   echo "=== IBAN-Änderung ==="
   echo &"Tax number: {tp.taxnumber}"
@@ -1935,41 +1472,13 @@ proc iban(
       echo "Validation successful!"
     else:
       echo "IBAN change submitted successfully!"
-
     if verbose and serverResponse.len > 0:
       echo ""
       echo "Server response:"
       echo serverResponse
-
     return 0
   else:
-    echo &"Error: Operation failed with code {rc}"
-    echo &"  {ericHoleFehlerText(rc)}"
-
-    case rc
-    of 610301200:
-      echo ""
-      echo "Hint: XML schema validation failed."
-      let logFile = cfg.ericLogPath / "eric.log"
-      if fileExists(logFile):
-        let logContent = readFile(logFile).strip
-        if logContent.len > 0:
-          echo ""
-          echo "ERiC log:"
-          echo logContent
-    else:
-      discard
-
-    if response.len > 0:
-      echo ""
-      echo "Details:"
-      echo response
-
-    if serverResponse.len > 0:
-      echo ""
-      echo "Server response:"
-      echo serverResponse
-
+    handleEricError(rc, response, serverResponse, cfg.ericLogPath)
     return 1
 
 proc message(
@@ -2020,44 +1529,13 @@ proc message(
     echo &"Error: Message text exceeds 15000 characters ({messageText.len})"
     return 1
 
-  # Validate conf
   if conf == "":
     echo "Error: --conf is required (viking.conf file)"
     return 1
-
-  # Load viking.conf
-  var vikingConf: VikingConf
-  try:
-    vikingConf = loadVikingConf(conf)
-  except IOError as e:
-    echo &"Error: {e.msg}"
-    return 1
-  except ValueError as e:
-    echo &"Error parsing {conf}: {e.msg}"
-    return 1
-
-  let confErrors = vikingConf.validateForNachricht()
-  if confErrors.len > 0:
-    echo "Configuration errors in " & conf & ":"
-    for e in confErrors:
-      echo &"  - {e}"
-    return 1
-
-  # Load technical .env config
-  var cfg: Config
-  try:
-    cfg = loadConfig(env)
-  except IOError as e:
-    echo &"Error: {e.msg}"
-    return 1
-
-  let techErrors = if validateOnly and not dryRun: cfg.validateForValidateOnly()
-                   else: cfg.validate()
-  if techErrors.len > 0:
-    echo "Configuration errors in .env:"
-    for e in techErrors:
-      echo &"  - {e}"
-    return 1
+  let (confOk, vikingConf) = loadConf(conf, validateForNachricht)
+  if not confOk: return 1
+  let (techOk, cfg) = loadTechConfig(env, validateOnly, dryRun)
+  if not techOk: return 1
 
   let tp = vikingConf.taxpayer
   let fullName = tp.firstname & " " & tp.lastname
@@ -2074,63 +1552,8 @@ proc message(
     produktVersion = NimblePkgVersion,
   )
 
-  # Load ERiC library
-  if not loadEricLib(cfg.ericLibPath):
-    echo &"Error: Failed to load ERiC library from {cfg.ericLibPath}"
-    return 1
-  defer: unloadEricLib()
-
-  createDir(cfg.ericLogPath)
-
-  let initRc = ericInitialisiere(cfg.ericPluginPath, cfg.ericLogPath)
-  if initRc != 0:
-    echo &"Error: ERiC initialization failed with code {initRc}"
-    echo &"  {ericHoleFehlerText(initRc)}"
-    return 1
-  defer: discard ericBeende()
-
-  if dryRun:
-    echo "ERiC library loaded and initialized successfully."
-    echo ""
-    echo "=== Generated XML ==="
-    echo xml
-    echo "====================="
-    return 0
-
-  # Create return buffers
-  let responseBuf = ericRueckgabepufferErzeugen()
-  let serverBuf = ericRueckgabepufferErzeugen()
-  if responseBuf == nil or serverBuf == nil:
-    echo "Error: Failed to create return buffers"
-    return 1
-  defer:
-    discard ericRueckgabepufferFreigabe(responseBuf)
-    discard ericRueckgabepufferFreigabe(serverBuf)
-
-  var flags: uint32 = ERIC_VALIDIERE
-  if not validateOnly:
-    flags = flags or ERIC_SENDE
-
-  var cryptParam: EricVerschluesselungsParameterT
-  var cryptParamPtr: ptr EricVerschluesselungsParameterT = nil
-  var certHandle: EricZertifikatHandle = 0
-
-  if not validateOnly:
-    let (certRc, handle) = ericGetHandleToCertificate(cfg.certPath)
-    if certRc != 0:
-      echo &"Error: Failed to open certificate with code {certRc}"
-      echo &"  {ericHoleFehlerText(certRc)}"
-      return 1
-    certHandle = handle
-
-    cryptParam.version = 3
-    cryptParam.zertifikatHandle = certHandle
-    cryptParam.pin = cfg.certPin.cstring
-    cryptParamPtr = addr cryptParam
-
-  defer:
-    if certHandle != 0:
-      discard ericCloseHandleToCertificate(certHandle)
+  initEric(cfg, dryRun, xml)
+  initBuffersAndCert(cfg, validateOnly)
 
   echo "=== Sonstige Nachricht ==="
   echo &"Tax number:  {tp.taxnumber}"
@@ -2165,41 +1588,13 @@ proc message(
       echo "Validation successful!"
     else:
       echo "Message sent successfully!"
-
     if verbose and serverResponse.len > 0:
       echo ""
       echo "Server response:"
       echo serverResponse
-
     return 0
   else:
-    echo &"Error: Operation failed with code {rc}"
-    echo &"  {ericHoleFehlerText(rc)}"
-
-    case rc
-    of 610301200:
-      echo ""
-      echo "Hint: XML schema validation failed."
-      let logFile = cfg.ericLogPath / "eric.log"
-      if fileExists(logFile):
-        let logContent = readFile(logFile).strip
-        if logContent.len > 0:
-          echo ""
-          echo "ERiC log:"
-          echo logContent
-    else:
-      discard
-
-    if response.len > 0:
-      echo ""
-      echo "Details:"
-      echo response
-
-    if serverResponse.len > 0:
-      echo ""
-      echo "Server response:"
-      echo serverResponse
-
+    handleEricError(rc, response, serverResponse, cfg.ericLogPath)
     return 1
 
 proc initFiles(

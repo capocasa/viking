@@ -1,18 +1,8 @@
 ## EÜR XML Generation
 ## Generates ELSTER XML for Einnahmenüberschussrechnung (profit/loss statement)
 
-import std/[strutils, strformat, math]
+import std/[strformat]
 import config
-
-proc roundCents(val: float): float =
-  ## Round to 2 decimal places (cents)
-  round(val * 100) / 100
-
-proc formatEurDE(val: float): string =
-  ## Format amount for ELSTER XML: German locale with comma decimal separator.
-  ## E.g. 1234.50 -> "1234,50"
-  let s = formatFloat(roundCents(val), ffDecimal, 2)
-  s.replace('.', ',')
 
 proc generateEuer*(
   steuernummer: string,
