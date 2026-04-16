@@ -208,7 +208,8 @@ proc extractArchive*(archivePath: string, destPath: string): bool =
   if not fileExists(archivePath):
     stderr.writeLine &"Error: File not found: {archivePath}"
     return false
-  createDir(destPath)
+  if dirExists(destPath):
+    removeDir(destPath)
   try:
     ziparchives.extractAll(archivePath, destPath)
     return true
