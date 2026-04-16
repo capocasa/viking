@@ -5,9 +5,14 @@ import std/[os, strutils, strformat, httpclient, algorithm]
 import zippy/ziparchives
 from std/appdirs import nil
 
-const
-  EricLibDir* = "lib"
-  EricPluginDir* = "plugins2"
+when defined(windows):
+  const
+    EricLibDir* = "dll"
+    EricPluginDir* = "plugins"
+else:
+  const
+    EricLibDir* = "lib"
+    EricPluginDir* = "plugins2"
 
 # Required library files (platform-specific)
 when defined(macosx):
