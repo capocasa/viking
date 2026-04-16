@@ -34,8 +34,10 @@ viking est -i invoices.csv --year 2025
 viking ust -i invoices.csv --vorauszahlungen 3600 --year 2025
 
 # Retrieve documents from Finanzamt (Steuerbescheide etc.)
-viking retrieve                          # download all available documents
-viking retrieve --output=./bescheide     # save to specific directory
+viking list                              # show available documents
+viking download                          # download all
+viking download Steuerbescheid_2024.pdf  # download specific file(s)
+viking download -o ./bescheide           # save to specific directory
 
 # Validate without sending
 viking submit --period 41 --amount19 1000 --validate-only
@@ -47,7 +49,7 @@ viking submit --period 41 --amount19 1000 --dry-run
 viking submit --env .env.production --period 41 --amount19 1000
 ```
 
-The `retrieve` command queries the ELSTER Postfach, downloads documents from the OTTER server via `libotto`, and sends the mandatory confirmation (PostfachBestaetigung).
+The `download` command queries the ELSTER Postfach, downloads documents from the OTTER server via `libotto`, and sends the mandatory confirmation (PostfachBestaetigung). Existing files are skipped unless `--force` is given.
 
 ## Configuration
 
