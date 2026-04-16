@@ -1,7 +1,7 @@
 ## Postfach / Datenabholung helpers
 ## Types, XML parsing, and query logic for ELSTER Postfach operations.
 
-import std/[strutils, strformat, xmltree, xmlparser, sequtils]
+import std/[strutils, strformat, xmltree, xmlparser]
 import viking/[config, ericffi, abholung_xml, log]
 
 type
@@ -39,6 +39,16 @@ func sanitizeFilename*(s: string): string =
   result = s
   for c in [' ', '/', '\\', ':', '*', '?', '"', '<', '>', '|']:
     result = result.replace($c, "_")
+
+func constructFilename*(b: AbholBereitstellung, a: AbholAnhang): string =
+  let ext = mimeToExt(a.dateityp)
+  let vz = if b.veranlagungszeitraum.len > 0: "_" & b.veranlagungszeitraum else: ""
+  sanitizeFilename(a.dateibezeichnung) & vz & ext
+
+iterator allFilenames*(bereitstellungen: seq[AbholBereitstellung]): tuple[b: AbholBereitstellung, a: AbholAnhang, filename: string] =
+  for b in bereitstellungen:
+    for a in b.anhaenge:
+      yield (b, a, constructFilename(b, a))
 
 proc parsePostfachAntwort*(xmlDoc: XmlNode): seq[AbholBereitstellung] =
   result = @[]
@@ -176,15 +186,7 @@ proc displayBereitstellungen*(bereitstellungen: seq[AbholBereitstellung]) =
   if bereitstellungen.len == 0:
     log "No documents available."
     return
-  let neueCount = bereitstellungen.filterIt(it.neue).len
-  log &"Found {bereitstellungen.len} document(s) ({neueCount} new)"
   for b in bereitstellungen:
-    let vz = if b.veranlagungszeitraum.len > 0: " " & b.veranlagungszeitraum else: ""
-    let bd = if b.bescheiddatum.len > 0:
-      let d = b.bescheiddatum
-      if d.len == 8: " vom " & d[6..7] & "." & d[4..5] & "." & d[0..3]
-      else: " vom " & d
-    else: ""
-    let status = if b.neue: " [NEW]" else: ""
-    log &"  {b.datenart}{vz}{bd}{status}"
+    for a in b.anhaenge:
+      echo constructFilename(b, a)
 

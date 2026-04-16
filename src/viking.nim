@@ -662,22 +662,25 @@ proc list(
   return 0
 
 proc download(
+  files: seq[string],
   conf: string = "",
   output_dir: string = "",
+  force: bool = false,
   verbose: bool = false,
   dry_run: bool = false,
   env: string = ".env",
 ): int =
-  ## Download all documents from the tax office Postfach
+  ## Download documents from the tax office Postfach
   ##
   ## Personal data from viking.conf, technical config from .env.
-  ## Queries the ELSTER Postfach, downloads all documents via OTTER,
+  ## Queries the ELSTER Postfach, downloads documents via OTTER,
   ## and confirms retrieval. Use 'viking list' first to see what's available.
+  ## Specify filenames to download specific files.
   ##
   ## Examples:
   ##   viking download -c viking.conf
+  ##   viking download -c viking.conf Steuerbescheid_Einkommsteuer_2024.pdf
   ##   viking download -c viking.conf --output_dir=./bescheide
-  ##   viking download -c viking.conf --dry_run
 
   log.verbose = verbose
   initLog()
@@ -724,14 +727,24 @@ proc download(
 
   for b in bereitstellungen:
     var allOk = true
+    var anySelected = false
+    var allSelected = true
 
     for a in b.anhaenge:
-      let ext = mimeToExt(a.dateityp)
-      let vz = if b.veranlagungszeitraum.len > 0: "_" & b.veranlagungszeitraum else: ""
-      let filename = sanitizeFilename(a.dateibezeichnung) & vz & ext
+      let filename = constructFilename(b, a)
+
+      if files.len > 0 and filename notin files:
+        allSelected = false
+        continue
+
+      anySelected = true
       let filepath = outDir / filename
 
-      log &"Downloading {a.dateibezeichnung}{vz}..."
+      if not force and fileExists(filepath):
+        log &"Skipping {filename} (already exists)"
+        continue
+
+      log &"Downloading {filename}..."
 
       let (bufRc, ottoBuf) = ottoRueckgabepufferErzeugen(ottoInstanz)
       if bufRc != 0:
@@ -766,7 +779,7 @@ proc download(
       writeFile(filepath, data)
       log &"Saved: {filepath} ({dataSize} bytes)"
 
-    if allOk:
+    if allOk and anySelected and allSelected:
       confirmedIds.add(b.id)
 
   if confirmedIds.len > 0:
@@ -1219,8 +1232,10 @@ when isMainModule:
     ],
     [download,
       help = {
+        "files": "Filenames to download (from 'viking list')",
         "conf": "viking.conf file with taxpayer data",
         "output_dir": "Output directory for downloaded files (default: current dir)",
+        "force": "Overwrite existing files",
         "dry_run": "Show generated XML without sending",
         "verbose": "Show full server response and confirmation XML",
         "env": "Path to env file (default: .env)",
@@ -1228,6 +1243,7 @@ when isMainModule:
       short = {
         "conf": 'c',
         "output_dir": 'o',
+        "force": 'f',
         "dry_run": 'd',
         "verbose": 'v',
         "env": 'e',
