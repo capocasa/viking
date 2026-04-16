@@ -3,6 +3,16 @@
 
 import std/[osproc, strutils, os, algorithm]
 
+when defined(macosx):
+  const DynlibExt = ".dylib"
+  const PluginPrefix = "libcheck"
+elif defined(windows):
+  const DynlibExt = ".dll"
+  const PluginPrefix = "check"
+else:
+  const DynlibExt = ".so"
+  const PluginPrefix = "libcheck"
+
 var failures = 0
 var passes = 0
 
@@ -95,7 +105,7 @@ echo "--- TEST flag ---"
 # Create a minimal env with TEST=0 (production)
 let prodEnv = projectRoot / "tests" / ".env.test_prod"
 writeFile(prodEnv, readFile(projectRoot / ".env").replace("TEST=1", "TEST=0"))
-let (prodOut, prodRc) = run("./viking submit -c " & submitConf & " --p 41 --amount19 0 --dry-run --env " & prodEnv)
+let (prodOut, prodRc) = run("TEST=0 ./viking submit -c " & submitConf & " --p 41 --amount19 0 --dry-run --env " & prodEnv)
 check("TEST=0 dry-run exits 0", prodRc == 0, prodOut)
 check("TEST=0 no Testmerker", not prodOut.contains("Testmerker"), prodOut)
 
@@ -162,9 +172,10 @@ var years: seq[int] = @[]
 for kind, path in walkDir(pluginPath):
   if kind == pcFile:
     let name = path.extractFilename
-    if name.startsWith("libcheckUStVA_") and name.endsWith(".so"):
+    let uStVAPrefix = PluginPrefix & "UStVA_"
+    if name.startsWith(uStVAPrefix) and name.endsWith(DynlibExt):
       try:
-        let y = parseInt(name[14..^4])
+        let y = parseInt(name[uStVAPrefix.len ..^ (DynlibExt.len + 1)])
         if y >= 2025:
           years.add(y)
       except ValueError:
@@ -435,7 +446,7 @@ check("euer TEST=1 has Testmerker", euerTestOut.contains("<Testmerker>700000004<
 # TEST=0
 let euerProdEnv = projectRoot / "tests" / ".env.euer_prod"
 writeFile(euerProdEnv, readFile(projectRoot / ".env").replace("TEST=1", "TEST=0"))
-let (euerProdOut, euerProdRc) = run("./viking euer -c " & euerConf & " --euer " & euerCsv & " -y 2025 --dry-run --env " & euerProdEnv)
+let (euerProdOut, euerProdRc) = run("TEST=0 ./viking euer -c " & euerConf & " --euer " & euerCsv & " -y 2025 --dry-run --env " & euerProdEnv)
 check("euer TEST=0 exits 0", euerProdRc == 0, euerProdOut)
 check("euer TEST=0 no Testmerker", not euerProdOut.contains("Testmerker"), euerProdOut)
 removeFile(euerProdEnv)
@@ -447,9 +458,10 @@ var euerYears: seq[int] = @[]
 for kind, path in walkDir(pluginPath):
   if kind == pcFile:
     let name = path.extractFilename
-    if name.startsWith("libcheckEUER_") and name.endsWith(".so"):
+    let euerPrefix = PluginPrefix & "EUER_"
+    if name.startsWith(euerPrefix) and name.endsWith(DynlibExt):
       try:
-        let y = parseInt(name[13..^4])
+        let y = parseInt(name[euerPrefix.len ..^ (DynlibExt.len + 1)])
         if y >= 2025:
           euerYears.add(y)
       except ValueError:
@@ -604,7 +616,7 @@ check("est TEST=1 has Testmerker", estTestOut.contains("<Testmerker>700000004</T
 
 let estProdEnv = projectRoot / "tests" / ".env.est_prod"
 writeFile(estProdEnv, readFile(projectRoot / ".env").replace("TEST=1", "TEST=0"))
-let (estProdOut, estProdRc) = run("./viking est -c " & estConf & " -i " & estEuer & " -y 2025 --dry-run --force --env " & estProdEnv)
+let (estProdOut, estProdRc) = run("TEST=0 ./viking est -c " & estConf & " -i " & estEuer & " -y 2025 --dry-run --force --env " & estProdEnv)
 check("est TEST=0 exits 0", estProdRc == 0, estProdOut)
 check("est TEST=0 no Testmerker", not estProdOut.contains("Testmerker"), estProdOut)
 removeFile(estProdEnv)
@@ -616,9 +628,10 @@ var estYears: seq[int] = @[]
 for kind, path in walkDir(pluginPath):
   if kind == pcFile:
     let name = path.extractFilename
-    if name.startsWith("libcheckESt_") and name.endsWith(".so"):
+    let eStPrefix = PluginPrefix & "ESt_"
+    if name.startsWith(eStPrefix) and name.endsWith(DynlibExt):
       try:
-        let y = parseInt(name[12..^4])
+        let y = parseInt(name[eStPrefix.len ..^ (DynlibExt.len + 1)])
         if y >= 2024:
           estYears.add(y)
       except ValueError:
@@ -895,7 +908,7 @@ check("ust TEST=1 has Testmerker", ustTestOut.contains("<Testmerker>700000004</T
 # TEST=0
 let ustProdEnv = projectRoot / "tests" / ".env.ust_prod"
 writeFile(ustProdEnv, readFile(projectRoot / ".env").replace("TEST=1", "TEST=0"))
-let (ustProdOut, ustProdRc) = run("./viking ust -c " & ustConf & " -i " & ustCsv & " -y 2025 --dry-run --env " & ustProdEnv)
+let (ustProdOut, ustProdRc) = run("TEST=0 ./viking ust -c " & ustConf & " -i " & ustCsv & " -y 2025 --dry-run --env " & ustProdEnv)
 check("ust TEST=0 exits 0", ustProdRc == 0, ustProdOut)
 check("ust TEST=0 no Testmerker", not ustProdOut.contains("Testmerker"), ustProdOut)
 removeFile(ustProdEnv)
@@ -907,9 +920,11 @@ var ustYears: seq[int] = @[]
 for kind, path in walkDir(pluginPath):
   if kind == pcFile:
     let name = path.extractFilename
-    if name.startsWith("libcheckUSt_") and not name.startsWith("libcheckUStVA_") and name.endsWith(".so"):
+    let uStPrefix = PluginPrefix & "USt_"
+    let uStVAPrefix2 = PluginPrefix & "UStVA_"
+    if name.startsWith(uStPrefix) and not name.startsWith(uStVAPrefix2) and name.endsWith(DynlibExt):
       try:
-        let y = parseInt(name[12..^4])
+        let y = parseInt(name[uStPrefix.len ..^ (DynlibExt.len + 1)])
         if y >= 2025:
           ustYears.add(y)
       except ValueError:
