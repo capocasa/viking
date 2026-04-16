@@ -5,8 +5,10 @@
 import std/dynlib
 
 type
-  OttoInstanzHandle* = pointer
-  OttoRueckgabepufferHandle* = pointer
+  OttoInstanzObj* {.incompleteStruct.} = object
+  OttoInstanzHandle* = ptr OttoInstanzObj
+  OttoRueckgabepufferObj* {.incompleteStruct.} = object
+  OttoRueckgabepufferHandle* = ptr OttoRueckgabepufferObj
 
 var
   ottoLibHandle: pointer = nil

@@ -1,7 +1,9 @@
 ## Invoice CSV/TSV parsing and aggregation for UStVA
 ## Parses invoice lists and aggregates amounts by tax rate
+# TODO: replace float with a distinct int cents type for exact arithmetic
 
 import std/[strutils, options]
+import viking/[config, log]
 
 type
   Invoice* = object
@@ -40,11 +42,11 @@ type
     line*: int
     msg*: string
 
-proc detectFormat*(firstLine: string): char =
+func detectFormat*(firstLine: string): char =
   ## Returns '\t' if line contains tabs, else ','
   if '\t' in firstLine: '\t' else: ','
 
-proc isHeaderRow*(line: string, sep: char): bool =
+func isHeaderRow*(line: string, sep: char): bool =
   ## True if the first field is not a valid float (i.e. it's a header)
   let fields = line.split(sep, maxsplit = 1)
   if fields.len == 0:
@@ -55,7 +57,7 @@ proc isHeaderRow*(line: string, sep: char): bool =
   except ValueError:
     return true
 
-proc parseInvoices*(input: string): (seq[Invoice], seq[InvoiceError]) =
+func parseInvoices*(input: string): (seq[Invoice], seq[InvoiceError]) =
   ## Parse all lines from input, collecting invoices and errors.
   ## Skips empty lines, comment lines (#), and optional header row.
   ## Strips UTF-8 BOM if present.
@@ -169,7 +171,7 @@ proc parseInvoices*(input: string): (seq[Invoice], seq[InvoiceError]) =
 
   return (invoices, errors)
 
-proc aggregate*(invoices: seq[Invoice]): InvoiceAggregation =
+func aggregate*(invoices: seq[Invoice]): InvoiceAggregation =
   ## Sum amounts by rate. Returns Option[float] per rate (none if no invoices at that rate).
   var sum19 = 0.0
   var sum7 = 0.0
@@ -197,7 +199,7 @@ proc aggregate*(invoices: seq[Invoice]): InvoiceAggregation =
   result.amount0 = if has0: some(sum0) else: none(float)
   result.count = invoices.len
 
-proc monthsForPeriod*(period: string): seq[int] =
+func monthsForPeriod*(period: string): seq[int] =
   ## Return which months (1-12) a period covers.
   let p = parseInt(period)
   if p >= 1 and p <= 12:
@@ -207,7 +209,7 @@ proc monthsForPeriod*(period: string): seq[int] =
     let startMonth = (p - 41) * 3 + 1
     result = @[startMonth, startMonth + 1, startMonth + 2]
 
-proc filterByPeriod*(invoices: seq[Invoice], year: int, period: string): seq[Invoice] =
+func filterByPeriod*(invoices: seq[Invoice], year: int, period: string): seq[Invoice] =
   ## Filter invoices to those matching the given year and period.
   ## Invoices without a date are excluded.
   let months = monthsForPeriod(period)
@@ -217,7 +219,7 @@ proc filterByPeriod*(invoices: seq[Invoice], year: int, period: string): seq[Inv
       continue
     # date is YYYY-MM-DD, already validated
     let parts = inv.date.split('-')
-    if parts[0] == yearStr and parseInt(parts[1]) in months:
+    if parts.len >= 2 and parts[0] == yearStr and parseInt(parts[1]) in months:
       result.add(inv)
 
 proc readInvoiceInput*(path: string): string =
@@ -227,18 +229,18 @@ proc readInvoiceInput*(path: string): string =
   else:
     return readFile(path)
 
-proc aggregateForEuer*(invoices: seq[Invoice]): EuerAggregation =
+func aggregateForEuer*(invoices: seq[Invoice]): EuerAggregation =
   ## Split invoices into income (positive) and expenses (negative) for EÜR.
   ## Positive amounts = income, negative amounts = expenses.
   for inv in invoices:
     let rate = inv.rate.float / 100.0
     if inv.amount >= 0:
       result.incomeNet += inv.amount
-      result.incomeVat += inv.amount * rate
+      result.incomeVat += roundCents(inv.amount * rate)
       inc result.incomeCount
     else:
       result.expenseNet += abs(inv.amount)
-      result.expenseVorsteuer += abs(inv.amount) * rate
+      result.expenseVorsteuer += roundCents(abs(inv.amount) * rate)
       inc result.expenseCount
 
 proc loadAndAggregateInvoices*(path: string, year: int = 0, period: string = ""): (InvoiceAggregation, int, bool) =
@@ -248,15 +250,15 @@ proc loadAndAggregateInvoices*(path: string, year: int = 0, period: string = "")
   try:
     input = readInvoiceInput(path)
   except IOError as e:
-    stderr.writeLine("Error: Cannot read invoice file: " & e.msg)
+    err("Error: Cannot read invoice file: " & e.msg)
     return (InvoiceAggregation(), 0, false)
 
   let (invoices, errors) = parseInvoices(input)
 
   if errors.len > 0:
-    stderr.writeLine("Invoice parsing errors:")
+    err("Invoice parsing errors:")
     for e in errors:
-      stderr.writeLine("  line " & $e.line & ": " & e.msg)
+      err("  line " & $e.line & ": " & e.msg)
     return (InvoiceAggregation(), 0, false)
 
   if invoices.len == 0:
@@ -272,7 +274,7 @@ proc loadAndAggregateInvoices*(path: string, year: int = 0, period: string = "")
       else: inc undated
     if dated > 0:
       if undated > 0:
-        stderr.writeLine("Warning: " & $undated & " invoice(s) without date excluded from period filter")
+        err("Warning: " & $undated & " invoice(s) without date excluded from period filter")
       filtered = filterByPeriod(invoices, year, period)
 
   let agg = aggregate(filtered)
@@ -284,15 +286,15 @@ proc loadAndAggregateForEuer*(path: string): (EuerAggregation, bool) =
   try:
     input = readInvoiceInput(path)
   except IOError as e:
-    stderr.writeLine("Error: Cannot read invoice file: " & e.msg)
+    err("Error: Cannot read invoice file: " & e.msg)
     return (EuerAggregation(), false)
 
   let (invoices, errors) = parseInvoices(input)
 
   if errors.len > 0:
-    stderr.writeLine("Invoice parsing errors:")
+    err("Invoice parsing errors:")
     for e in errors:
-      stderr.writeLine("  line " & $e.line & ": " & e.msg)
+      err("  line " & $e.line & ": " & e.msg)
     return (EuerAggregation(), false)
 
   if invoices.len == 0:
@@ -301,7 +303,7 @@ proc loadAndAggregateForEuer*(path: string): (EuerAggregation, bool) =
   let agg = aggregateForEuer(invoices)
   return (agg, true)
 
-proc aggregateForUst*(invoices: seq[Invoice]): UstAggregation =
+func aggregateForUst*(invoices: seq[Invoice]): UstAggregation =
   ## Split invoices into income by rate and expense Vorsteuer for annual USt.
   for inv in invoices:
     let rate = inv.rate.float / 100.0
@@ -319,7 +321,7 @@ proc aggregateForUst*(invoices: seq[Invoice]): UstAggregation =
       else: discard
       inc result.incomeCount
     else:
-      result.vorsteuer += abs(inv.amount) * rate
+      result.vorsteuer += roundCents(abs(inv.amount) * rate)
       inc result.expenseCount
 
 proc loadAndAggregateForUst*(path: string): (UstAggregation, bool) =
@@ -328,15 +330,15 @@ proc loadAndAggregateForUst*(path: string): (UstAggregation, bool) =
   try:
     input = readInvoiceInput(path)
   except IOError as e:
-    stderr.writeLine("Error: Cannot read invoice file: " & e.msg)
+    err("Error: Cannot read invoice file: " & e.msg)
     return (UstAggregation(), false)
 
   let (invoices, errors) = parseInvoices(input)
 
   if errors.len > 0:
-    stderr.writeLine("Invoice parsing errors:")
+    err("Invoice parsing errors:")
     for e in errors:
-      stderr.writeLine("  line " & $e.line & ": " & e.msg)
+      err("  line " & $e.line & ": " & e.msg)
     return (UstAggregation(), false)
 
   if invoices.len == 0:

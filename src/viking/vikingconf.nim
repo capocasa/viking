@@ -121,12 +121,12 @@ proc loadVikingConf*(path: string): VikingConf =
   if currentSection == "kid" and currentKid.firstname != "":
     result.kids.add(currentKid)
 
-proc kidFirstnames*(conf: VikingConf): seq[string] =
+func kidFirstnames*(conf: VikingConf): seq[string] =
   ## Return list of kid firstnames for deduction prefix matching.
   for kid in conf.kids:
     result.add(kid.firstname)
 
-proc validateFields(tp: TaxpayerConf, fields: openArray[string]): seq[string] =
+func validateFields(tp: TaxpayerConf, fields: openArray[string]): seq[string] =
   ## Check that the given taxpayer fields are non-empty.
   for field in fields:
     let val = case field
@@ -145,8 +145,10 @@ proc validateFields(tp: TaxpayerConf, fields: openArray[string]): seq[string] =
       else: ""
     if val == "":
       result.add("taxpayer." & field & " not set in viking.conf")
+    elif field == "taxnumber" and val.len != 13:
+      result.add("taxpayer.taxnumber must be 13 digits, got " & $val.len)
 
-proc validateForEst*(conf: VikingConf): seq[string] =
+func validateForEst*(conf: VikingConf): seq[string] =
   result = conf.taxpayer.validateFields(
     ["firstname", "lastname", "birthdate", "taxnumber", "income", "iban"])
   if conf.taxpayer.income != "" and conf.taxpayer.income != "2" and conf.taxpayer.income != "3":
@@ -154,27 +156,27 @@ proc validateForEst*(conf: VikingConf): seq[string] =
   if conf.taxpayer.kvArt != "privat" and conf.taxpayer.kvArt != "gesetzlich":
     result.add("taxpayer.kv_art must be 'privat' or 'gesetzlich'")
 
-proc validateForUstva*(conf: VikingConf): seq[string] =
+func validateForUstva*(conf: VikingConf): seq[string] =
   conf.taxpayer.validateFields(
     ["firstname", "lastname", "taxnumber", "street", "zip", "city"])
 
-proc validateForUst*(conf: VikingConf): seq[string] =
+func validateForUst*(conf: VikingConf): seq[string] =
   result = conf.taxpayer.validateFields(
     ["firstname", "lastname", "taxnumber", "street", "zip", "city"])
   if conf.taxpayer.besteuerungsart notin ["1", "2", "3"]:
     result.add("taxpayer.besteuerungsart must be 1, 2 or 3")
 
-proc validateForNachricht*(conf: VikingConf): seq[string] =
+func validateForNachricht*(conf: VikingConf): seq[string] =
   conf.taxpayer.validateFields(
     ["firstname", "lastname", "taxnumber", "street", "housenumber", "zip", "city"])
 
-proc validateForBankverbindung*(conf: VikingConf): seq[string] =
+func validateForBankverbindung*(conf: VikingConf): seq[string] =
   conf.taxpayer.validateFields(
     ["firstname", "lastname", "birthdate", "idnr", "taxnumber"])
 
-proc validateForAbholung*(conf: VikingConf): seq[string] =
+func validateForAbholung*(conf: VikingConf): seq[string] =
   conf.taxpayer.validateFields(["firstname", "lastname"])
 
-proc validateForEuer*(conf: VikingConf): seq[string] =
+func validateForEuer*(conf: VikingConf): seq[string] =
   conf.taxpayer.validateFields(
     ["firstname", "lastname", "taxnumber", "street", "zip", "city", "rechtsform", "income"])

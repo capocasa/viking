@@ -5,32 +5,46 @@
 import std/[strformat]
 import viking/config
 
-proc generateUst*(
-  steuernummer: string,
-  jahr: int,
-  income19: float = 0.0,
-  income7: float = 0.0,
-  income0: float = 0.0,
-  has19: bool = false,
-  has7: bool = false,
-  has0: bool = false,
-  vorsteuer: float = 0.0,
-  vorauszahlungen: float = 0.0,
-  besteuerungsart: string = "2",
-  name: string,
-  strasse: string,
-  plz: string,
-  ort: string,
-  test: bool,
-  produktVersion: string = "0.1.0",
-): string =
+type
+  UstInput* = object
+    steuernummer*: string
+    jahr*: int
+    income19*: float
+    income7*: float
+    income0*: float
+    has19*: bool
+    has7*: bool
+    has0*: bool
+    vorsteuer*: float
+    vorauszahlungen*: float
+    besteuerungsart*: string
+    name*: string
+    strasse*: string
+    plz*: string
+    ort*: string
+    test*: bool
+    produktVersion*: string
+
+proc generateUst*(input: UstInput): string =
   ## Generate ELSTER XML for annual Umsatzsteuererklaerung (E50 schema)
 
   let herstellerId = HerstellerId
   let produktName = ProduktName
+  let steuernummer = input.steuernummer
+  let jahr = input.jahr
+  let income19 = input.income19
+  let income7 = input.income7
+  let vorsteuer = input.vorsteuer
+  let vorauszahlungen = input.vorauszahlungen
+  let name = input.name
+  let strasse = input.strasse
+  let plz = input.plz
+  let ort = input.ort
+  let besteuerungsart = input.besteuerungsart
+  let produktVersion = if input.produktVersion != "": input.produktVersion else: "0.1.0"
   let finanzamt = steuernummer[0..3]
   let bundesland = bundeslandFromSteuernummer(steuernummer)
-  let testmerkerLine = if test: "\n    <Testmerker>700000004</Testmerker>" else: ""
+  let testmerkerLine = if input.test: "\n    <Testmerker>700000004</Testmerker>" else: ""
 
   # Compute VAT
   let vat19 = roundCents(income19 * 0.19)
@@ -56,13 +70,13 @@ proc generateUst*(
 
   # Build Umsaetze section
   var umsaetze = ""
-  if has19:
+  if input.has19:
     umsaetze.add(&"""
             <Ums_allg>
               <E3003303>{roundEuro(income19)}</E3003303>
               <E3003304>{formatEurDE(vat19)}</E3003304>
             </Ums_allg>""")
-  if has7:
+  if input.has7:
     umsaetze.add(&"""
             <Ums_erm>
               <E3004401>{roundEuro(income7)}</E3004401>

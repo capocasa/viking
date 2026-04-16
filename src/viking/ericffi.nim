@@ -7,7 +7,8 @@ const
   ERIC_DRUCKE* = 32'u32
 
 type
-  EricRueckgabepuffer* = pointer
+  EricRueckgabepufferObj* {.incompleteStruct.} = object
+  EricRueckgabepuffer* = ptr EricRueckgabepufferObj
   EricZertifikatHandle* = uint32
 
   EricVerschluesselungsParameterT* {.bycopy.} = object
@@ -84,49 +85,27 @@ var
   pEricCreateTH: EricCreateTHProc = nil
   pEricDekodiereDaten: EricDekodiereDatenProc = nil
 
-# Dynamic library loading
-when defined(windows):
-  import std/dynlib
-  proc loadEricLib(path: string): bool =
-    ericLibHandle = loadLib(path)
-    if ericLibHandle == nil:
-      return false
-    ericLibPath = path
+import std/dynlib
 
-    pEricInitialisiere = cast[EricInitialisiereProc](symAddr(ericLibHandle, "EricInitialisiere"))
-    pEricBeende = cast[EricBeendeProc](symAddr(ericLibHandle, "EricBeende"))
-    pEricBearbeiteVorgang = cast[EricBearbeiteVorgangProc](symAddr(ericLibHandle, "EricBearbeiteVorgang"))
-    pEricRueckgabepufferErzeugen = cast[EricRueckgabepufferErzeugenProc](symAddr(ericLibHandle, "EricRueckgabepufferErzeugen"))
-    pEricRueckgabepufferInhalt = cast[EricRueckgabepufferInhaltProc](symAddr(ericLibHandle, "EricRueckgabepufferInhalt"))
-    pEricRueckgabepufferFreigabe = cast[EricRueckgabepufferFreigabeProc](symAddr(ericLibHandle, "EricRueckgabepufferFreigabe"))
-    pEricHoleFehlerText = cast[EricHoleFehlerTextProc](symAddr(ericLibHandle, "EricHoleFehlerText"))
-    pEricGetHandleToCertificate = cast[EricGetHandleToCertificateProc](symAddr(ericLibHandle, "EricGetHandleToCertificate"))
-    pEricCloseHandleToCertificate = cast[EricCloseHandleToCertificateProc](symAddr(ericLibHandle, "EricCloseHandleToCertificate"))
-    pEricCreateTH = cast[EricCreateTHProc](symAddr(ericLibHandle, "EricCreateTH"))
-    pEricDekodiereDaten = cast[EricDekodiereDatenProc](symAddr(ericLibHandle, "EricDekodiereDaten"))
+proc loadEricLib*(path: string): bool =
+  ericLibHandle = loadLib(path)
+  if ericLibHandle == nil:
+    return false
+  ericLibPath = path
 
-    return pEricInitialisiere != nil and pEricBeende != nil
-else:
-  import std/dynlib
-  proc loadEricLib*(path: string): bool =
-    ericLibHandle = loadLib(path)
-    if ericLibHandle == nil:
-      return false
-    ericLibPath = path
+  pEricInitialisiere = cast[EricInitialisiereProc](symAddr(ericLibHandle, "EricInitialisiere"))
+  pEricBeende = cast[EricBeendeProc](symAddr(ericLibHandle, "EricBeende"))
+  pEricBearbeiteVorgang = cast[EricBearbeiteVorgangProc](symAddr(ericLibHandle, "EricBearbeiteVorgang"))
+  pEricRueckgabepufferErzeugen = cast[EricRueckgabepufferErzeugenProc](symAddr(ericLibHandle, "EricRueckgabepufferErzeugen"))
+  pEricRueckgabepufferInhalt = cast[EricRueckgabepufferInhaltProc](symAddr(ericLibHandle, "EricRueckgabepufferInhalt"))
+  pEricRueckgabepufferFreigabe = cast[EricRueckgabepufferFreigabeProc](symAddr(ericLibHandle, "EricRueckgabepufferFreigabe"))
+  pEricHoleFehlerText = cast[EricHoleFehlerTextProc](symAddr(ericLibHandle, "EricHoleFehlerText"))
+  pEricGetHandleToCertificate = cast[EricGetHandleToCertificateProc](symAddr(ericLibHandle, "EricGetHandleToCertificate"))
+  pEricCloseHandleToCertificate = cast[EricCloseHandleToCertificateProc](symAddr(ericLibHandle, "EricCloseHandleToCertificate"))
+  pEricCreateTH = cast[EricCreateTHProc](symAddr(ericLibHandle, "EricCreateTH"))
+  pEricDekodiereDaten = cast[EricDekodiereDatenProc](symAddr(ericLibHandle, "EricDekodiereDaten"))
 
-    pEricInitialisiere = cast[EricInitialisiereProc](symAddr(ericLibHandle, "EricInitialisiere"))
-    pEricBeende = cast[EricBeendeProc](symAddr(ericLibHandle, "EricBeende"))
-    pEricBearbeiteVorgang = cast[EricBearbeiteVorgangProc](symAddr(ericLibHandle, "EricBearbeiteVorgang"))
-    pEricRueckgabepufferErzeugen = cast[EricRueckgabepufferErzeugenProc](symAddr(ericLibHandle, "EricRueckgabepufferErzeugen"))
-    pEricRueckgabepufferInhalt = cast[EricRueckgabepufferInhaltProc](symAddr(ericLibHandle, "EricRueckgabepufferInhalt"))
-    pEricRueckgabepufferFreigabe = cast[EricRueckgabepufferFreigabeProc](symAddr(ericLibHandle, "EricRueckgabepufferFreigabe"))
-    pEricHoleFehlerText = cast[EricHoleFehlerTextProc](symAddr(ericLibHandle, "EricHoleFehlerText"))
-    pEricGetHandleToCertificate = cast[EricGetHandleToCertificateProc](symAddr(ericLibHandle, "EricGetHandleToCertificate"))
-    pEricCloseHandleToCertificate = cast[EricCloseHandleToCertificateProc](symAddr(ericLibHandle, "EricCloseHandleToCertificate"))
-    pEricCreateTH = cast[EricCreateTHProc](symAddr(ericLibHandle, "EricCreateTH"))
-    pEricDekodiereDaten = cast[EricDekodiereDatenProc](symAddr(ericLibHandle, "EricDekodiereDaten"))
-
-    return pEricInitialisiere != nil and pEricBeende != nil
+  return pEricInitialisiere != nil and pEricBeende != nil
 
 proc unloadEricLib*() =
   if ericLibHandle != nil:

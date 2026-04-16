@@ -1,0 +1,190 @@
+## Postfach / Datenabholung helpers
+## Types, XML parsing, and query logic for ELSTER Postfach operations.
+
+import std/[strutils, strformat, xmltree, xmlparser, sequtils]
+import viking/[config, ericffi, abholung_xml, log]
+
+type
+  AbholAnhang* = object
+    dateibezeichnung*: string
+    dateityp*: string
+    dateiReferenzId*: string
+    dateiGroesse*: int
+
+  AbholBereitstellung* = object
+    id*: string
+    datenart*: string
+    groesse*: int
+    veranlagungszeitraum*: string
+    steuernummer*: string
+    bescheiddatum*: string
+    anhaenge*: seq[AbholAnhang]
+    neue*: bool  # true if unconfirmed (not yet retrieved)
+
+func findAll(node: XmlNode, tag: string): seq[XmlNode] =
+  result = @[]
+  if node.kind != xnElement: return
+  if node.tag == tag: result.add(node)
+  for child in node:
+    result.add(findAll(child, tag))
+
+func mimeToExt*(mime: string): string =
+  case mime
+  of "application/pdf": ".pdf"
+  of "text/xml", "application/xml": ".xml"
+  of "text/html": ".html"
+  else: ".bin"
+
+func sanitizeFilename*(s: string): string =
+  result = s
+  for c in [' ', '/', '\\', ':', '*', '?', '"', '<', '>', '|']:
+    result = result.replace($c, "_")
+
+proc parsePostfachAntwort*(xmlDoc: XmlNode): seq[AbholBereitstellung] =
+  result = @[]
+  for dab in xmlDoc.findAll("DatenartBereitstellung"):
+    let datenart = dab.attr("name")
+    let anzahl = try: parseInt(dab.attr("anzahltreffer")) except ValueError: 0
+    if anzahl == 0: continue
+
+    for bs in dab.findAll("Bereitstellung"):
+      let id = bs.attr("id")
+      if id.len == 0:
+        err "Warning: Bereitstellung missing id attribute, skipping"
+        continue
+      var b = AbholBereitstellung(
+        id: id,
+        datenart: datenart,
+        groesse: try: parseInt(bs.attr("groesse")) except ValueError: 0,
+      )
+
+      for meta in bs.findAll("Meta"):
+        let name = meta.attr("name")
+        let value = meta.innerText
+        case name
+        of "veranlagungszeitraum": b.veranlagungszeitraum = value
+        of "steuernummer": b.steuernummer = value
+        of "bescheiddatum": b.bescheiddatum = value
+
+      for anhang in bs.findAll("Anhang"):
+        var a = AbholAnhang()
+        for child in anhang:
+          if child.kind != xnElement: continue
+          case child.tag
+          of "Dateibezeichnung": a.dateibezeichnung = child.innerText
+          of "Dateityp": a.dateityp = child.innerText
+          of "DateiReferenzId": a.dateiReferenzId = child.innerText
+          of "DateiGroesse": a.dateiGroesse = try: parseInt(child.innerText) except ValueError: 0
+        if a.dateiReferenzId.len > 0:
+          b.anhaenge.add(a)
+
+      result.add(b)
+
+proc sendPostfachAnfrage*(
+  cfg: Config,
+  name: string,
+  produktVersion: string,
+  cryptParam: ptr EricVerschluesselungsParameterT,
+  einschraenkung: string,
+  verbose: bool,
+): tuple[rc: int, bereitstellungen: seq[AbholBereitstellung], serverResponse: string] =
+  let anfragXml = generatePostfachAnfrageXml(
+    name, cfg.test, produktVersion, einschraenkung,
+  )
+
+  var transferHandle: uint32 = 0
+  let responseBuf = ericRueckgabepufferErzeugen()
+  let serverBuf = ericRueckgabepufferErzeugen()
+  if responseBuf == nil or serverBuf == nil:
+    err "Error: Failed to create return buffers"
+    return (1, @[], "")
+  defer:
+    discard ericRueckgabepufferFreigabe(responseBuf)
+    discard ericRueckgabepufferFreigabe(serverBuf)
+
+  let rc = ericBearbeiteVorgang(anfragXml, "PostfachAnfrage_31",
+    ERIC_VALIDIERE or ERIC_SENDE, nil, cryptParam, addr transferHandle,
+    responseBuf, serverBuf)
+
+  let response = ericRueckgabepufferInhalt(responseBuf)
+  let serverResponse = ericRueckgabepufferInhalt(serverBuf)
+
+  if rc != 0:
+    err &"Error: Postfach request failed: {ericHoleFehlerText(rc)}"
+    if response.len > 0: log response
+    if serverResponse.len > 0: log serverResponse
+    return (1, @[], "")
+
+  if serverResponse.len == 0:
+    return (0, @[], "")
+
+  log serverResponse
+
+  var xmlDoc: XmlNode
+  try:
+    xmlDoc = parseXml(serverResponse)
+  except CatchableError:
+    err "Error: Failed to parse server response XML"
+    return (1, @[], "")
+
+  let bereitstellungen = parsePostfachAntwort(xmlDoc)
+  return (0, bereitstellungen, serverResponse)
+
+proc initEricAndQueryPostfach*(cfg: Config, name: string, produktVersion: string, verbose: bool): tuple[rc: int, bereitstellungen: seq[AbholBereitstellung], serverResponse: string] =
+  ## Shared helper: send PostfachAnfrage, parse response.
+  ## Queries "neue" first to identify unread items, then "alle" for full list.
+  ## Caller must have loaded ERiC lib and called ericInitialisiere already.
+
+  let (certRc, certHandle) = ericGetHandleToCertificate(cfg.certPath)
+  if certRc != 0:
+    err &"Error: Failed to open certificate: {ericHoleFehlerText(certRc)}"
+    return (1, @[], "")
+  defer: discard ericCloseHandleToCertificate(certHandle)
+
+  var cryptParam: EricVerschluesselungsParameterT
+  cryptParam.version = 3
+  cryptParam.zertifikatHandle = certHandle
+  cryptParam.pin = cfg.certPin.cstring
+
+  log "Fetching Postfach..."
+
+  let (neueRc, neueBereitstellungen, _) = sendPostfachAnfrage(cfg, name, produktVersion, addr cryptParam, "neue", verbose)
+  if neueRc != 0:
+    return (neueRc, @[], "")
+
+  var neueIds: seq[string] = @[]
+  for b in neueBereitstellungen:
+    neueIds.add(b.id)
+
+  let (alleRc, alleBereitstellungen, serverResponse) = sendPostfachAnfrage(cfg, name, produktVersion, addr cryptParam, "alle", verbose)
+  if alleRc != 0:
+    return (alleRc, @[], "")
+
+  log "OK"
+
+  if alleBereitstellungen.len == 0 and serverResponse.len == 0:
+    log "No data returned from server."
+    return (0, @[], "")
+
+  var bereitstellungen = alleBereitstellungen
+  for i in 0..<bereitstellungen.len:
+    bereitstellungen[i].neue = bereitstellungen[i].id in neueIds
+
+  return (0, bereitstellungen, serverResponse)
+
+proc displayBereitstellungen*(bereitstellungen: seq[AbholBereitstellung]) =
+  if bereitstellungen.len == 0:
+    log "No documents available."
+    return
+  let neueCount = bereitstellungen.filterIt(it.neue).len
+  log &"Found {bereitstellungen.len} document(s) ({neueCount} new)"
+  for b in bereitstellungen:
+    let vz = if b.veranlagungszeitraum.len > 0: " " & b.veranlagungszeitraum else: ""
+    let bd = if b.bescheiddatum.len > 0:
+      let d = b.bescheiddatum
+      if d.len == 8: " vom " & d[6..7] & "." & d[4..5] & "." & d[0..3]
+      else: " vom " & d
+    else: ""
+    let status = if b.neue: " [NEW]" else: ""
+    log &"  {b.datenart}{vz}{bd}{status}"
+

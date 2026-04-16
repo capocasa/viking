@@ -7,7 +7,7 @@ import viking/config
 const nachrichtNs = "http://finkonsens.de/elster/elsternachricht/sonstigenachrichten/v21"
 const elsterNs = "http://www.elster.de/elsterxml/schema/v11"
 
-proc xmlEscape(s: string): string =
+func xmlEscape(s: string): string =
   for c in s:
     case c
     of '&': result.add "&amp;"
@@ -16,28 +16,33 @@ proc xmlEscape(s: string): string =
     of '"': result.add "&quot;"
     else: result.add c
 
-proc generateNachrichtXml*(
-  steuernummer: string,
-  name: string,
-  strasse: string,
-  hausnummer: string,
-  plz: string,
-  ort: string,
-  betreff: string,
-  text: string,
-  test: bool,
-  produktVersion: string = "0.1.0",
-): string =
+type
+  NachrichtInput* = object
+    steuernummer*: string
+    name*: string
+    strasse*: string
+    hausnummer*: string
+    plz*: string
+    ort*: string
+    betreff*: string
+    text*: string
+    test*: bool
+    produktVersion*: string
+
+proc generateNachrichtXml*(input: NachrichtInput): string =
   let herstellerId = HerstellerId
+  let steuernummer = input.steuernummer
+  let hausnummer = input.hausnummer
+  let plz = input.plz
   let finanzamt = steuernummer[0..3]
   let bundesland = bundeslandFromSteuernummer(steuernummer)
-  let testmerkerLine = if test: "\n    <Testmerker>700000004</Testmerker>" else: ""
+  let testmerkerLine = if input.test: "\n    <Testmerker>700000004</Testmerker>" else: ""
 
-  let escName = xmlEscape(name)
-  let escStrasse = xmlEscape(strasse)
-  let escOrt = xmlEscape(ort)
-  let escBetreff = xmlEscape(betreff)
-  let escText = xmlEscape(text)
+  let escName = xmlEscape(input.name)
+  let escStrasse = xmlEscape(input.strasse)
+  let escOrt = xmlEscape(input.ort)
+  let escBetreff = xmlEscape(input.betreff)
+  let escText = xmlEscape(input.text)
 
   result = &"""<?xml version="1.0" encoding="UTF-8"?>
 <Elster xmlns="{elsterNs}">

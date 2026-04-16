@@ -2,6 +2,8 @@
 ## Downloads, extracts, and configures the ERiC library for viking
 
 import std/[os, osproc, strutils, strformat, httpclient, algorithm]
+from std/appdirs import nil
+import viking/log
 
 const
   EricLibDir* = "lib"
@@ -41,20 +43,21 @@ type
 # Cache directory helpers
 # ===========================================================================
 
-proc getAppCacheDir*(): string =
-  ## Get the cache directory. Honors VIKING_CACHE_DIR env var,
-  ## falls back to OS-appropriate cache dir (~/.cache/viking on Linux)
-  result = getEnv("VIKING_CACHE_DIR")
+proc getAppDataDir*(): string =
+  ## Get the data directory. Honors VIKING_DATA_DIR env var,
+  ## falls back to OS-appropriate data dir (~/.local/share/viking on Linux,
+  ## ~/Library/Application Support/viking on macOS, %APPDATA%/viking on Windows)
+  result = getEnv("VIKING_DATA_DIR")
   if result == "":
-    result = getCacheDir(AppName)
+    result = appdirs.getDataDir().string / AppName
 
-proc getEricCacheDir*(): string =
-  ## Get the ERiC-specific cache directory
-  getAppCacheDir() / "eric"
+proc getEricDataDir*(): string =
+  ## Get the ERiC-specific data directory
+  getAppDataDir() / "eric"
 
-proc getCertCacheDir*(): string =
-  ## Get the certificate cache directory
-  getAppCacheDir() / "certificates"
+proc getCertDataDir*(): string =
+  ## Get the certificate data directory
+  getAppDataDir() / "certificates"
 
 # ===========================================================================
 # Platform detection
@@ -97,8 +100,8 @@ proc probeUrl(client: HttpClient, url: string): bool =
   ## Check if a URL exists via HEAD request
   inc probeCount
   if probeCount mod 5 == 0:
-    stdout.write(".")
-    stdout.flushFile()
+    stderr.write(".")
+    stderr.flushFile()
   try:
     let resp = client.head(url)
     return resp.code == Http200
@@ -140,7 +143,7 @@ proc discoverEricDownloads*(): seq[EricDownload] =
 
   if not baselineExists:
     # Baseline gone - scan nearby majors to find current version
-    echo "  Baseline version not found, scanning..."
+    log "  Baseline version not found, scanning..."
     var found = false
     for major in countdown(BaselineMajor + 5, BaselineMajor - 3):
       let (ok, minor, patch) = scanMajor(client, major, platform)
@@ -183,8 +186,8 @@ proc discoverEricDownloads*(): seq[EricDownload] =
       break
 
   if probeCount >= 5:
-    stdout.write("\n")
-    stdout.flushFile()
+    stderr.write("\n")
+    stderr.flushFile()
   probeCount = 0
 
   let version = &"{bestMajor}.{bestMinor}.{bestPatch}.0"
@@ -281,7 +284,7 @@ proc checkEricInstallation*(basePath: string): EricInstallation =
 proc extractJar*(jarPath: string, destPath: string): bool =
   ## Extract ERiC JAR/ZIP file using unzip or jar command
   if not fileExists(jarPath):
-    echo &"Error: File not found: {jarPath}"
+    stderr.writeLine &"Error: File not found: {jarPath}"
     return false
 
   createDir(destPath)
@@ -292,12 +295,12 @@ proc extractJar*(jarPath: string, destPath: string): bool =
   elif findExe("jar") != "":
     cmd = &"cd \"{destPath}\" && jar -xf \"{jarPath}\""
   else:
-    echo "Error: Neither 'unzip' nor 'jar' command found. Please install one of them."
+    stderr.writeLine "Error: Neither 'unzip' nor 'jar' command found. Please install one of them."
     return false
 
   let (output, exitCode) = execCmdEx(cmd)
   if exitCode != 0:
-    echo &"Error extracting archive: {output}"
+    stderr.writeLine &"Error extracting archive: {output}"
     return false
 
   return true
@@ -305,12 +308,12 @@ proc extractJar*(jarPath: string, destPath: string): bool =
 proc extractTarGz(archivePath: string, destPath: string): bool =
   ## Extract a .tar.gz archive
   if not fileExists(archivePath):
-    echo &"Error: File not found: {archivePath}"
+    stderr.writeLine &"Error: File not found: {archivePath}"
     return false
   createDir(destPath)
   let (output, exitCode) = execCmdEx(&"tar -xzf \"{archivePath}\" -C \"{destPath}\"")
   if exitCode != 0:
-    echo &"Error extracting archive: {output}"
+    stderr.writeLine &"Error extracting archive: {output}"
     return false
   return true
 
@@ -337,9 +340,9 @@ proc findExtractedEricDir*(basePath: string): string =
 
 proc setupEric*(archivePath: string, installDir: string = ""): EricInstallation =
   ## Extract and set up ERiC from an archive file (JAR/ZIP/tar.gz)
-  let targetDir = if installDir == "": getEricCacheDir() else: installDir
+  let targetDir = if installDir == "": getEricDataDir() else: installDir
 
-  echo &"Extracting ERiC from {archivePath} to {targetDir}..."
+  log &"Extracting ERiC from {archivePath} to {targetDir}..."
 
   if not extractArchive(archivePath, targetDir):
     result.valid = false
@@ -347,23 +350,23 @@ proc setupEric*(archivePath: string, installDir: string = ""): EricInstallation 
     return
 
   let ericDir = findExtractedEricDir(targetDir)
-  echo &"Found ERiC installation at: {ericDir}"
+  log &"Found ERiC installation at: {ericDir}"
 
   result = checkEricInstallation(ericDir)
 
   if result.valid:
-    echo "ERiC installation verified successfully!"
-    echo &"  Version: {result.version}"
-    echo &"  Library path: {result.libPath}"
-    echo &"  Plugin path: {result.pluginPath}"
+    log "ERiC installation verified successfully!"
+    log &"  Version: {result.version}"
+    log &"  Library path: {result.libPath}"
+    log &"  Plugin path: {result.pluginPath}"
     # Remove the archive now that extraction succeeded
     if fileExists(archivePath):
       removeFile(archivePath)
-      echo &"  Removed archive: {archivePath}"
+      log &"  Removed archive: {archivePath}"
   else:
-    echo "ERiC installation has issues:"
+    stderr.writeLine "ERiC installation has issues:"
     for issue in result.missingFiles:
-      echo &"  - {issue}"
+      stderr.writeLine &"  - {issue}"
 
 # ===========================================================================
 # File download helpers
@@ -375,30 +378,30 @@ proc downloadFile*(url: string, destPath: string): bool =
     let client = newHttpClient()
     defer: client.close()
     var lastPct = -1
-    stdout.write(&"  {url.split(\"/\")[^1]} ")
-    stdout.flushFile()
+    stderr.write(&"  {url.split(\"/\")[^1]} ")
+    stderr.flushFile()
     client.onProgressChanged = proc(total, progress, speed: BiggestInt) {.closure.} =
       if total > 0:
         let pct = int(progress * 100 div total)
         if pct div 10 > lastPct div 10:
           lastPct = pct
-          stdout.write(&"{pct}% ")
-          stdout.flushFile()
+          stderr.write(&"{pct}% ")
+          stderr.flushFile()
       elif progress > 0 and progress mod (5 * 1024 * 1024) < 65536:
-        stdout.write(".")
-        stdout.flushFile()
+        stderr.write(".")
+        stderr.flushFile()
     client.downloadFile(url, destPath)
-    stdout.write("\n")
+    stderr.write("\n")
     return true
   except:
-    echo ""
-    echo &"Error downloading {url}: {getCurrentExceptionMsg()}"
+    stderr.writeLine ""
+    stderr.writeLine &"Error downloading {url}: {getCurrentExceptionMsg()}"
     return false
 
 proc extractZip*(zipPath: string, destPath: string, specificFile: string = ""): bool =
   ## Extract a ZIP file, optionally extracting only a specific file
   if not fileExists(zipPath):
-    echo &"Error: ZIP file not found: {zipPath}"
+    stderr.writeLine &"Error: ZIP file not found: {zipPath}"
     return false
 
   createDir(destPath)
@@ -411,7 +414,7 @@ proc extractZip*(zipPath: string, destPath: string, specificFile: string = ""): 
 
   let (output, exitCode) = execCmdEx(cmd)
   if exitCode != 0:
-    echo &"Error extracting ZIP: {output}"
+    stderr.writeLine &"Error extracting ZIP: {output}"
     return false
 
   return true
@@ -438,7 +441,7 @@ proc findPfxInZip*(zipPath: string): seq[string] =
 
 proc downloadTestCertificates*(): tuple[certPath: string, pin: string, success: bool] =
   ## Download ELSTER test certificates
-  let cacheDir = getCertCacheDir()
+  let cacheDir = getCertDataDir()
   createDir(cacheDir)
 
   let zipPath = cacheDir / "Test_Zertifikate.zip"
@@ -454,7 +457,7 @@ proc downloadTestCertificates*(): tuple[certPath: string, pin: string, success: 
     for path in existing:
       if "softorg" in path.extractFilename.toLowerAscii:
         best = path
-    echo &"Test certificate: {best}"
+    log &"Test certificate: {best}"
     return (best, TestCertPin, true)
 
   # Download
@@ -464,11 +467,11 @@ proc downloadTestCertificates*(): tuple[certPath: string, pin: string, success: 
   # Find .pfx files in the ZIP (don't hardcode names)
   let pfxFiles = findPfxInZip(zipPath)
   if pfxFiles.len == 0:
-    echo "Error: No .pfx files found in certificate archive"
+    stderr.writeLine "Error: No .pfx files found in certificate archive"
     removeFile(zipPath)
     return ("", "", false)
 
-  echo &"Found {pfxFiles.len} certificate(s): {pfxFiles.join(\", \")}"
+  log &"Found {pfxFiles.len} certificate(s): {pfxFiles.join(\", \")}"
 
   for pfx in pfxFiles:
     discard extractZip(zipPath, cacheDir, pfx)
@@ -485,11 +488,11 @@ proc downloadTestCertificates*(): tuple[certPath: string, pin: string, success: 
     for path in allCerts:
       if "softorg" in path.extractFilename.toLowerAscii:
         best = path
-    echo &"Test certificate: {best}"
-    echo &"PIN: {TestCertPin}"
+    log &"Test certificate: {best}"
+    log &"PIN: {TestCertPin}"
     return (best, TestCertPin, true)
 
-  echo "Error: Certificate file not found after extraction"
+  stderr.writeLine "Error: Certificate file not found after extraction"
   return ("", "", false)
 
 # ===========================================================================
@@ -497,8 +500,8 @@ proc downloadTestCertificates*(): tuple[certPath: string, pin: string, success: 
 # ===========================================================================
 
 proc findExistingEric*(): EricInstallation =
-  ## Look for existing ERiC installation in cache
-  let cacheDir = getEricCacheDir()
+  ## Look for existing ERiC installation in data directory
+  let cacheDir = getEricDataDir()
   if not dirExists(cacheDir):
     result.valid = false
     return
@@ -585,7 +588,7 @@ proc updateEnvFile*(installation: EricInstallation, certPath: string = "", certP
     content = generateEnvConfig(installation, certPath, certPin)
 
   writeFile(envPath, content)
-  echo &"Updated {envPath}"
+  log &"Updated {envPath}"
 
 # ===========================================================================
 # Status and instructions
@@ -593,8 +596,8 @@ proc updateEnvFile*(installation: EricInstallation, certPath: string = "", certP
 
 proc printDownloadInstructions*() =
   ## Print instructions for manual ERiC download
-  let cacheDir = getEricCacheDir()
-  echo &"""
+  let dataDir = getEricDataDir()
+  stderr.writeLine &"""
 ================================================================================
                         ERiC Library Download Instructions
 ================================================================================
@@ -615,7 +618,7 @@ Option 2 - Direct URL (if you know the version):
   {ElsterDownloadBase}/eric_43/ERiC-43.3.2.0-Linux-x86_64.jar
 
 The fetch command will:
-- Extract the archive to: {cacheDir}
+- Extract the archive to: {dataDir}
 - Download test certificates automatically
 - Update your .env file with the correct paths
 
@@ -623,20 +626,20 @@ The fetch command will:
 """
 
 proc printStatus*(installation: EricInstallation) =
-  ## Print the status of an ERiC installation
+  ## Print the status of an ERiC installation (called by --check)
   if installation.valid:
     echo "ERiC Status: INSTALLED"
     echo &"  Version:     {installation.version}"
     echo &"  Library:     {installation.libPath / \"libericapi.so\"}"
     echo &"  Plugins:     {installation.pluginPath}"
   else:
-    echo "ERiC Status: NOT INSTALLED or INCOMPLETE"
+    stderr.writeLine "ERiC Status: NOT INSTALLED or INCOMPLETE"
     if installation.missingFiles.len > 0:
-      echo "  Issues:"
+      stderr.writeLine "  Issues:"
       for issue in installation.missingFiles:
-        echo &"    - {issue}"
-    echo ""
-    echo "Run 'viking fetch' to download and install."
+        stderr.writeLine &"    - {issue}"
+    stderr.writeLine ""
+    stderr.writeLine "Run 'viking fetch' to download and install."
 
 proc listAvailableYears*(installation: EricInstallation): seq[int] =
   ## List years for which UStVA plugins are available
@@ -717,47 +720,29 @@ proc listAvailableEuerYears*(installation: EricInstallation): seq[int] =
 
 proc fetchEric*(): tuple[installation: EricInstallation, success: bool] =
   ## Auto-download ERiC from download.elster.de
-  echo "=== ERiC Library ==="
-  echo "Discovering latest ERiC version..."
-  echo ""
+  log "Discovering latest ERiC version..."
 
-  let cacheDir = getEricCacheDir()
-  createDir(cacheDir)
+  let dataDir = getEricDataDir()
+  createDir(dataDir)
 
   let downloads = discoverEricDownloads()
 
   if downloads.len == 0:
-    echo ""
-    echo "Could not discover ERiC version automatically."
-    echo "Please download manually and use: viking fetch --file=<path>"
-    echo ""
+    stderr.writeLine "Could not discover ERiC version automatically."
+    stderr.writeLine "Please download manually and use: viking fetch --file=<path>"
     printDownloadInstructions()
     return (EricInstallation(valid: false), false)
 
   let latest = downloads[^1]
-  echo &"  Latest version: {latest.version}"
-  let archivePath = cacheDir / latest.filename
+  log &"  Latest version: {latest.version}"
+  let archivePath = dataDir / latest.filename
 
   if fileExists(archivePath):
-    echo &"  Archive already cached: {archivePath}"
+    log &"  Archive already downloaded: {archivePath}"
   else:
-    echo &"  Downloading {latest.filename}..."
+    log &"  Downloading {latest.filename}..."
     if not downloadFile(latest.url, archivePath):
       return (EricInstallation(valid: false), false)
 
-  echo ""
   let installation = setupEric(archivePath)
   return (installation, installation.valid)
-
-when isMainModule:
-  let args = commandLineParams()
-  if args.len > 0 and args[0] == "--check":
-    let existing = findExistingEric()
-    if existing.valid:
-      printStatus(existing)
-    else:
-      echo "No ERiC installation found."
-  else:
-    let (installation, success) = fetchEric()
-    if not success:
-      quit(1)

@@ -4,11 +4,11 @@
 import std/[strutils, strformat, times, options]
 import viking/config
 
-proc formatAmount(val: float): string =
+func formatAmount(val: float): string =
   ## Format amount for XML (2 decimal places, no thousands separator)
   formatFloat(roundCents(val), ffDecimal, 2)
 
-proc formatAmountInt(val: float): string =
+func formatAmountInt(val: float): string =
   ## Format amount as integer (no decimal places) for base amounts
   $roundEuro(val)
 
@@ -127,7 +127,7 @@ proc generateUstva*(
 
   result = xml
 
-proc isValidPeriod*(period: string): bool =
+func isValidPeriod*(period: string): bool =
   ## Check if period is valid (01-12 for monthly, 41-44 for quarterly)
   if period.len != 2:
     return false
@@ -139,7 +139,7 @@ proc isValidPeriod*(period: string): bool =
   except ValueError:
     result = false
 
-proc periodDescription*(period: string): string =
+func periodDescription*(period: string): string =
   ## Get human-readable description of period
   if not isValidPeriod(period):
     return "Invalid period"

@@ -4,27 +4,42 @@
 import std/[strformat]
 import viking/config
 
-proc generateEuer*(
-  steuernummer: string,
-  jahr: int,
-  incomeNet: float,
-  incomeVat: float,
-  expenseNet: float,
-  expenseVorsteuer: float,
-  rechtsform: string,
-  einkunftsart: string,
-  name: string,
-  strasse: string,
-  plz: string,
-  ort: string,
-  test: bool,
-  produktVersion: string = "0.1.0",
-): string =
+type
+  EuerInput* = object
+    steuernummer*: string
+    jahr*: int
+    incomeNet*: float
+    incomeVat*: float
+    expenseNet*: float
+    expenseVorsteuer*: float
+    rechtsform*: string
+    einkunftsart*: string
+    name*: string
+    strasse*: string
+    plz*: string
+    ort*: string
+    test*: bool
+    produktVersion*: string
+
+proc generateEuer*(input: EuerInput): string =
   ## Generate ELSTER XML for EÜR (Einnahmenüberschussrechnung)
 
+  let steuernummer = input.steuernummer
+  let jahr = input.jahr
+  let incomeNet = input.incomeNet
+  let incomeVat = input.incomeVat
+  let expenseNet = input.expenseNet
+  let expenseVorsteuer = input.expenseVorsteuer
+  let name = input.name
+  let strasse = input.strasse
+  let plz = input.plz
+  let ort = input.ort
+  let rechtsform = input.rechtsform
+  let einkunftsart = input.einkunftsart
+  let produktVersion = if input.produktVersion != "": input.produktVersion else: "0.1.0"
   let finanzamt = steuernummer[0..3]
   let bundesland = bundeslandFromSteuernummer(steuernummer)
-  let testmerkerLine = if test: "\n    <Testmerker>700000004</Testmerker>" else: ""
+  let testmerkerLine = if input.test: "\n    <Testmerker>700000004</Testmerker>" else: ""
   let herstellerId = HerstellerId
   let produktName = ProduktName
 

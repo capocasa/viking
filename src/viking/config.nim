@@ -7,15 +7,15 @@ import dotenv
 const HerstellerId* = "40036"
 const ProduktName* = "Viking"
 
-proc roundCents*(val: float): float =
+func roundCents*(val: float): float =
   ## Round to 2 decimal places (cents)
   round(val * 100) / 100
 
-proc roundEuro*(val: float): int =
+func roundEuro*(val: float): int =
   ## Round to nearest whole euro
   int(round(val))
 
-proc formatEurDE*(val: float): string =
+func formatEurDE*(val: float): string =
   ## Format amount for ELSTER XML: German locale with comma decimal separator.
   let s = formatFloat(roundCents(val), ffDecimal, 2)
   s.replace('.', ',')
@@ -40,9 +40,6 @@ proc loadConfig*(envFile: string = ".env"): Config =
     if envFile != ".env":
       raise newException(IOError, "Config file not found: " & path)
 
-  # XDG defaults for ERiC paths
-  let xdgDataDir = getEnv("XDG_DATA_HOME", getHomeDir() / ".local" / "share")
-  let defaultEricBase = xdgDataDir / "viking" / "eric"
   result.ericLibPath = getEnv("ERIC_LIB_PATH", "")
   result.ericPluginPath = getEnv("ERIC_PLUGIN_PATH", "")
   result.ericLogPath = getEnv("ERIC_LOG_PATH", "/tmp/eric_logs")
@@ -106,7 +103,7 @@ const BundeslandMap = {
   "91": "BY", "92": "BY",
 }.toTable
 
-proc bundeslandFromSteuernummer*(stnr: string): string =
+func bundeslandFromSteuernummer*(stnr: string): string =
   ## Map the first 2 digits of a 13-digit Steuernummer to a Bundesland code.
   if stnr.len < 2:
     return ""
