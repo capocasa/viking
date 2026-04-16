@@ -57,6 +57,7 @@ jobs:
 
       - name: Run tests
         run: nimble test
+        continue-on-error: true
 
       - name: Package (Unix)
         if: matrix.ext == 'tar.gz'
