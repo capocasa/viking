@@ -19,7 +19,6 @@ type
     steuernummer*: string
     bescheiddatum*: string
     anhaenge*: seq[AbholAnhang]
-    neue*: bool  # true if unconfirmed (not yet retrieved)
 
 func findAll(node: XmlNode, tag: string): seq[XmlNode] =
   result = @[]
@@ -142,7 +141,6 @@ proc sendPostfachAnfrage*(
 
 proc initEricAndQueryPostfach*(cfg: Config, name: string, produktVersion: string, verbose: bool): tuple[rc: int, bereitstellungen: seq[AbholBereitstellung], serverResponse: string] =
   ## Shared helper: send PostfachAnfrage, parse response.
-  ## Queries "neue" first to identify unread items, then "alle" for full list.
   ## Caller must have loaded ERiC lib and called ericInitialisiere already.
 
   let (certRc, certHandle) = ericGetHandleToCertificate(cfg.certPath)
@@ -158,27 +156,15 @@ proc initEricAndQueryPostfach*(cfg: Config, name: string, produktVersion: string
 
   log "Fetching Postfach..."
 
-  let (neueRc, neueBereitstellungen, _) = sendPostfachAnfrage(cfg, name, produktVersion, addr cryptParam, "neue", verbose)
-  if neueRc != 0:
-    return (neueRc, @[], "")
-
-  var neueIds: seq[string] = @[]
-  for b in neueBereitstellungen:
-    neueIds.add(b.id)
-
-  let (alleRc, alleBereitstellungen, serverResponse) = sendPostfachAnfrage(cfg, name, produktVersion, addr cryptParam, "alle", verbose)
-  if alleRc != 0:
-    return (alleRc, @[], "")
+  let (rc, bereitstellungen, serverResponse) = sendPostfachAnfrage(cfg, name, produktVersion, addr cryptParam, "alle", verbose)
+  if rc != 0:
+    return (rc, @[], "")
 
   log "OK"
 
-  if alleBereitstellungen.len == 0 and serverResponse.len == 0:
+  if bereitstellungen.len == 0 and serverResponse.len == 0:
     log "No data returned from server."
     return (0, @[], "")
-
-  var bereitstellungen = alleBereitstellungen
-  for i in 0..<bereitstellungen.len:
-    bereitstellungen[i].neue = bereitstellungen[i].id in neueIds
 
   return (0, bereitstellungen, serverResponse)
 
