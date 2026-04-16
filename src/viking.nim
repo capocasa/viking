@@ -93,7 +93,7 @@ template initEric(cfg: Config, dryRun: bool, xml: string) =
     echo xml
     return 0
 
-template initBuffersAndCert(cfg: Config, validateOnly: bool) =
+template initBuffersAndCert(cfg: Config, validateOnly: bool, outputPdf: string) =
   let responseBuf {.inject.} = ericRueckgabepufferErzeugen()
   let serverBuf {.inject.} = ericRueckgabepufferErzeugen()
   if responseBuf == nil or serverBuf == nil:
@@ -105,6 +105,17 @@ template initBuffersAndCert(cfg: Config, validateOnly: bool) =
   var flags {.inject.}: uint32 = ERIC_VALIDIERE
   if not validateOnly:
     flags = flags or ERIC_SENDE
+  var druckParam: EricDruckParameterT
+  var druckParamPtr {.inject.}: ptr EricDruckParameterT = nil
+  if outputPdf != "":
+    flags = flags or ERIC_DRUCKE
+    druckParam.version = 4
+    druckParam.vorschau = if validateOnly: 1 else: 0
+    druckParam.ersteSeite = 1
+    druckParam.duplexDruck = 0
+    druckParam.pdfName = outputPdf.cstring
+    druckParam.fussText = nil
+    druckParamPtr = addr druckParam
   var cryptParam: EricVerschluesselungsParameterT
   var cryptParamPtr {.inject.}: ptr EricVerschluesselungsParameterT = nil
   var certHandle: EricZertifikatHandle = 0
@@ -125,12 +136,14 @@ template initBuffersAndCert(cfg: Config, validateOnly: bool) =
 
 template submitAndCheck(xml: string, datenartVersion: string) =
   var transferHandle {.inject.}: uint32 = 0
-  let rc {.inject.} = ericBearbeiteVorgang(xml, datenartVersion, flags, nil,
+  let rc {.inject.} = ericBearbeiteVorgang(xml, datenartVersion, flags, druckParamPtr,
     cryptParamPtr, addr transferHandle, responseBuf, serverBuf)
   let response {.inject.} = ericRueckgabepufferInhalt(responseBuf)
   let serverResponse {.inject.} = ericRueckgabepufferInhalt(serverBuf)
   if rc == 0:
     log "OK"
+    if druckParamPtr != nil:
+      log &"PDF written to {$druckParamPtr.pdfName}"
     if serverResponse.len > 0: log serverResponse
   else:
     handleEricError(rc, response, serverResponse, cfg.ericLogPath)
@@ -147,6 +160,7 @@ proc submit(
   validate_only: bool = false,
   dry_run: bool = false,
   verbose: bool = false,
+  output_pdf: string = "",
   env: string = ".env",
 ): int =
   ## Submit a German VAT advance return (Umsatzsteuervoranmeldung)
@@ -227,7 +241,7 @@ proc submit(
   )
 
   initEric(cfg, dryRun, xml)
-  initBuffersAndCert(cfg, validateOnly)
+  initBuffersAndCert(cfg, validateOnly, outputPdf)
 
   let vat19 = amt19 * 0.19
   let vat7 = amt7 * 0.07
@@ -246,6 +260,7 @@ proc euer(
   validate_only: bool = false,
   dry_run: bool = false,
   verbose: bool = false,
+  output_pdf: string = "",
   env: string = ".env",
 ): int =
   ## Submit an EÜR (Einnahmenüberschussrechnung / profit-loss statement)
@@ -309,11 +324,20 @@ proc euer(
       echo xml
     return 0
 
-  initBuffersAndCert(cfg, validateOnly)
+  let euerPdf = if xmls.len > 1 and outputPdf != "":
+    let (dir, name, ext) = splitFile(outputPdf)
+    dir / name & "_1" & ext
+  else:
+    outputPdf
+  initBuffersAndCert(cfg, validateOnly, euerPdf)
 
   let modeStr = if cfg.test: " (TEST)" else: ""
   let modeDesc = if validateOnly: "validate" else: "send"
   for i, xml in xmls:
+    if xmls.len > 1 and outputPdf != "":
+      let (dir, name, ext) = splitFile(outputPdf)
+      let numbered = dir / name & "_" & $(i+1) & ext
+      druckParamPtr.pdfName = numbered.cstring
     let agg = aggregations[i].agg
     let profit = (agg.incomeNet + agg.incomeVat) - (agg.expenseNet + agg.expenseVorsteuer)
     log &"EUER [{i+1}/{xmls.len}] {actualYear} profit={profit:.2f} mode={modeDesc}{modeStr}"
@@ -332,6 +356,7 @@ proc est(
   dry_run: bool = false,
   verbose: bool = false,
   force: bool = false,
+  output_pdf: string = "",
   env: string = ".env",
 ): int =
   ## Submit an ESt (Einkommensteuererklarung / income tax return)
@@ -411,7 +436,7 @@ proc est(
   log &"ESt {actualYear} profits={profits.len} mode={modeDesc}{modeStr}"
 
   initEric(cfg, dryRun, xml)
-  initBuffersAndCert(cfg, validateOnly)
+  initBuffersAndCert(cfg, validateOnly, outputPdf)
 
   submitAndCheck(xml, &"ESt_{actualYear}")
   return 0
@@ -424,6 +449,7 @@ proc ust(
   validate_only: bool = false,
   dry_run: bool = false,
   verbose: bool = false,
+  output_pdf: string = "",
   env: string = ".env",
 ): int =
   ## Submit an annual VAT return (Umsatzsteuererklaerung)
@@ -493,7 +519,7 @@ proc ust(
   log &"USt {actualYear} vat={totalVat:.2f} vorsteuer={agg.vorsteuer:.2f} remaining={remaining:.2f} mode={modeDesc}{modeStr}"
 
   initEric(cfg, dryRun, xml)
-  initBuffersAndCert(cfg, validateOnly)
+  initBuffersAndCert(cfg, validateOnly, outputPdf)
 
   submitAndCheck(xml, &"USt_{actualYear}")
   return 0
@@ -799,6 +825,7 @@ proc iban(
   validate_only: bool = false,
   dry_run: bool = false,
   verbose: bool = false,
+  output_pdf: string = "",
   env: string = ".env",
 ): int =
   ## Change bank account (IBAN) at the Finanzamt
@@ -838,7 +865,7 @@ proc iban(
   log &"IBAN change new_iban={new_iban} mode={modeDesc}{modeStr}"
 
   initEric(cfg, dryRun, xml)
-  initBuffersAndCert(cfg, validateOnly)
+  initBuffersAndCert(cfg, validateOnly, outputPdf)
 
   submitAndCheck(xml, "AenderungBankverbindung_20")
   return 0
@@ -851,6 +878,7 @@ proc message(
   validate_only: bool = false,
   dry_run: bool = false,
   verbose: bool = false,
+  output_pdf: string = "",
   env: string = ".env",
 ): int =
   ## Send a message (Sonstige Nachricht) to the Finanzamt
@@ -915,7 +943,7 @@ proc message(
   log &"Message subject=\"{subject}\" len={messageText.len} mode={modeDesc}{modeStr}"
 
   initEric(cfg, dryRun, xml)
-  initBuffersAndCert(cfg, validateOnly)
+  initBuffersAndCert(cfg, validateOnly, outputPdf)
 
   submitAndCheck(xml, "SonstigeNachrichten_21")
   return 0
@@ -1042,6 +1070,7 @@ when isMainModule:
         "validate_only": "Only validate, don't send",
         "dry_run": "Show generated XML without processing",
         "verbose": "Show full server response XML",
+        "output_pdf": "Write PDF of submitted forms to file",
         "env": "Path to env file (default: .env)",
       },
       short = {
@@ -1055,6 +1084,7 @@ when isMainModule:
         "validate_only": 'n',
         "dry_run": 'd',
         "verbose": 'v',
+        "output_pdf": 'o',
         "env": 'e',
       }
     ],
@@ -1066,6 +1096,7 @@ when isMainModule:
         "validate_only": "Only validate, don't send",
         "dry_run": "Show generated XML without processing",
         "verbose": "Show full server response XML",
+        "output_pdf": "Write PDF of submitted forms to file",
         "env": "Path to env file (default: .env)",
       },
       short = {
@@ -1074,6 +1105,7 @@ when isMainModule:
         "validate_only": 'n',
         "dry_run": 'd',
         "verbose": 'v',
+        "output_pdf": 'o',
         "env": 'e',
       }
     ],
@@ -1088,6 +1120,7 @@ when isMainModule:
         "dry_run": "Show generated XML without processing",
         "verbose": "Show full server response XML",
         "force": "Suppress warnings (e.g. no deductions)",
+        "output_pdf": "Write PDF of submitted forms to file",
         "env": "Path to env file (default: .env)",
       },
       short = {
@@ -1100,6 +1133,7 @@ when isMainModule:
         "dry_run": 'd',
         "verbose": 'v',
         "force": 'f',
+        "output_pdf": 'o',
         "env": 'e',
       }
     ],
@@ -1112,6 +1146,7 @@ when isMainModule:
         "validate_only": "Only validate, don't send",
         "dry_run": "Show generated XML without processing",
         "verbose": "Show full server response XML",
+        "output_pdf": "Write PDF of submitted forms to file",
         "env": "Path to env file (default: .env)",
       },
       short = {
@@ -1122,6 +1157,7 @@ when isMainModule:
         "validate_only": 'n',
         "dry_run": 'd',
         "verbose": 'v',
+        "output_pdf": 'o',
         "env": 'e',
       }
     ],
@@ -1132,6 +1168,7 @@ when isMainModule:
         "validate_only": "Only validate, don't send",
         "dry_run": "Show generated XML without processing",
         "verbose": "Show full server response XML",
+        "output_pdf": "Write PDF of submitted forms to file",
         "env": "Path to env file (default: .env)",
       },
       short = {
@@ -1140,6 +1177,7 @@ when isMainModule:
         "validate_only": 'n',
         "dry_run": 'd',
         "verbose": 'v',
+        "output_pdf": 'o',
         "env": 'e',
       }
     ],
@@ -1151,6 +1189,7 @@ when isMainModule:
         "validate_only": "Only validate, don't send",
         "dry_run": "Show generated XML without processing",
         "verbose": "Show full server response XML",
+        "output_pdf": "Write PDF of submitted forms to file",
         "env": "Path to env file (default: .env)",
       },
       short = {
@@ -1160,6 +1199,7 @@ when isMainModule:
         "validate_only": 'n',
         "dry_run": 'd',
         "verbose": 'v',
+        "output_pdf": 'o',
         "env": 'e',
       }
     ],
