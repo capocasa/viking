@@ -699,8 +699,6 @@ proc download(
   let (rc, bereitstellungen, _) = initEricAndQueryPostfach(cfg, name, NimblePkgVersion, verbose)
   if rc != 0: return rc
 
-  displayBereitstellungen(bereitstellungen)
-
   if bereitstellungen.len == 0:
     return 0
 
