@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - '[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
 
 jobs:
   build:
@@ -34,6 +35,7 @@ jobs:
       - uses: jiro4989/setup-nim-action@v2
         with:
           nim-version: stable
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install dependencies
         run: nimble install -y --depsOnly
