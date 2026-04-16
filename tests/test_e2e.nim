@@ -2,6 +2,7 @@
 ## Requires: ERiC library + test certificates in test/cache (run `viking fetch` first)
 
 import std/[osproc, strutils, os, algorithm]
+import dotenv
 
 when defined(macosx):
   const DynlibExt = ".dylib"
@@ -33,6 +34,10 @@ proc run(cmd: string): tuple[output: string, code: int] =
 # Ensure we're in the project root
 let projectRoot = currentSourcePath().parentDir.parentDir
 setCurrentDir(projectRoot)
+
+# Load .env if present
+if fileExists(".env"):
+  load()
 
 echo "=== viking end-to-end tests ==="
 echo "Working directory: ", getCurrentDir()
