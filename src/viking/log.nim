@@ -11,7 +11,7 @@ proc initLog*(year: int = now().year) =
   ## Open log file for the given year. Creates data dir if needed.
   let dataDir = getEnv("XDG_DATA_HOME", getHomeDir() / ".local" / "share") / "viking"
   createDir(dataDir)
-  logPath = dataDir / &"{year}.log"
+  logPath = dataDir / &"viking.{year}.log"
   logFile = open(logPath, fmAppend)
   let ts = now().format("yyyy-MM-dd HH:mm:ss")
   logFile.writeLine(&"--- {ts} ---")
