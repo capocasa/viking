@@ -9,6 +9,7 @@ on:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-22.04
@@ -28,6 +29,7 @@ jobs:
 
     env:
       VIKING_DATA_DIR: ${{ github.workspace }}/.viking-data
+      TEST: "1"
 
     steps:
       - uses: actions/checkout@v4
@@ -57,7 +59,6 @@ jobs:
 
       - name: Run tests
         run: nimble test
-        continue-on-error: true
 
       - name: Package (Unix)
         if: matrix.ext == 'tar.gz'
