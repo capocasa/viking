@@ -38,7 +38,10 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install dependencies
-        run: nimble develop -y
+        run: |
+          nimble install -y --depsOnly
+          nimble setup -y
+          echo '--path:"src"' >> nimble.paths
 
       - name: Build
         run: nimble build -y -d:release -d:NimblePkgVersion=${{ github.ref_name }}
