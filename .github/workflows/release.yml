@@ -29,7 +29,7 @@ jobs:
 
     env:
       VIKING_DATA_DIR: ${{ github.workspace }}/.viking-data
-      TEST: "1"
+      VIKING_TEST: "1"
 
     steps:
       - uses: actions/checkout@v4

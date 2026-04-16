@@ -104,8 +104,8 @@ echo ""
 echo "--- TEST flag ---"
 # Create a minimal env with TEST=0 (production)
 let prodEnv = projectRoot / "tests" / ".env.test_prod"
-writeFile(prodEnv, readFile(projectRoot / ".env").replace("TEST=1", "TEST=0"))
-let (prodOut, prodRc) = run("TEST=0 ./viking submit -c " & submitConf & " --p 41 --amount19 0 --dry-run --env " & prodEnv)
+writeFile(prodEnv, readFile(projectRoot / ".env").replace("VIKING_TEST=1", "VIKING_TEST=0"))
+let (prodOut, prodRc) = run("VIKING_TEST=0 ./viking submit -c " & submitConf & " --p 41 --amount19 0 --dry-run --env " & prodEnv)
 check("TEST=0 dry-run exits 0", prodRc == 0, prodOut)
 check("TEST=0 no Testmerker", not prodOut.contains("Testmerker"), prodOut)
 
@@ -167,7 +167,7 @@ echo ""
 # --- Per-year validation ---
 echo "--- per-year validation (2025+) ---"
 # Discover available UStVA years from plugin files
-let pluginPath = getEnv("ERIC_PLUGIN_PATH", "test/cache/eric/ERiC-43.3.2.0/Linux-x86_64/lib/plugins")
+let pluginPath = getEnv("VIKING_ERIC_PLUGIN_PATH", "test/cache/eric/ERiC-43.3.2.0/Linux-x86_64/lib/plugins")
 var years: seq[int] = @[]
 for kind, path in walkDir(pluginPath):
   if kind == pcFile:
@@ -445,8 +445,8 @@ check("euer TEST=1 has Testmerker", euerTestOut.contains("<Testmerker>700000004<
 
 # TEST=0
 let euerProdEnv = projectRoot / "tests" / ".env.euer_prod"
-writeFile(euerProdEnv, readFile(projectRoot / ".env").replace("TEST=1", "TEST=0"))
-let (euerProdOut, euerProdRc) = run("TEST=0 ./viking euer -c " & euerConf & " --euer " & euerCsv & " -y 2025 --dry-run --env " & euerProdEnv)
+writeFile(euerProdEnv, readFile(projectRoot / ".env").replace("VIKING_TEST=1", "VIKING_TEST=0"))
+let (euerProdOut, euerProdRc) = run("VIKING_TEST=0 ./viking euer -c " & euerConf & " --euer " & euerCsv & " -y 2025 --dry-run --env " & euerProdEnv)
 check("euer TEST=0 exits 0", euerProdRc == 0, euerProdOut)
 check("euer TEST=0 no Testmerker", not euerProdOut.contains("Testmerker"), euerProdOut)
 removeFile(euerProdEnv)
@@ -615,8 +615,8 @@ let (estTestOut, estTestRc) = run("./viking est -c " & estConf & " -i " & estEue
 check("est TEST=1 has Testmerker", estTestOut.contains("<Testmerker>700000004</Testmerker>"))
 
 let estProdEnv = projectRoot / "tests" / ".env.est_prod"
-writeFile(estProdEnv, readFile(projectRoot / ".env").replace("TEST=1", "TEST=0"))
-let (estProdOut, estProdRc) = run("TEST=0 ./viking est -c " & estConf & " -i " & estEuer & " -y 2025 --dry-run --force --env " & estProdEnv)
+writeFile(estProdEnv, readFile(projectRoot / ".env").replace("VIKING_TEST=1", "VIKING_TEST=0"))
+let (estProdOut, estProdRc) = run("VIKING_TEST=0 ./viking est -c " & estConf & " -i " & estEuer & " -y 2025 --dry-run --force --env " & estProdEnv)
 check("est TEST=0 exits 0", estProdRc == 0, estProdOut)
 check("est TEST=0 no Testmerker", not estProdOut.contains("Testmerker"), estProdOut)
 removeFile(estProdEnv)
@@ -907,8 +907,8 @@ check("ust TEST=1 has Testmerker", ustTestOut.contains("<Testmerker>700000004</T
 
 # TEST=0
 let ustProdEnv = projectRoot / "tests" / ".env.ust_prod"
-writeFile(ustProdEnv, readFile(projectRoot / ".env").replace("TEST=1", "TEST=0"))
-let (ustProdOut, ustProdRc) = run("TEST=0 ./viking ust -c " & ustConf & " -i " & ustCsv & " -y 2025 --dry-run --env " & ustProdEnv)
+writeFile(ustProdEnv, readFile(projectRoot / ".env").replace("VIKING_TEST=1", "VIKING_TEST=0"))
+let (ustProdOut, ustProdRc) = run("VIKING_TEST=0 ./viking ust -c " & ustConf & " -i " & ustCsv & " -y 2025 --dry-run --env " & ustProdEnv)
 check("ust TEST=0 exits 0", ustProdRc == 0, ustProdOut)
 check("ust TEST=0 no Testmerker", not ustProdOut.contains("Testmerker"), ustProdOut)
 removeFile(ustProdEnv)

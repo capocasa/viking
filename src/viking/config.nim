@@ -40,55 +40,55 @@ proc loadConfig*(envFile: string = ".env"): Config =
     if envFile != ".env":
       raise newException(IOError, "Config file not found: " & path)
 
-  result.ericLibPath = getEnv("ERIC_LIB_PATH", "")
-  result.ericPluginPath = getEnv("ERIC_PLUGIN_PATH", "")
-  result.ericLogPath = getEnv("ERIC_LOG_PATH", getTempDir() / "eric_logs")
-  result.certPath = getEnv("CERT_PATH", "")
-  let certPinCmd = getEnv("CERT_PIN_CMD", "")
+  result.ericLibPath = getEnv("VIKING_ERIC_LIB_PATH", "")
+  result.ericPluginPath = getEnv("VIKING_ERIC_PLUGIN_PATH", "")
+  result.ericLogPath = getEnv("VIKING_ERIC_LOG_PATH", getTempDir() / "eric_logs")
+  result.certPath = getEnv("VIKING_CERT_PATH", "")
+  let certPinCmd = getEnv("VIKING_CERT_PIN_CMD", "")
   if certPinCmd != "":
     let (output, exitCode) = execCmdEx(certPinCmd)
     if exitCode != 0:
-      raise newException(IOError, "CERT_PIN_CMD failed (exit " & $exitCode & "): " & output.strip)
+      raise newException(IOError, "VIKING_CERT_PIN_CMD failed (exit " & $exitCode & "): " & output.strip)
     result.certPin = output.strip
   else:
-    result.certPin = getEnv("CERT_PIN", "")
-  result.test = getEnv("TEST", "0") == "1"
+    result.certPin = getEnv("VIKING_CERT_PIN", "")
+  result.test = getEnv("VIKING_TEST", "0") == "1"
 
 proc validate*(cfg: Config): seq[string] =
   ## Validate configuration and return list of errors
   result = @[]
 
   if cfg.ericLibPath == "":
-    result.add("ERIC_LIB_PATH not set")
+    result.add("VIKING_ERIC_LIB_PATH not set")
   elif not fileExists(cfg.ericLibPath):
-    result.add("ERIC_LIB_PATH does not exist: " & cfg.ericLibPath)
+    result.add("VIKING_ERIC_LIB_PATH does not exist: " & cfg.ericLibPath)
 
   if cfg.ericPluginPath == "":
-    result.add("ERIC_PLUGIN_PATH not set")
+    result.add("VIKING_ERIC_PLUGIN_PATH not set")
   elif not dirExists(cfg.ericPluginPath):
-    result.add("ERIC_PLUGIN_PATH directory does not exist: " & cfg.ericPluginPath)
+    result.add("VIKING_ERIC_PLUGIN_PATH directory does not exist: " & cfg.ericPluginPath)
 
   if cfg.certPath == "":
-    result.add("CERT_PATH not set")
+    result.add("VIKING_CERT_PATH not set")
   elif not fileExists(cfg.certPath):
-    result.add("CERT_PATH does not exist: " & cfg.certPath)
+    result.add("VIKING_CERT_PATH does not exist: " & cfg.certPath)
 
   if cfg.certPin == "":
-    result.add("CERT_PIN not set")
+    result.add("VIKING_CERT_PIN not set")
 
 proc validateForValidateOnly*(cfg: Config): seq[string] =
   ## Minimal validation for validate-only mode (no cert needed)
   result = @[]
 
   if cfg.ericLibPath == "":
-    result.add("ERIC_LIB_PATH not set")
+    result.add("VIKING_ERIC_LIB_PATH not set")
   elif not fileExists(cfg.ericLibPath):
-    result.add("ERIC_LIB_PATH does not exist: " & cfg.ericLibPath)
+    result.add("VIKING_ERIC_LIB_PATH does not exist: " & cfg.ericLibPath)
 
   if cfg.ericPluginPath == "":
-    result.add("ERIC_PLUGIN_PATH not set")
+    result.add("VIKING_ERIC_PLUGIN_PATH not set")
   elif not dirExists(cfg.ericPluginPath):
-    result.add("ERIC_PLUGIN_PATH directory does not exist: " & cfg.ericPluginPath)
+    result.add("VIKING_ERIC_PLUGIN_PATH directory does not exist: " & cfg.ericPluginPath)
 
 const BundeslandMap = {
   "10": "BE", "11": "BB",
