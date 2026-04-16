@@ -10,7 +10,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             artifact: viking-linux-amd64
             ext: tar.gz
           - os: macos-latest
