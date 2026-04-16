@@ -208,14 +208,17 @@ proc extractArchive*(archivePath: string, destPath: string): bool =
   if not fileExists(archivePath):
     stderr.writeLine &"Error: File not found: {archivePath}"
     return false
-  if dirExists(destPath):
-    removeDir(destPath)
-  createDir(destPath.parentDir)
   try:
+    if dirExists(destPath):
+      removeDir(destPath)
+    createDir(destPath.parentDir)
     ziparchives.extractAll(archivePath, destPath)
     return true
   except ZippyError as e:
     stderr.writeLine &"Error extracting archive: {e.msg}"
+    return false
+  except OSError as e:
+    stderr.writeLine &"Error extracting archive (OS): {e.msg}"
     return false
 
 proc findExtractedEricDir*(basePath: string): string =
@@ -616,11 +619,10 @@ proc fetchEric*(): tuple[installation: EricInstallation, success: bool] =
     return (EricInstallation(valid: false), false)
 
   let latest = downloads[^1]
-  let archivePath = dataDir / latest.filename
+  let archivePath = getTempDir() / latest.filename
 
-  if not fileExists(archivePath):
-    if not downloadFile(latest.url, archivePath):
-      return (EricInstallation(valid: false), false)
+  if not downloadFile(latest.url, archivePath):
+    return (EricInstallation(valid: false), false)
 
   let installation = setupEric(archivePath)
   return (installation, installation.valid)
