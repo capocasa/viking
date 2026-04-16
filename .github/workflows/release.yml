@@ -18,9 +18,9 @@ jobs:
           - os: macos-latest
             artifact: viking-macos-arm64
             ext: tar.gz
-          - os: macos-13
-            artifact: viking-macos-amd64
-            ext: tar.gz
+          #- os: macos-13
+          #  artifact: viking-macos-amd64
+          #  ext: tar.gz
           - os: windows-latest
             artifact: viking-windows-amd64
             ext: zip
@@ -103,5 +103,4 @@ jobs:
             --generate-notes \
             viking-linux-amd64.tar.gz \
             viking-macos-arm64.tar.gz \
-            viking-macos-amd64.tar.gz \
             viking-windows-amd64.zip
