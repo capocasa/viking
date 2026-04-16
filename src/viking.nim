@@ -739,7 +739,7 @@ proc download(
       let filepath = outDir / filename
 
       if not force and fileExists(filepath):
-        log &"Skipping {filename} (already exists)"
+        err &"Skipping {filename} (already exists, use --force to overwrite)"
         continue
 
       log &"Downloading {filename}..."
