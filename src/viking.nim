@@ -209,8 +209,6 @@ proc submit(
     finalAmount0 = agg.amount0
     if finalAmount19.isNone and finalAmount7.isNone and finalAmount0.isNone:
       finalAmount19 = some(0.0)
-    log &"Invoices: {invoiceFile}, count={agg.count}"
-
   let (techOk, cfg) = loadTechConfig(env, validateOnly, dryRun)
   if not techOk: return 1
 
@@ -243,10 +241,6 @@ proc submit(
   let vat19 = amt19 * 0.19
   let vat7 = amt7 * 0.07
   let totalVat = vat19 + vat7
-  let modeStr = if cfg.test: " (TEST)" else: ""
-  let modeDesc = if validateOnly: "validate" else: "send"
-  log &"UStVA {actualYear} period={period} kz81={amt19:.2f} kz86={amt7:.2f} kz83={totalVat:.2f} mode={modeDesc}{modeStr}"
-
   submitAndCheck(xml, &"UStVA_{actualYear}")
   return 0
 
@@ -295,7 +289,6 @@ proc euer(
     if not ok:
       return 1
     aggregations.add((file: euerFile, agg: agg))
-    log &"EÜR {euerFile}: income={agg.incomeNet:.2f}+{agg.incomeVat:.2f} expense={agg.expenseNet:.2f}+{agg.expenseVorsteuer:.2f}"
 
   let (techOk, cfg) = loadTechConfig(env, validateOnly, dryRun)
   if not techOk: return 1
@@ -328,16 +321,11 @@ proc euer(
     outputPdf
   initBuffersAndCert(cfg, validateOnly, euerPdf)
 
-  let modeStr = if cfg.test: " (TEST)" else: ""
-  let modeDesc = if validateOnly: "validate" else: "send"
   for i, xml in xmls:
     if xmls.len > 1 and outputPdf != "":
       let (dir, name, ext) = splitFile(outputPdf)
       let numbered = dir / name & "_" & $(i+1) & ext
       druckParamPtr.pdfName = numbered.cstring
-    let agg = aggregations[i].agg
-    let profit = (agg.incomeNet + agg.incomeVat) - (agg.expenseNet + agg.expenseVorsteuer)
-    log &"EUER [{i+1}/{xmls.len}] {actualYear} profit={profit:.2f} mode={modeDesc}{modeStr}"
 
     submitAndCheck(xml, &"EUER_{actualYear}")
 
@@ -390,7 +378,6 @@ proc est(
       return 1
     let profit = (agg.incomeNet + agg.incomeVat) - (agg.expenseNet + agg.expenseVorsteuer)
     profits.add(profit)
-    log &"EÜR {euerFile}: profit={profit:.2f}"
 
   var ded: DeductionsByForm
   if deductions != "":
@@ -427,10 +414,6 @@ proc est(
     test: cfg.test, produktVersion: NimblePkgVersion,
   )
   let xml = generateEst(estInput)
-
-  let modeStr = if cfg.test: " (TEST)" else: ""
-  let modeDesc = if validateOnly: "validate" else: "send"
-  log &"ESt {actualYear} profits={profits.len} mode={modeDesc}{modeStr}"
 
   initEric(cfg, dryRun, xml)
   initBuffersAndCert(cfg, validateOnly, outputPdf)
@@ -510,10 +493,6 @@ proc ust(
     plz: tp.zip, ort: tp.city,
     test: cfg.test, produktVersion: NimblePkgVersion,
   ))
-
-  let modeStr = if cfg.test: " (TEST)" else: ""
-  let modeDesc = if validateOnly: "validate" else: "send"
-  log &"USt {actualYear} vat={totalVat:.2f} vorsteuer={agg.vorsteuer:.2f} remaining={remaining:.2f} mode={modeDesc}{modeStr}"
 
   initEric(cfg, dryRun, xml)
   initBuffersAndCert(cfg, validateOnly, outputPdf)
@@ -854,10 +833,6 @@ proc iban(
     iban = new_iban, test = cfg.test,
   )
 
-  let modeDesc = if validateOnly: "validate" else: "send"
-  let modeStr = if cfg.test: " (TEST)" else: ""
-  log &"IBAN change new_iban={new_iban} mode={modeDesc}{modeStr}"
-
   initEric(cfg, dryRun, xml)
   initBuffersAndCert(cfg, validateOnly, outputPdf)
 
@@ -931,10 +906,6 @@ proc message(
     betreff: subject, text: messageText,
     test: cfg.test, produktVersion: NimblePkgVersion,
   ))
-
-  let modeDesc = if validateOnly: "validate" else: "send"
-  let modeStr = if cfg.test: " (TEST)" else: ""
-  log &"Message subject=\"{subject}\" len={messageText.len} mode={modeDesc}{modeStr}"
 
   initEric(cfg, dryRun, xml)
   initBuffersAndCert(cfg, validateOnly, outputPdf)

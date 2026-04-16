@@ -3,7 +3,6 @@
 
 import std/[os, osproc, strutils, strformat, httpclient, algorithm]
 from std/appdirs import nil
-import viking/log
 
 const
   EricLibDir* = "lib"
@@ -143,7 +142,7 @@ proc discoverEricDownloads*(): seq[EricDownload] =
 
   if not baselineExists:
     # Baseline gone - scan nearby majors to find current version
-    log "  Baseline version not found, scanning..."
+    # Baseline gone - scan nearby majors
     var found = false
     for major in countdown(BaselineMajor + 5, BaselineMajor - 3):
       let (ok, minor, patch) = scanMajor(client, major, platform)
@@ -342,27 +341,17 @@ proc setupEric*(archivePath: string, installDir: string = ""): EricInstallation 
   ## Extract and set up ERiC from an archive file (JAR/ZIP/tar.gz)
   let targetDir = if installDir == "": getEricDataDir() else: installDir
 
-  log &"Extracting ERiC from {archivePath} to {targetDir}..."
-
   if not extractArchive(archivePath, targetDir):
     result.valid = false
     result.missingFiles = @["Failed to extract archive"]
     return
 
   let ericDir = findExtractedEricDir(targetDir)
-  log &"Found ERiC installation at: {ericDir}"
-
   result = checkEricInstallation(ericDir)
 
   if result.valid:
-    log "ERiC installation verified successfully!"
-    log &"  Version: {result.version}"
-    log &"  Library path: {result.libPath}"
-    log &"  Plugin path: {result.pluginPath}"
-    # Remove the archive now that extraction succeeded
     if fileExists(archivePath):
       removeFile(archivePath)
-      log &"  Removed archive: {archivePath}"
   else:
     stderr.writeLine "ERiC installation has issues:"
     for issue in result.missingFiles:
@@ -457,7 +446,6 @@ proc downloadTestCertificates*(): tuple[certPath: string, pin: string, success: 
     for path in existing:
       if "softorg" in path.extractFilename.toLowerAscii:
         best = path
-    log &"Test certificate: {best}"
     return (best, TestCertPin, true)
 
   # Download
@@ -470,8 +458,6 @@ proc downloadTestCertificates*(): tuple[certPath: string, pin: string, success: 
     stderr.writeLine "Error: No .pfx files found in certificate archive"
     removeFile(zipPath)
     return ("", "", false)
-
-  log &"Found {pfxFiles.len} certificate(s): {pfxFiles.join(\", \")}"
 
   for pfx in pfxFiles:
     discard extractZip(zipPath, cacheDir, pfx)
@@ -488,8 +474,6 @@ proc downloadTestCertificates*(): tuple[certPath: string, pin: string, success: 
     for path in allCerts:
       if "softorg" in path.extractFilename.toLowerAscii:
         best = path
-    log &"Test certificate: {best}"
-    log &"PIN: {TestCertPin}"
     return (best, TestCertPin, true)
 
   stderr.writeLine "Error: Certificate file not found after extraction"
@@ -588,7 +572,6 @@ proc updateEnvFile*(installation: EricInstallation, certPath: string = "", certP
     content = generateEnvConfig(installation, certPath, certPin)
 
   writeFile(envPath, content)
-  log &"Updated {envPath}"
 
 # ===========================================================================
 # Status and instructions
@@ -720,8 +703,6 @@ proc listAvailableEuerYears*(installation: EricInstallation): seq[int] =
 
 proc fetchEric*(): tuple[installation: EricInstallation, success: bool] =
   ## Auto-download ERiC from download.elster.de
-  log "Discovering latest ERiC version..."
-
   let dataDir = getEricDataDir()
   createDir(dataDir)
 
@@ -734,13 +715,9 @@ proc fetchEric*(): tuple[installation: EricInstallation, success: bool] =
     return (EricInstallation(valid: false), false)
 
   let latest = downloads[^1]
-  log &"  Latest version: {latest.version}"
   let archivePath = dataDir / latest.filename
 
-  if fileExists(archivePath):
-    log &"  Archive already downloaded: {archivePath}"
-  else:
-    log &"  Downloading {latest.filename}..."
+  if not fileExists(archivePath):
     if not downloadFile(latest.url, archivePath):
       return (EricInstallation(valid: false), false)
 
