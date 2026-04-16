@@ -154,23 +154,17 @@ proc initEricAndQueryPostfach*(cfg: Config, name: string, produktVersion: string
   cryptParam.zertifikatHandle = certHandle
   cryptParam.pin = cfg.certPin.cstring
 
-  log "Fetching Postfach..."
-
   let (rc, bereitstellungen, serverResponse) = sendPostfachAnfrage(cfg, name, produktVersion, addr cryptParam, "alle", verbose)
   if rc != 0:
     return (rc, @[], "")
 
-  log "OK"
-
   if bereitstellungen.len == 0 and serverResponse.len == 0:
-    log "No data returned from server."
     return (0, @[], "")
 
   return (0, bereitstellungen, serverResponse)
 
 proc displayBereitstellungen*(bereitstellungen: seq[AbholBereitstellung]) =
   if bereitstellungen.len == 0:
-    log "No documents available."
     return
   for b in bereitstellungen:
     for a in b.anhaenge:

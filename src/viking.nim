@@ -141,9 +141,6 @@ template submitAndCheck(xml: string, datenartVersion: string) =
   let response {.inject.} = ericRueckgabepufferInhalt(responseBuf)
   let serverResponse {.inject.} = ericRueckgabepufferInhalt(serverBuf)
   if rc == 0:
-    log "OK"
-    if druckParamPtr != nil:
-      log &"PDF written to {$druckParamPtr.pdfName}"
     if serverResponse.len > 0: log serverResponse
   else:
     handleEricError(rc, response, serverResponse, cfg.ericLogPath)
@@ -577,9 +574,7 @@ proc fetch(file: string = "", check: bool = false, env: string = ".env"): int =
     installation = setupEric(file)
   else:
     installation = findExistingEric()
-    if installation.valid:
-      log "Using existing ERiC installation."
-    else:
+    if not installation.valid:
       let (inst, success) = fetchEric()
       if success:
         installation = inst
@@ -718,8 +713,6 @@ proc download(
     return 1
   defer: discard ottoInstanzFreigeben(ottoInstanz)
 
-  log "Downloading from OTTER..."
-
   var confirmedIds: seq[string] = @[]
   var downloadErrors = 0
 
@@ -741,8 +734,6 @@ proc download(
       if not force and fileExists(filepath):
         err &"Skipping {filename} (already exists, use --force to overwrite)"
         continue
-
-      log &"Downloading {filename}..."
 
       let (bufRc, ottoBuf) = ottoRueckgabepufferErzeugen(ottoInstanz)
       if bufRc != 0:
@@ -775,14 +766,11 @@ proc download(
       var data = newString(dataSize.int)
       copyMem(addr data[0], dataPtr, dataSize.int)
       writeFile(filepath, data)
-      log &"Saved: {filepath} ({dataSize} bytes)"
 
     if allOk and anySelected and allSelected:
       confirmedIds.add(b.id)
 
   if confirmedIds.len > 0:
-    log "Confirming retrieval..."
-
     let (certRc, certHandle) = ericGetHandleToCertificate(cfg.certPath)
     if certRc != 0:
       err &"Error: Failed to open certificate for confirmation: {ericHoleFehlerText(certRc)}"
@@ -821,13 +809,8 @@ proc download(
       if bestResponse.len > 0: log bestResponse
       if bestServerResponse.len > 0: log bestServerResponse
       err "Documents were downloaded but not confirmed. Confirm within 24h to avoid HerstellerID suspension."
-    else:
-      log &"Confirmed {confirmedIds.len} document(s)"
-
   if downloadErrors > 0:
     err &"Download complete with {downloadErrors} error(s)."
-  else:
-    log "Download complete."
   return 0
 
 proc iban(
