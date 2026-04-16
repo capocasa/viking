@@ -1,0 +1,100 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: viking-linux-amd64
+            ext: tar.gz
+          - os: macos-latest
+            artifact: viking-macos-arm64
+            ext: tar.gz
+          - os: macos-13
+            artifact: viking-macos-amd64
+            ext: tar.gz
+          - os: windows-latest
+            artifact: viking-windows-amd64
+            ext: zip
+
+    runs-on: ${{ matrix.os }}
+
+    env:
+      VIKING_DATA_DIR: ${{ github.workspace }}/.viking-data
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: stable
+
+      - name: Install dependencies
+        run: nimble install -y --depsOnly
+
+      - name: Build
+        run: nimble build -y -d:release -d:NimblePkgVersion=${{ github.ref_name }}
+
+      - name: Cache ERiC library
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.VIKING_DATA_DIR }}
+          key: eric-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Fetch ERiC
+        run: ./viking fetch
+
+      - name: Run tests
+        run: nimble test
+
+      - name: Package (Unix)
+        if: matrix.ext == 'tar.gz'
+        run: |
+          mkdir -p ${{ matrix.artifact }}
+          cp viking ${{ matrix.artifact }}/
+          cp README.md LICENSE ${{ matrix.artifact }}/
+          tar czf ${{ matrix.artifact }}.${{ matrix.ext }} ${{ matrix.artifact }}
+
+      - name: Package (Windows)
+        if: matrix.ext == 'zip'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path ${{ matrix.artifact }}
+          Copy-Item viking.exe ${{ matrix.artifact }}/
+          Copy-Item README.md, LICENSE ${{ matrix.artifact }}/
+          Compress-Archive -Path ${{ matrix.artifact }} -DestinationPath ${{ matrix.artifact }}.${{ matrix.ext }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.${{ matrix.ext }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create ${{ github.ref_name }} \
+            --repo ${{ github.repository }} \
+            --title "${{ github.ref_name }}" \
+            --generate-notes \
+            viking-linux-amd64.tar.gz \
+            viking-macos-arm64.tar.gz \
+            viking-macos-amd64.tar.gz \
+            viking-windows-amd64.zip

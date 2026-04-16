@@ -12,3 +12,4 @@ bin           = @["viking"]
 requires "nim >= 2.0.0"
 requires "dotenv >= 2.0.0"
 requires "cligen >= 1.7.0"
+requires "zippy >= 0.10.0"

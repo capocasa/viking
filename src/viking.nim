@@ -680,7 +680,10 @@ proc download(
   if outDir != ".":
     createDir(outDir)
 
-  let ottoLibPath = cfg.ericLibPath.parentDir / "libotto.so"
+  let ottoLibName = when defined(macosx): "libotto.dylib"
+                    elif defined(windows): "otto.dll"
+                    else: "libotto.so"
+  let ottoLibPath = cfg.ericLibPath.parentDir / ottoLibName
   if not loadOttoLib(ottoLibPath):
     err &"Error: Failed to load Otto library from {ottoLibPath}"
     return 1

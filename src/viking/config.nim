@@ -42,7 +42,7 @@ proc loadConfig*(envFile: string = ".env"): Config =
 
   result.ericLibPath = getEnv("ERIC_LIB_PATH", "")
   result.ericPluginPath = getEnv("ERIC_PLUGIN_PATH", "")
-  result.ericLogPath = getEnv("ERIC_LOG_PATH", "/tmp/eric_logs")
+  result.ericLogPath = getEnv("ERIC_LOG_PATH", getTempDir() / "eric_logs")
   result.certPath = getEnv("CERT_PATH", "")
   let certPinCmd = getEnv("CERT_PIN_CMD", "")
   if certPinCmd != "":
