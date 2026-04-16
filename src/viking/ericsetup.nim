@@ -210,6 +210,7 @@ proc extractArchive*(archivePath: string, destPath: string): bool =
     return false
   if dirExists(destPath):
     removeDir(destPath)
+  createDir(destPath.parentDir)
   try:
     ziparchives.extractAll(archivePath, destPath)
     return true
