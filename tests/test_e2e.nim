@@ -3,18 +3,11 @@
 
 import std/[osproc, strutils, os, algorithm]
 import dotenv
+import viking/ericsetup
 
-when defined(macosx):
-  const DynlibExt = ".dylib"
-  const PluginPrefix = "libcheck"
-  const Viking = "./viking"
-elif defined(windows):
-  const DynlibExt = ".dll"
-  const PluginPrefix = "check"
+when defined(windows):
   const Viking = "viking.exe"
 else:
-  const DynlibExt = ".so"
-  const PluginPrefix = "libcheck"
   const Viking = "./viking"
 
 var failures = 0

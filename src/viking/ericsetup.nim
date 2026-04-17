@@ -21,21 +21,21 @@ when defined(macosx):
     RequiredLibs = ["libericapi.dylib", "libericxerces.dylib", "libeSigner.dylib"]
     EricApiLib* = "libericapi.dylib"
     PlatformDirPrefix = "Darwin"
-    PluginPrefix = "libcheck"
+    PluginPrefix* ="libcheck"
 elif defined(windows):
   const
     DynlibExt* = ".dll"
     RequiredLibs = ["ericapi.dll", "ericxerces.dll", "eSigner.dll"]
     EricApiLib* = "ericapi.dll"
     PlatformDirPrefix = "Windows"
-    PluginPrefix = "check"
+    PluginPrefix* ="check"
 else:
   const
     DynlibExt* = ".so"
     RequiredLibs = ["libericapi.so", "libericxerces.so", "libeSigner.so"]
     EricApiLib* = "libericapi.so"
     PlatformDirPrefix = "Linux"
-    PluginPrefix = "libcheck"
+    PluginPrefix* ="libcheck"
 
 const
   # Download URLs (publicly accessible, no auth needed)
