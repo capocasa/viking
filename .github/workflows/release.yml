@@ -49,7 +49,8 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           mv viking viking-arm64
-          nim c -d:release -d:NimblePkgVersion=${{ github.ref_name }} --passC:"-arch x86_64" --passL:"-arch x86_64" -o:viking-x86_64 src/viking.nim
+          rm -rf ~/.cache/nim/viking_r
+          nim c -d:release -d:NimblePkgVersion=${{ github.ref_name }} --passC:"-arch x86_64" --passL:"-arch x86_64" --cpu:amd64 -o:viking-x86_64 src/viking.nim
           lipo -create viking-arm64 viking-x86_64 -output viking
           file viking
 
