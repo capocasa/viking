@@ -87,7 +87,7 @@ var
 
 import std/dynlib
 when defined(windows):
-  import std/os
+  import std/[os, strutils]
 
 proc loadEricLib*(path: string): bool =
   # On Windows, add DLL directory to PATH so dependent DLLs
