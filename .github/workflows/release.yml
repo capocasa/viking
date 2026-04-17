@@ -16,11 +16,8 @@ jobs:
             artifact: viking-linux-amd64
             ext: tar.gz
           - os: macos-latest
-            artifact: viking-macos-arm64
+            artifact: viking-macos-universal
             ext: tar.gz
-          #- os: macos-13
-          #  artifact: viking-macos-amd64
-          #  ext: tar.gz
           - os: windows-latest
             artifact: viking-windows-amd64
             ext: zip
@@ -47,6 +44,14 @@ jobs:
 
       - name: Build
         run: nimble build -y -d:release -d:NimblePkgVersion=${{ github.ref_name }}
+
+      - name: Build x86_64 and create universal binary (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          mv viking viking-arm64
+          nim c -d:release -d:NimblePkgVersion=${{ github.ref_name }} --passC:"-arch x86_64" --passL:"-arch x86_64" -o:viking-x86_64 src/viking.nim
+          lipo -create viking-arm64 viking-x86_64 -output viking
+          file viking
 
       - name: Cache ERiC library
         uses: actions/cache@v4
@@ -102,5 +107,5 @@ jobs:
             --title "${{ github.ref_name }}" \
             --generate-notes \
             viking-linux-amd64.tar.gz \
-            viking-macos-arm64.tar.gz \
+            viking-macos-universal.tar.gz \
             viking-windows-amd64.zip
