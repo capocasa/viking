@@ -27,17 +27,6 @@ proc run(cmd: string): tuple[output: string, code: int] =
   let (output, code) = execCmdEx(cmd)
   (output.strip, code)
 
-proc runWithEnv(cmd: string, env: openArray[(string, string)]): tuple[output: string, code: int] =
-  ## Run a command with temporary environment variable overrides (cross-platform)
-  var saved: seq[(string, bool, string)]
-  for (k, v) in env:
-    saved.add (k, existsEnv(k), getEnv(k))
-    putEnv(k, v)
-  let res = run(cmd)
-  for (k, existed, old) in saved:
-    if existed: putEnv(k, old)
-    else: delEnv(k)
-  res
 
 # Ensure we're in the project root
 let projectRoot = currentSourcePath().parentDir.parentDir
@@ -118,7 +107,9 @@ echo "--- TEST flag ---"
 # Create a minimal env with TEST=0 (production)
 let prodEnv = projectRoot / "tests" / ".env.test_prod"
 writeFile(prodEnv, readFile(projectRoot / ".env").replace("VIKING_TEST=1", "VIKING_TEST=0"))
-let (prodOut, prodRc) = runWithEnv(Viking & " submit -c " & submitConf & " --p 41 --amount19 0 --dry-run --env " & prodEnv, {"VIKING_TEST": "0"})
+putEnv("VIKING_TEST", "0")
+let (prodOut, prodRc) = run(Viking & " submit -c " & submitConf & " --p 41 --amount19 0 --dry-run --env " & prodEnv)
+putEnv("VIKING_TEST", "1")
 check("TEST=0 dry-run exits 0", prodRc == 0, prodOut)
 check("TEST=0 no Testmerker", not prodOut.contains("Testmerker"), prodOut)
 
@@ -459,7 +450,9 @@ check("euer TEST=1 has Testmerker", euerTestOut.contains("<Testmerker>700000004<
 # TEST=0
 let euerProdEnv = projectRoot / "tests" / ".env.euer_prod"
 writeFile(euerProdEnv, readFile(projectRoot / ".env").replace("VIKING_TEST=1", "VIKING_TEST=0"))
-let (euerProdOut, euerProdRc) = runWithEnv(Viking & " euer -c " & euerConf & " --euer " & euerCsv & " -y 2025 --dry-run --env " & euerProdEnv, {"VIKING_TEST": "0"})
+putEnv("VIKING_TEST", "0")
+let (euerProdOut, euerProdRc) = run(Viking & " euer -c " & euerConf & " --euer " & euerCsv & " -y 2025 --dry-run --env " & euerProdEnv)
+putEnv("VIKING_TEST", "1")
 check("euer TEST=0 exits 0", euerProdRc == 0, euerProdOut)
 check("euer TEST=0 no Testmerker", not euerProdOut.contains("Testmerker"), euerProdOut)
 removeFile(euerProdEnv)
@@ -629,7 +622,9 @@ check("est TEST=1 has Testmerker", estTestOut.contains("<Testmerker>700000004</T
 
 let estProdEnv = projectRoot / "tests" / ".env.est_prod"
 writeFile(estProdEnv, readFile(projectRoot / ".env").replace("VIKING_TEST=1", "VIKING_TEST=0"))
-let (estProdOut, estProdRc) = runWithEnv(Viking & " est -c " & estConf & " -i " & estEuer & " -y 2025 --dry-run --force --env " & estProdEnv, {"VIKING_TEST": "0"})
+putEnv("VIKING_TEST", "0")
+let (estProdOut, estProdRc) = run(Viking & " est -c " & estConf & " -i " & estEuer & " -y 2025 --dry-run --force --env " & estProdEnv)
+putEnv("VIKING_TEST", "1")
 check("est TEST=0 exits 0", estProdRc == 0, estProdOut)
 check("est TEST=0 no Testmerker", not estProdOut.contains("Testmerker"), estProdOut)
 removeFile(estProdEnv)
@@ -921,7 +916,9 @@ check("ust TEST=1 has Testmerker", ustTestOut.contains("<Testmerker>700000004</T
 # TEST=0
 let ustProdEnv = projectRoot / "tests" / ".env.ust_prod"
 writeFile(ustProdEnv, readFile(projectRoot / ".env").replace("VIKING_TEST=1", "VIKING_TEST=0"))
-let (ustProdOut, ustProdRc) = runWithEnv(Viking & " ust -c " & ustConf & " -i " & ustCsv & " -y 2025 --dry-run --env " & ustProdEnv, {"VIKING_TEST": "0"})
+putEnv("VIKING_TEST", "0")
+let (ustProdOut, ustProdRc) = run(Viking & " ust -c " & ustConf & " -i " & ustCsv & " -y 2025 --dry-run --env " & ustProdEnv)
+putEnv("VIKING_TEST", "1")
 check("ust TEST=0 exits 0", ustProdRc == 0, ustProdOut)
 check("ust TEST=0 no Testmerker", not ustProdOut.contains("Testmerker"), ustProdOut)
 removeFile(ustProdEnv)
