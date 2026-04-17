@@ -345,7 +345,7 @@ check("wrong year has Kz81 = 0", wrongYrOut.contains("<Kz81>0</Kz81>"))
 
 # Undated invoices excluded with warning
 writeFile(invCsv, "1000,19,2026-01-15,INV-001,dated\n500,19\n")
-let (undatedOut, undatedRc) = run(Viking & " submit -c " & submitConf & " -i " & invCsv & " --p 01 -y 2026 --dry-run 2>&1")
+let (undatedOut, undatedRc) = run(Viking & " submit -c " & submitConf & " -i " & invCsv & " --p 01 -y 2026 --dry-run")
 check("undated filter exits 0", undatedRc == 0, undatedOut)
 check("undated shows warning", undatedOut.contains("without date"))
 check("undated Kz81 = 1000", undatedOut.contains("<Kz81>1000</Kz81>"))
