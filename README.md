@@ -24,14 +24,15 @@ viking submit --period 41 --amount19 1000
 # Both rates
 viking submit --period 01 --amount19 5000 --amount7 2000
 
-# EUeR (profit/loss statement)
-viking euer -i invoices.csv --year 2025
+# EUeR (profit/loss statement) for a named source
+# loads 2025-freelance.tsv alongside viking.conf
+viking euer freelance --year 2025
 
-# ESt (income tax return)
-viking est -i invoices.csv --year 2025
+# ESt (income tax return) - aggregates all sources
+viking est --year 2025
 
-# USt (annual VAT return)
-viking ust -i invoices.csv --vorauszahlungen 3600 --year 2025
+# USt (annual VAT return) for a named source
+viking ust freelance --year 2025
 
 # Retrieve documents from Finanzamt (Steuerbescheide etc.)
 viking list                              # show available documents

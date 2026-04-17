@@ -5,35 +5,39 @@ import std/[strformat, tables]
 import viking/[vikingconf, deductions, kap, config]
 
 type
+  ProfitEntry* = object
+    label*: string   ## taetigkeit description (source profession or section name)
+    profit*: float
+
   EstInput* = object
     conf*: VikingConf
     year*: int
-    profits*: seq[float]
-    deductions*: DeductionsByForm
+    gewerbeProfits*: seq[ProfitEntry]
+    freelanceProfits*: seq[ProfitEntry]
     kapTotals*: KapTotals
+    deductions*: DeductionsByForm
     test*: bool
     produktVersion*: string
 
 proc generateEst*(input: EstInput): string =
-  let tp = input.conf.taxpayer
-  let finanzamt = tp.taxnumber[0..3]
-  let bundesland = bundeslandFromSteuernummer(tp.taxnumber)
+  let p = input.conf.personal
+  let finanzamt = p.taxnumber[0..3]
+  let bundesland = bundeslandFromSteuernummer(p.taxnumber)
   let testmerkerLine = if input.test: "\n    <Testmerker>700000004</Testmerker>" else: ""
 
-  # Build Anlage G or Anlage S (one block per income source)
-  var anlage = ""
-  if input.profits.len > 0:
-    if tp.income == "2":
-      let taetigkeitStr = if tp.profession != "": tp.profession else: "Gewerbebetrieb"
-      var blocks = ""
-      for profit in input.profits:
-        let profitEuro = roundEuro(profit)
-        blocks.add(&"""
+  # Anlage G (Gewerbebetrieb)
+  var anlageG = ""
+  if input.gewerbeProfits.len > 0:
+    var blocks = ""
+    for e in input.gewerbeProfits:
+      let label = if e.label != "": e.label else: "Gewerbebetrieb"
+      let profitEuro = roundEuro(e.profit)
+      blocks.add(&"""
               <Betr_1_2>
-                <E0800301>{taetigkeitStr}</E0800301>
+                <E0800301>{label}</E0800301>
                 <E0800302>{profitEuro}</E0800302>
               </Betr_1_2>""")
-      anlage = &"""
+    anlageG = &"""
         <G>
           <Person>PersonA</Person>
           <Gew>
@@ -41,17 +45,20 @@ proc generateEst*(input: EstInput): string =
             </Einz_U>
           </Gew>
         </G>"""
-    else:
-      let taetigkeitStr = if tp.profession != "": tp.profession else: "Freiberufliche Taetigkeit"
-      var blocks = ""
-      for profit in input.profits:
-        let profitEuro = roundEuro(profit)
-        blocks.add(&"""
+
+  # Anlage S (Selbständige Arbeit)
+  var anlageS = ""
+  if input.freelanceProfits.len > 0:
+    var blocks = ""
+    for e in input.freelanceProfits:
+      let label = if e.label != "": e.label else: "Freiberufliche Taetigkeit"
+      let profitEuro = roundEuro(e.profit)
+      blocks.add(&"""
             <Freiber_T>
-              <E0803101>{taetigkeitStr}</E0803101>
+              <E0803101>{label}</E0803101>
               <E0803202>{profitEuro}</E0803202>
             </Freiber_T>""")
-      anlage = &"""
+    anlageS = &"""
         <S>
           <Person>PersonA</Person>
           <Gewinn>{blocks}
@@ -197,9 +204,9 @@ proc generateEst*(input: EstInput): string =
               <E0500406>{kid.idnr}</E0500406>""")
     allgParts.add(&"""
               <E0500107>{kid.firstname}</E0500107>""")
-    if tp.lastname != "":
+    if p.lastname != "":
       allgParts.add(&"""
-              <E0500108>{tp.lastname}</E0500108>""")
+              <E0500108>{p.lastname}</E0500108>""")
     allgParts.add(&"""
               <E0500701>{kid.birthdate}</E0500701>""")
 
@@ -215,10 +222,11 @@ proc generateEst*(input: EstInput): string =
           </Ang_Kind>""")
 
     # Kindschaftsverhältnis
+    let kvh = if kid.kindschaftsverhaeltnis != "": kid.kindschaftsverhaeltnis else: "1"
     kindParts.add(&"""
           <K_Verh>
             <K_Verh_A>
-              <E0500807>1</E0500807>
+              <E0500807>{kvh}</E0500807>
               <E0500601>01.01-31.12</E0500601>
             </K_Verh_A>
           </K_Verh>""")
@@ -258,12 +266,11 @@ proc generateEst*(input: EstInput): string =
   # Build Anlage KAP
   var kapXml = ""
   let kt = input.kapTotals
-  let kc = input.conf.kap
-  let hasKAP = kt.gains > 0 or kt.tax > 0 or kc.guenstigerpruefung or kc.sparerPauschbetrag > 0
+  let hasKAP = kt.gains > 0 or kt.tax > 0 or kt.guenstigerpruefung or kt.sparerPauschbetrag > 0
   if hasKAP:
     var kapParts = ""
 
-    if kc.guenstigerpruefung:
+    if kt.guenstigerpruefung:
       kapParts.add(&"""
           <Ant>
             <E1900401>1</E1900401>
@@ -277,10 +284,10 @@ proc generateEst*(input: EstInput): string =
             </Betr_lt_StBesch>
           </KapErt_inl_StAbz>""")
 
-    if kc.sparerPauschbetrag > 0:
+    if kt.sparerPauschbetrag > 0:
       kapParts.add(&"""
           <Sp_PB>
-            <E1901401>{roundEuro(kc.sparerPauschbetrag)}</E1901401>
+            <E1901401>{roundEuro(kt.sparerPauschbetrag)}</E1901401>
           </Sp_PB>""")
 
     if kt.tax > 0 or kt.soli > 0:
@@ -301,12 +308,12 @@ proc generateEst*(input: EstInput): string =
         </KAP>"""
 
   # Personal fields
-  let religionLine = if tp.religion != "": &"""
-                <E0100402>{tp.religion}</E0100402>""" else: ""
-  let berufLine = if tp.profession != "": &"""
-                <E0100403>{tp.profession}</E0100403>""" else: ""
+  let religionLine = if p.religion != "": &"""
+                <E0100402>{p.religion}</E0100402>""" else: ""
+  let berufLine = if p.profession != "": &"""
+                <E0100403>{p.profession}</E0100403>""" else: ""
 
-  let fullName = tp.lastname & " " & tp.firstname
+  let fullName = p.lastname & " " & p.firstname
   let produktVersion = if input.produktVersion != "": input.produktVersion else: "0.1.0"
 
   let xml = &"""<?xml version="1.0" encoding="UTF-8"?>
@@ -342,31 +349,31 @@ proc generateEst*(input: EstInput): string =
             </Art_Erkl>
             <Allg>
               <A>
-                <E0100401>{tp.birthdate}</E0100401>
-                <E0100201>{tp.lastname}</E0100201>
-                <E0100301>{tp.firstname}</E0100301>{religionLine}{berufLine}
-                <E0101104>{tp.street}</E0101104>
-                <E0101206>{tp.housenumber}</E0101206>
-                <E0100601>{tp.zip}</E0100601>
-                <E0100602>{tp.city}</E0100602>
+                <E0100401>{p.birthdate}</E0100401>
+                <E0100201>{p.lastname}</E0100201>
+                <E0100301>{p.firstname}</E0100301>{religionLine}{berufLine}
+                <E0101104>{p.street}</E0101104>
+                <E0101206>{p.housenumber}</E0101206>
+                <E0100601>{p.zip}</E0100601>
+                <E0100602>{p.city}</E0100602>
               </A>
               <BV>
-                <E0102102>{tp.iban}</E0102102>
+                <E0102102>{p.iban}</E0102102>
                 <Kto_Inh>
                   <E0101601>X</E0101601>
                 </Kto_Inh>
               </BV>
             </Allg>
-          </ESt1A>{sonderausgaben}{agb}{kinderXml}{anlage}{kapXml}{vorsorge}
+          </ESt1A>{sonderausgaben}{agb}{kinderXml}{anlageG}{anlageS}{kapXml}{vorsorge}
           <Vorsatz>
             <Unterfallart>10</Unterfallart>
             <Vorgang>01</Vorgang>
-            <StNr>{tp.taxnumber}</StNr>
+            <StNr>{p.taxnumber}</StNr>
             <Zeitraum>{input.year}</Zeitraum>
             <AbsName>{fullName}</AbsName>
-            <AbsStr>{tp.street} {tp.housenumber}</AbsStr>
-            <AbsPlz>{tp.zip}</AbsPlz>
-            <AbsOrt>{tp.city}</AbsOrt>
+            <AbsStr>{p.street} {p.housenumber}</AbsStr>
+            <AbsPlz>{p.zip}</AbsPlz>
+            <AbsOrt>{p.city}</AbsOrt>
             <Copyright>(C) {ProduktName}</Copyright>
             <OrdNrArt>S</OrdNrArt>
             <Rueckuebermittlung>

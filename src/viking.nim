@@ -1,5 +1,4 @@
-## viking - German VAT advance return (Umsatzsteuervoranmeldung) CLI
-## Submit UStVA via ERiC library
+## viking - German tax submissions via ELSTER ERiC
 
 import std/[strutils, strformat, times, options, os, tables]
 import cligen, cligen/argcvt
@@ -29,15 +28,65 @@ proc loadConf(conf: string, validate: proc(conf: VikingConf): seq[string]): tupl
     err &"Error: {e.msg}"
     return (false, vikingConf)
   except ValueError as e:
-    err &"Error parsing {conf}: {e.msg}"
+    err &"Error parsing viking.conf: {e.msg}"
     return (false, vikingConf)
   let errors = validate(vikingConf)
   if errors.len > 0:
-    err "Configuration errors in " & conf & ":"
+    err "Configuration errors:"
     for e in errors:
       err &"  - {e}"
     return (false, vikingConf)
   return (true, vikingConf)
+
+proc loadConfForSource(conf: string, srcName: string,
+                       kinds: set[SourceKind],
+                       validate: proc(conf: VikingConf, src: Source): seq[string]):
+                       tuple[ok: bool, conf: VikingConf, src: Source] =
+  var vc: VikingConf
+  var src: Source
+  try:
+    vc = loadVikingConf(conf)
+  except IOError as e:
+    err &"Error: {e.msg}"
+    return (false, vc, src)
+  except ValueError as e:
+    err &"Error parsing viking.conf: {e.msg}"
+    return (false, vc, src)
+
+  let candidates = vc.sourcesOfKind(kinds)
+  if candidates.len == 0:
+    err &"Error: no matching source defined in viking.conf"
+    return (false, vc, src)
+
+  var chosen = -1
+  if srcName == "":
+    if candidates.len == 1:
+      for i, s in vc.sources:
+        if s.name == candidates[0].name:
+          chosen = i
+          break
+    else:
+      var names: seq[string]
+      for s in candidates: names.add(s.name)
+      err &"Error: multiple sources defined, specify one: " & names.join(", ")
+      return (false, vc, src)
+  else:
+    chosen = vc.findSource(srcName)
+    if chosen < 0:
+      err &"Error: source '{srcName}' not found in viking.conf"
+      return (false, vc, src)
+    if vc.sources[chosen].kind notin kinds:
+      err &"Error: source '{srcName}' is not a matching kind for this command"
+      return (false, vc, src)
+
+  src = vc.sources[chosen]
+  let errors = validate(vc, src)
+  if errors.len > 0:
+    err "Configuration errors:"
+    for e in errors:
+      err &"  - {e}"
+    return (false, vc, src)
+  return (true, vc, src)
 
 proc loadTechConfig(env: string, validateOnly: bool, dryRun: bool): tuple[ok: bool, cfg: Config] =
   var cfg: Config
@@ -54,6 +103,9 @@ proc loadTechConfig(env: string, validateOnly: bool, dryRun: bool): tuple[ok: bo
       err &"  - {e}"
     return (false, cfg)
   return (true, cfg)
+
+proc defaultTsvPath(year: int, source: string): string =
+  &"{year}-{source}.tsv"
 
 proc handleEricError(rc: int, response, serverResponse: string, ericLogPath: string) =
   err &"Error: ERiC code {rc}: {ericHoleFehlerText(rc)}"
@@ -147,6 +199,7 @@ template submitAndCheck(xml: string, datenartVersion: string) =
     return 1
 
 proc submit(
+  source: seq[string] = @[],
   amount19: Option[float] = none(float),
   amount7: Option[float] = none(float),
   amount0: Option[float] = none(float),
@@ -160,25 +213,16 @@ proc submit(
   output_pdf: string = "",
   env: string = ".env",
 ): int =
-  ## Submit a German VAT advance return (Umsatzsteuervoranmeldung)
+  ## Submit a UStVA (Umsatzsteuervoranmeldung) for a source.
   ##
-  ## Personal data from viking.conf, technical config from .env.
-  ##
-  ## Examples:
-  ##   viking submit -c viking.conf --amount19=1000.00 --period=01 --year=2025
-  ##   viking submit -c viking.conf --amount19=1000 --amount7=500 --period=41 --year=2025
-  ##   viking submit -c viking.conf --amount19=100 --period=01 --validate-only
+  ## Source positional arg selects the income source from viking.conf;
+  ## omit if exactly one EÜR source is defined. If no amounts given and
+  ## no -i provided, auto-loads <year>-<source>.tsv.
 
   let actualYear = if year == 0: now().year else: year
   log.verbose = verbose
   initLog(actualYear)
   defer: closeLog()
-
-  if conf == "":
-    err "Error: --conf is required (viking.conf file)"
-    return 1
-  let (confOk, vikingConf) = loadConf(conf, validateForUstva)
-  if not confOk: return 1
 
   if period == "":
     err "Error: --period is required (01-12 for monthly, 41-44 for quarterly)"
@@ -187,21 +231,30 @@ proc submit(
     err &"Error: Invalid period '{period}'. Use 01-12 for monthly or 41-44 for quarterly."
     return 1
 
+  let srcName = if source.len > 0: source[0] else: ""
+  let (confOk, vikingConf, src) = loadConfForSource(conf, srcName,
+    {skGewerbe, skFreelance}, validateForUstva)
+  if not confOk: return 1
+
   let hasAmounts = amount19.isSome or amount7.isSome or amount0.isSome
-  let hasInvoices = invoiceFile != ""
-  if hasAmounts and hasInvoices:
+  let explicitFile = invoiceFile != ""
+  if hasAmounts and explicitFile:
     err "Error: --invoice-file and --amount19/--amount7/--amount0 are mutually exclusive"
-    return 1
-  if not hasAmounts and not hasInvoices:
-    err "Error: Specify --amount19/--amount7/--amount0 or --invoice-file"
     return 1
 
   var finalAmount19 = amount19
   var finalAmount7 = amount7
   var finalAmount0 = amount0
 
-  if hasInvoices:
-    let (agg, totalParsed, ok) = loadAndAggregateInvoices(invoiceFile, actualYear, period)
+  var tsvPath = invoiceFile
+  if not hasAmounts and not explicitFile:
+    tsvPath = defaultTsvPath(actualYear, src.name)
+    if not fileExists(tsvPath):
+      err &"Error: no amounts given and {tsvPath} not found"
+      return 1
+
+  if tsvPath != "":
+    let (agg, totalParsed, ok) = loadAndAggregateInvoices(tsvPath, actualYear, period)
     if not ok:
       return 1
     finalAmount19 = agg.amount19
@@ -209,19 +262,17 @@ proc submit(
     finalAmount0 = agg.amount0
     if finalAmount19.isNone and finalAmount7.isNone and finalAmount0.isNone:
       finalAmount19 = some(0.0)
+
   let (techOk, cfg) = loadTechConfig(env, validateOnly, dryRun)
   if not techOk: return 1
 
-  let amt19 = finalAmount19.get(0.0)
-  let amt7 = finalAmount7.get(0.0)
-  let amt0 = finalAmount0.get(0.0)
-
-  let tp = vikingConf.taxpayer
-  let fullName = tp.firstname & " " & tp.lastname
-  let fullStreet = tp.street & " " & tp.housenumber
+  let p = vikingConf.personal
+  let fullName = p.firstname & " " & p.lastname
+  let fullStreet = p.street & " " & p.housenumber
+  let stnr = vikingConf.effectiveTaxnumber(src)
 
   let xml = generateUstva(
-    steuernummer = tp.taxnumber,
+    steuernummer = stnr,
     jahr = actualYear,
     zeitraum = period,
     kz81 = finalAmount19,
@@ -229,8 +280,8 @@ proc submit(
     kz45 = finalAmount0,
     name = fullName,
     strasse = fullStreet,
-    plz = tp.zip,
-    ort = tp.city,
+    plz = p.zip,
+    ort = p.city,
     test = cfg.test,
     produktVersion = NimblePkgVersion,
   )
@@ -238,105 +289,71 @@ proc submit(
   initEric(cfg, dryRun, xml)
   initBuffersAndCert(cfg, validateOnly, outputPdf)
 
-  let vat19 = amt19 * 0.19
-  let vat7 = amt7 * 0.07
-  let totalVat = vat19 + vat7
   submitAndCheck(xml, &"UStVA_{actualYear}")
   return 0
 
 proc euer(
+  source: seq[string] = @[],
   year: int = 0,
   conf: string = "",
-  euer: seq[string] = @[],
   validate_only: bool = false,
   dry_run: bool = false,
   verbose: bool = false,
   output_pdf: string = "",
   env: string = ".env",
 ): int =
-  ## Submit an EÜR (Einnahmenüberschussrechnung / profit-loss statement)
+  ## Submit an EÜR for a source.
   ##
-  ## Personal data from viking.conf, invoices from euer.tsv.
-  ## Positive invoice amounts = income, negative = expenses.
-  ## Multiple --euer flags submit separate EÜR forms for each income source.
-  ##
-  ## Examples:
-  ##   viking euer -y 2025 -c viking.conf --euer euer.tsv
-  ##   viking euer -y 2025 -c viking.conf --euer business1.tsv --euer business2.tsv
-  ##   viking euer -y 2025 -c viking.conf --euer euer.tsv --dry-run
+  ## Auto-loads <year>-<source>.tsv. Positive = income, negative = expenses.
 
   let actualYear = if year == 0: now().year else: year
   log.verbose = verbose
   initLog(actualYear)
   defer: closeLog()
 
-  if conf == "":
-    err "Error: --conf is required for EÜR submission (viking.conf file)"
-    return 1
-  if euer.len == 0:
-    err "Error: --euer is required for EÜR submission (invoice TSV file)"
-    return 1
-
-  let (confOk, vikingConf) = loadConf(conf, validateForEuer)
+  let srcName = if source.len > 0: source[0] else: ""
+  let (confOk, vikingConf, src) = loadConfForSource(conf, srcName,
+    {skGewerbe, skFreelance}, validateForEuer)
   if not confOk: return 1
 
-  var aggregations: seq[tuple[file: string, agg: EuerAggregation]] = @[]
-  for euerFile in euer:
-    if not fileExists(euerFile):
-      err &"Error: EÜR file not found: {euerFile}"
-      return 1
-    let (agg, ok) = loadAndAggregateForEuer(euerFile)
-    if not ok:
-      return 1
-    aggregations.add((file: euerFile, agg: agg))
+  let tsvPath = defaultTsvPath(actualYear, src.name)
+  if not fileExists(tsvPath):
+    err &"Error: {tsvPath} not found"
+    return 1
+
+  let (agg, ok) = loadAndAggregateForEuer(tsvPath)
+  if not ok: return 1
 
   let (techOk, cfg) = loadTechConfig(env, validateOnly, dryRun)
   if not techOk: return 1
 
-  let tp = vikingConf.taxpayer
-  let fullName = tp.firstname & " " & tp.lastname
-  let fullStreet = tp.street & " " & tp.housenumber
+  let p = vikingConf.personal
+  let fullName = p.firstname & " " & p.lastname
+  let fullStreet = p.street & " " & p.housenumber
+  let einkunftsart = case src.kind
+    of skGewerbe: "2"
+    of skFreelance: "3"
+    else: "3"
 
-  var xmls: seq[string] = @[]
-  for entry in aggregations:
-    xmls.add(generateEuer(EuerInput(
-      steuernummer: tp.taxnumber, jahr: actualYear,
-      incomeNet: entry.agg.incomeNet, incomeVat: entry.agg.incomeVat,
-      expenseNet: entry.agg.expenseNet, expenseVorsteuer: entry.agg.expenseVorsteuer,
-      rechtsform: tp.rechtsform, einkunftsart: tp.income,
-      name: fullName, strasse: fullStreet, plz: tp.zip, ort: tp.city,
-      test: cfg.test, produktVersion: NimblePkgVersion,
-    )))
+  let xml = generateEuer(EuerInput(
+    steuernummer: vikingConf.effectiveTaxnumber(src), jahr: actualYear,
+    incomeNet: agg.incomeNet, incomeVat: agg.incomeVat,
+    expenseNet: agg.expenseNet, expenseVorsteuer: agg.expenseVorsteuer,
+    rechtsform: src.rechtsform, einkunftsart: einkunftsart,
+    name: fullName, strasse: fullStreet, plz: p.zip, ort: p.city,
+    test: cfg.test, produktVersion: NimblePkgVersion,
+  ))
 
-  initEric(cfg, false, "")
-  if dryRun:
-    for i, xml in xmls:
-      echo xml
-    return 0
+  initEric(cfg, dryRun, xml)
+  initBuffersAndCert(cfg, validateOnly, outputPdf)
 
-  let euerPdf = if xmls.len > 1 and outputPdf != "":
-    let (dir, name, ext) = splitFile(outputPdf)
-    dir / name & "_1" & ext
-  else:
-    outputPdf
-  initBuffersAndCert(cfg, validateOnly, euerPdf)
-
-  for i, xml in xmls:
-    if xmls.len > 1 and outputPdf != "":
-      let (dir, name, ext) = splitFile(outputPdf)
-      let numbered = dir / name & "_" & $(i+1) & ext
-      druckParamPtr.pdfName = numbered.cstring
-
-    submitAndCheck(xml, &"EUER_{actualYear}")
-
+  submitAndCheck(xml, &"EUER_{actualYear}")
   return 0
 
 proc est(
   year: int = 0,
   conf: string = "",
-  euer: seq[string] = @[],
   deductions: string = "",
-  kapital: string = "",
   validate_only: bool = false,
   dry_run: bool = false,
   verbose: bool = false,
@@ -344,40 +361,38 @@ proc est(
   output_pdf: string = "",
   env: string = ".env",
 ): int =
-  ## Submit an ESt (Einkommensteuererklarung / income tax return)
+  ## Submit an ESt (Einkommensteuererklarung / income tax return).
   ##
-  ## Personal data from viking.conf, income from euer.tsv,
-  ## deductions from deductions.tsv, capital gains from kap.tsv.
-  ## Multiple --euer flags for multiple income sources.
-  ##
-  ## Examples:
-  ##   viking est -y 2025 -c viking.conf --euer euer.tsv --deductions deductions.tsv
-  ##   viking est -y 2025 -c viking.conf --euer business1.tsv --euer business2.tsv
-  ##   viking est -y 2025 -c viking.conf --kapital kap.tsv
-  ##   viking est -y 2025 -c viking.conf --euer euer.tsv --dry-run
+  ## Aggregates all sources in viking.conf:
+  ## - income=2/3: loads <year>-<source>.tsv, computes profit, adds to Anlage G/S
+  ## - income=kap: reads inline values, adds to Anlage KAP
 
   let actualYear = if year == 0: now().year else: year
   log.verbose = verbose
   initLog(actualYear)
   defer: closeLog()
 
-  if conf == "":
-    err "Error: --conf is required for ESt submission (viking.conf file)"
-    return 1
-
   let (confOk, vikingConf) = loadConf(conf, validateForEst)
   if not confOk: return 1
 
-  var profits: seq[float] = @[]
-  for euerFile in euer:
-    if not fileExists(euerFile):
-      err &"Error: EÜR file not found: {euerFile}"
+  var gewerbeProfits: seq[ProfitEntry] = @[]
+  var freelanceProfits: seq[ProfitEntry] = @[]
+
+  for src in vikingConf.euerSources:
+    let tsvPath = defaultTsvPath(actualYear, src.name)
+    if not fileExists(tsvPath):
+      err &"Error: source [{src.name}] requires {tsvPath} (not found)"
       return 1
-    let (agg, ok) = loadAndAggregateForEuer(euerFile)
-    if not ok:
-      return 1
+    let (agg, ok) = loadAndAggregateForEuer(tsvPath)
+    if not ok: return 1
     let profit = (agg.incomeNet + agg.incomeVat) - (agg.expenseNet + agg.expenseVorsteuer)
-    profits.add(profit)
+    let entry = ProfitEntry(label: src.name, profit: profit)
+    case src.kind
+    of skGewerbe: gewerbeProfits.add(entry)
+    of skFreelance: freelanceProfits.add(entry)
+    else: discard
+
+  let kapTotals = aggregateKap(vikingConf.sources)
 
   var ded: DeductionsByForm
   if deductions != "":
@@ -392,28 +407,15 @@ proc est(
   elif not force:
     err "Warning: no deductions file provided. Use --force to suppress, or pass --deductions <file>"
 
-  var kapTotals: KapTotals
-  if kapital != "":
-    if not fileExists(kapital):
-      err &"Error: KAP file not found: {kapital}"
-      return 1
-    try:
-      kapTotals = loadKapTsv(kapital)
-    except ValueError as e:
-      err &"Error parsing kap.tsv: {e.msg}"
-      return 1
-
   let (techOk, cfg) = loadTechConfig(env, validateOnly, dryRun)
   if not techOk: return 1
 
-  let tp = vikingConf.taxpayer
-
-  let estInput = EstInput(
-    conf: vikingConf, year: actualYear, profits: profits,
-    deductions: ded, kapTotals: kapTotals,
+  let xml = generateEst(EstInput(
+    conf: vikingConf, year: actualYear,
+    gewerbeProfits: gewerbeProfits, freelanceProfits: freelanceProfits,
+    kapTotals: kapTotals, deductions: ded,
     test: cfg.test, produktVersion: NimblePkgVersion,
-  )
-  let xml = generateEst(estInput)
+  ))
 
   initEric(cfg, dryRun, xml)
   initBuffersAndCert(cfg, validateOnly, outputPdf)
@@ -422,75 +424,50 @@ proc est(
   return 0
 
 proc ust(
+  source: seq[string] = @[],
   year: int = 0,
   conf: string = "",
-  euer: seq[string] = @[],
-  vorauszahlungen: float = 0.0,
   validate_only: bool = false,
   dry_run: bool = false,
   verbose: bool = false,
   output_pdf: string = "",
   env: string = ".env",
 ): int =
-  ## Submit an annual VAT return (Umsatzsteuererklaerung)
+  ## Submit an annual VAT return (Umsatzsteuererklaerung) for a source.
   ##
-  ## Positive amounts = revenue, negative = expenses (for Vorsteuer).
-  ## Provide --vorauszahlungen with the total UStVA advance payments made.
-  ## Multiple --euer flags for multiple income sources.
-  ##
-  ## Examples:
-  ##   viking ust -y 2025 -c viking.conf --euer euer.tsv --vorauszahlungen=1200
-  ##   viking ust -y 2025 -c viking.conf --euer a.tsv --euer b.tsv
-  ##   viking ust -y 2025 -c viking.conf --euer euer.tsv --dry-run
+  ## Auto-loads <year>-<source>.tsv. Vorauszahlungen from source section.
 
   let actualYear = if year == 0: now().year else: year
   log.verbose = verbose
   initLog(actualYear)
   defer: closeLog()
 
-  if conf == "":
-    err "Error: --conf is required for USt submission (viking.conf file)"
-    return 1
-  if euer.len == 0:
-    err "Error: --euer is required for USt submission"
-    return 1
-
-  let (confOk, vikingConf) = loadConf(conf, validateForUst)
+  let srcName = if source.len > 0: source[0] else: ""
+  let (confOk, vikingConf, src) = loadConfForSource(conf, srcName,
+    {skGewerbe, skFreelance}, validateForUst)
   if not confOk: return 1
-  let tp = vikingConf.taxpayer
 
-  var agg: UstAggregation
-  for euerFile in euer:
-    if not fileExists(euerFile):
-      err &"Error: EÜR file not found: {euerFile}"
-      return 1
-    let (fileAgg, ok) = loadAndAggregateForUst(euerFile)
-    if not ok: return 1
-    agg.income19 += fileAgg.income19
-    agg.income7 += fileAgg.income7
-    agg.income0 += fileAgg.income0
-    agg.vorsteuer += fileAgg.vorsteuer
-    agg.incomeCount += fileAgg.incomeCount
-    agg.expenseCount += fileAgg.expenseCount
-    agg.has19 = agg.has19 or fileAgg.has19
-    agg.has7 = agg.has7 or fileAgg.has7
-    agg.has0 = agg.has0 or fileAgg.has0
+  let tsvPath = defaultTsvPath(actualYear, src.name)
+  if not fileExists(tsvPath):
+    err &"Error: {tsvPath} not found"
+    return 1
 
-  let totalVat = agg.income19 * 0.19 + agg.income7 * 0.07
-  let remaining = totalVat - agg.vorsteuer - vorauszahlungen
+  let (agg, ok) = loadAndAggregateForUst(tsvPath)
+  if not ok: return 1
 
   let (techOk, cfg) = loadTechConfig(env, validateOnly, dryRun)
   if not techOk: return 1
 
-  let fullName = tp.firstname & " " & tp.lastname
+  let p = vikingConf.personal
+  let fullName = p.firstname & " " & p.lastname
   let xml = generateUst(UstInput(
-    steuernummer: tp.taxnumber, jahr: actualYear,
+    steuernummer: vikingConf.effectiveTaxnumber(src), jahr: actualYear,
     income19: agg.income19, income7: agg.income7, income0: agg.income0,
     has19: agg.has19, has7: agg.has7, has0: agg.has0,
-    vorsteuer: agg.vorsteuer, vorauszahlungen: vorauszahlungen,
-    besteuerungsart: tp.besteuerungsart,
-    name: fullName, strasse: tp.street & " " & tp.housenumber,
-    plz: tp.zip, ort: tp.city,
+    vorsteuer: agg.vorsteuer, vorauszahlungen: src.vorauszahlungen,
+    besteuerungsart: src.besteuerungsart,
+    name: fullName, strasse: p.street & " " & p.housenumber,
+    plz: p.zip, ort: p.city,
     test: cfg.test, produktVersion: NimblePkgVersion,
   ))
 
@@ -502,18 +479,7 @@ proc ust(
 
 proc fetch(file: string = "", check: bool = false, env: string = ".env"): int =
   ## Fetch ERiC library and test certificates
-  ##
-  ## Downloads ERiC from the ELSTER developer portal and sets up test
-  ## certificates automatically. Use --file to install from a local archive.
-  ##
-  ## Cache location: ~/.cache/viking/ (or XDG_CACHE_HOME)
-  ##
-  ## Examples:
-  ##   viking fetch                      # Auto-download ERiC + test certs
-  ##   viking fetch --file=ERiC.jar      # Install from local archive
-  ##   viking fetch --check              # Check existing installation
 
-  # Load env file so VIKING_DATA_DIR is available
   let envPath = if env.isAbsolute: env else: getCurrentDir() / env
   if fileExists(envPath):
     load(envPath.parentDir, envPath.extractFilename)
@@ -522,7 +488,6 @@ proc fetch(file: string = "", check: bool = false, env: string = ".env"): int =
   defer: closeLog()
 
   if check:
-    # --check is a query: stdout for data, stderr for errors
     let existing = findExistingEric()
     if existing.valid:
       printStatus(existing)
@@ -544,10 +509,8 @@ proc fetch(file: string = "", check: bool = false, env: string = ".env"): int =
       printDownloadInstructions()
       return 1
 
-  # Download test certificates
   let (certPath, certPin, certSuccess) = downloadTestCertificates()
 
-  # Get ERiC installation
   var installation: EricInstallation
   if file != "":
     installation = setupEric(file)
@@ -571,21 +534,15 @@ proc fetch(file: string = "", check: bool = false, env: string = ".env"): int =
     return 1
 
 proc loadConfigAndEricForAbholung(conf: string, env: string): tuple[rc: int, cfg: Config, name: string] =
-  ## Load config for Datenabholung commands. Personal data from viking.conf, technical from .env.
-  if conf == "":
-    err "Error: --conf is required"
-    var cfg: Config
-    return (1, cfg, "")
-
   let (confOk, vikingConf) = loadConf(conf, validateForAbholung)
-  if not confOk:
-    var cfg: Config
-    return (1, cfg, "")
+  var cfg: Config
+  if not confOk: return (1, cfg, "")
 
-  let (techOk, cfg) = loadTechConfig(env, false, false)
-  if not techOk: return (1, cfg, "")
+  let (techOk, cfgLoaded) = loadTechConfig(env, false, false)
+  if not techOk: return (1, cfgLoaded, "")
+  cfg = cfgLoaded
 
-  let name = vikingConf.taxpayer.firstname & " " & vikingConf.taxpayer.lastname
+  let name = vikingConf.personal.firstname & " " & vikingConf.personal.lastname
 
   if not loadEricLib(cfg.ericLibPath):
     err &"Error: Failed to load ERiC library from {cfg.ericLibPath}"
@@ -608,12 +565,6 @@ proc list(
   env: string = ".env",
 ): int =
   ## List available documents in the tax office Postfach
-  ##
-  ## Personal data from viking.conf, technical config from .env.
-  ##
-  ## Examples:
-  ##   viking list -c viking.conf
-  ##   viking list -c viking.conf --verbose
 
   log.verbose = verbose
   initLog()
@@ -645,16 +596,6 @@ proc download(
   env: string = ".env",
 ): int =
   ## Download documents from the tax office Postfach
-  ##
-  ## Personal data from viking.conf, technical config from .env.
-  ## Queries the ELSTER Postfach, downloads documents via OTTER,
-  ## and confirms retrieval. Use 'viking list' first to see what's available.
-  ## Specify filenames to download specific files.
-  ##
-  ## Examples:
-  ##   viking download -c viking.conf
-  ##   viking download -c viking.conf Steuerbescheid_Einkommsteuer_2024.pdf
-  ##   viking download -c viking.conf --output_dir=./bescheide
 
   log.verbose = verbose
   initLog()
@@ -805,12 +746,6 @@ proc iban(
   env: string = ".env",
 ): int =
   ## Change bank account (IBAN) at the Finanzamt
-  ##
-  ## Personal data from viking.conf, technical config from .env.
-  ##
-  ## Examples:
-  ##   viking iban -c viking.conf --new-iban DE89370400440532013000
-  ##   viking iban -c viking.conf --new-iban DE89370400440532013000 --dry-run
 
   log.verbose = verbose
   initLog()
@@ -819,20 +754,17 @@ proc iban(
   if new_iban == "":
     err "Error: --new-iban is required"
     return 1
-  if conf == "":
-    err "Error: --conf is required (viking.conf file)"
-    return 1
   let (confOk, vikingConf) = loadConf(conf, validateForBankverbindung)
   if not confOk: return 1
   let (techOk, cfg) = loadTechConfig(env, validateOnly, dryRun)
   if not techOk: return 1
 
-  let tp = vikingConf.taxpayer
-  let fullName = tp.firstname & " " & tp.lastname
+  let p = vikingConf.personal
+  let fullName = p.firstname & " " & p.lastname
   let xml = generateBankverbindungXml(
-    steuernummer = tp.taxnumber, name = fullName,
-    vorname = tp.firstname, nachname = tp.lastname,
-    idnr = tp.idnr, geburtsdatum = tp.birthdate,
+    steuernummer = p.taxnumber, name = fullName,
+    vorname = p.firstname, nachname = p.lastname,
+    idnr = p.idnr, geburtsdatum = p.birthdate,
     iban = new_iban, test = cfg.test,
   )
 
@@ -854,12 +786,6 @@ proc message(
   env: string = ".env",
 ): int =
   ## Send a message (Sonstige Nachricht) to the Finanzamt
-  ##
-  ## Personal data from viking.conf, technical config from .env.
-  ##
-  ## Examples:
-  ##   viking message -c viking.conf --subject "Rückfrage" --text "Sehr geehrte Damen und Herren, ..."
-  ##   viking message -c viking.conf --subject "Rückfrage" --text-file brief.txt
 
   log.verbose = verbose
   initLog()
@@ -892,20 +818,17 @@ proc message(
     err &"Error: Message text exceeds 15000 characters ({messageText.len})"
     return 1
 
-  if conf == "":
-    err "Error: --conf is required (viking.conf file)"
-    return 1
   let (confOk, vikingConf) = loadConf(conf, validateForNachricht)
   if not confOk: return 1
   let (techOk, cfg) = loadTechConfig(env, validateOnly, dryRun)
   if not techOk: return 1
 
-  let tp = vikingConf.taxpayer
-  let fullName = tp.firstname & " " & tp.lastname
+  let p = vikingConf.personal
+  let fullName = p.firstname & " " & p.lastname
   let xml = generateNachrichtXml(NachrichtInput(
-    steuernummer: tp.taxnumber, name: fullName,
-    strasse: tp.street, hausnummer: tp.housenumber,
-    plz: tp.zip, ort: tp.city,
+    steuernummer: p.taxnumber, name: fullName,
+    strasse: p.street, hausnummer: p.housenumber,
+    plz: p.zip, ort: p.city,
     betreff: subject, text: messageText,
     test: cfg.test, produktVersion: NimblePkgVersion,
   ))
@@ -916,13 +839,12 @@ proc message(
   submitAndCheck(xml, "SonstigeNachrichten_21")
   return 0
 
-const initConfTemplate = """[taxpayer]
+const initConfTemplate = """[personal]
 firstname = ""
 lastname = ""
 birthdate = ""
 idnr = ""
 taxnumber = ""
-income = 3
 street = ""
 housenumber = ""
 zip = ""
@@ -931,18 +853,42 @@ iban = ""
 religion = 11
 profession = ""
 kv_art = privat
-rechtsform = 120
-besteuerungsart = 2
 
-[kap]
-guenstigerpruefung = 0
-sparer_pauschbetrag = 1000
+# Add one section per income source. Section name is the handle
+# you pass on the CLI (e.g. `viking ust mygewerbe`).
+# income = 2 -> Gewerbebetrieb (Anlage G)
+# income = 3 -> Selbständige Arbeit (Anlage S)
+# income = kap -> Anlage KAP (fill gains/tax inline)
 
-# Add one [kid] section per child (optional)
-# [kid]
-# firstname = ""
+# [freelance]
+# income = 3
+# rechtsform = 120
+# besteuerungsart = 2
+# vorauszahlungen = 0
+
+# [mygewerbe]
+# income = 2
+# taxnumber = ""
+# rechtsform = 120
+# besteuerungsart = 2
+# vorauszahlungen = 0
+
+# [ibkr]
+# income = kap
+# gains = 0
+# tax = 0
+# soli = 0
+# guenstigerpruefung = 0
+# sparer_pauschbetrag = 1000
+
+# Add one section per kid. Section name is the firstname (used for
+# deduction prefix matching, e.g. alice174). kindschaftsverhaeltnis
+# is required (marker); default 1 = leibliches Kind.
+# [alice]
 # birthdate = ""
 # idnr = ""
+# kindschaftsverhaeltnis = 1
+# kindergeld = 0
 """
 
 const initDeductionsTemplate =
@@ -960,10 +906,6 @@ const initDeductionsTemplate =
   "sa131\t0\tSpenden\n" &
   "agb187\t0\tKrankheitskosten\n"
 
-const initKapTemplate =
-  "gains\ttax\tsoli\tkirchensteuer\tdescription\n" &
-  "0\t0\t0\t\tBroker Name\n"
-
 const initEuerTemplate =
   "amount\trate\tdate\tid\tdescription\n" &
   "0\t19\t2025-01-01\tINV-001\tExample invoice\n" &
@@ -971,22 +913,30 @@ const initEuerTemplate =
 
 proc initFiles(
   dir: string = ".",
+  global: bool = false,
   force: bool = false,
 ): int =
-  ## Create skeleton viking.conf, deductions.tsv, kap.tsv, and euer.tsv
+  ## Create skeleton viking.conf and deductions.tsv
   ##
-  ## Generates template files with all known fields and codes set to
-  ## placeholder values. Edit the generated files with your data.
-  ##
-  ## Examples:
-  ##   viking init
-  ##   viking init --dir myproject
-  ##   viking init --force          # overwrite existing files
+  ## With --global, seeds ~/.config/viking/viking.conf.
+  ## Otherwise writes viking.conf, deductions.tsv, <year>-example.tsv to dir.
+
+  if global:
+    let gpath = globalConfPath()
+    let gdir = gpath.parentDir
+    if not dirExists(gdir):
+      createDir(gdir)
+    if not force and fileExists(gpath):
+      echo &"Skipped: {gpath} (exists, use --force)"
+      return 0
+    writeFile(gpath, initConfTemplate)
+    echo &"Created: {gpath}"
+    return 0
 
   let confPath = dir / "viking.conf"
   let deductionsPath = dir / "deductions.tsv"
-  let kapPath = dir / "kap.tsv"
-  let euerPath = dir / "euer.tsv"
+  let year = now().year
+  let euerPath = dir / &"{year}-example.tsv"
 
   if not dirExists(dir):
     stderr.writeLine &"Error: directory '{dir}' does not exist"
@@ -1004,7 +954,6 @@ proc initFiles(
 
   writeOrSkip(confPath, initConfTemplate)
   writeOrSkip(deductionsPath, initDeductionsTemplate)
-  writeOrSkip(kapPath, initKapTemplate)
   writeOrSkip(euerPath, initEuerTemplate)
 
   if created.len > 0:
@@ -1027,14 +976,16 @@ when isMainModule:
   clCfg.version = NimblePkgVersion
   dispatchMulti(
     [submit,
+      positional = "source",
       help = {
+        "source": "Source name from viking.conf (optional if only one)",
         "amount19": "Net amount at 19% VAT rate (Kz81)",
         "amount7": "Net amount at 7% VAT rate (Kz86)",
         "amount0": "Non-taxable amount at 0% (Kz45)",
-        "invoice_file": "CSV/TSV invoice file (- for stdin)",
+        "invoice_file": "CSV/TSV invoice file (overrides auto-discovery)",
         "period": "Period: 01-12 (monthly) or 41-44 (quarterly)",
         "year": "Tax year (default: current year)",
-        "conf": "viking.conf file with taxpayer data",
+        "conf": "viking.conf file (optional; default search chain)",
         "validate_only": "Only validate, don't send",
         "dry_run": "Show generated XML without processing",
         "verbose": "Show full server response XML",
@@ -1057,10 +1008,11 @@ when isMainModule:
       }
     ],
     [euer,
+      positional = "source",
       help = {
+        "source": "Source name from viking.conf (optional if only one)",
         "year": "Tax year (default: current year)",
-        "conf": "viking.conf file with taxpayer data",
-        "euer": "TSV invoice file (repeatable for multiple income sources)",
+        "conf": "viking.conf file (optional; default search chain)",
         "validate_only": "Only validate, don't send",
         "dry_run": "Show generated XML without processing",
         "verbose": "Show full server response XML",
@@ -1080,10 +1032,8 @@ when isMainModule:
     [est,
       help = {
         "year": "Tax year (default: current year)",
-        "conf": "viking.conf file (taxpayer data)",
-        "euer": "EUeR income/expense TSV (repeatable, optional)",
+        "conf": "viking.conf file (optional; default search chain)",
         "deductions": "Deductions TSV with compound codes (optional)",
-        "kapital": "Capital gains TSV (optional)",
         "validate_only": "Only validate, don't send",
         "dry_run": "Show generated XML without processing",
         "verbose": "Show full server response XML",
@@ -1094,9 +1044,7 @@ when isMainModule:
       short = {
         "year": 'y',
         "conf": 'c',
-        "euer": 'i',
         "deductions": 'D',
-        "kapital": 'K',
         "validate_only": 'n',
         "dry_run": 'd',
         "verbose": 'v',
@@ -1106,11 +1054,11 @@ when isMainModule:
       }
     ],
     [ust,
+      positional = "source",
       help = {
+        "source": "Source name from viking.conf (optional if only one)",
         "year": "Tax year (default: current year)",
-        "conf": "viking.conf file (taxpayer data)",
-        "euer": "EUeR income/expense TSV (repeatable, required)",
-        "vorauszahlungen": "Total UStVA advance payments made during the year",
+        "conf": "viking.conf file (optional; default search chain)",
         "validate_only": "Only validate, don't send",
         "dry_run": "Show generated XML without processing",
         "verbose": "Show full server response XML",
@@ -1120,8 +1068,6 @@ when isMainModule:
       short = {
         "year": 'y',
         "conf": 'c',
-        "euer": 'i',
-        "vorauszahlungen": 'a',
         "validate_only": 'n',
         "dry_run": 'd',
         "verbose": 'v',
@@ -1132,7 +1078,7 @@ when isMainModule:
     [iban,
       help = {
         "new_iban": "New IBAN for the Finanzamt",
-        "conf": "Path to viking.conf (taxpayer data)",
+        "conf": "Path to viking.conf (optional; default search chain)",
         "validate_only": "Only validate, don't send",
         "dry_run": "Show generated XML without processing",
         "verbose": "Show full server response XML",
@@ -1173,7 +1119,7 @@ when isMainModule:
     ],
     [list,
       help = {
-        "conf": "viking.conf file with taxpayer data",
+        "conf": "viking.conf file (optional; default search chain)",
         "dry_run": "Show generated XML without sending",
         "verbose": "Show full server response XML",
         "env": "Path to env file (default: .env)",
@@ -1188,7 +1134,7 @@ when isMainModule:
     [download,
       help = {
         "files": "Filenames to download (from 'viking list')",
-        "conf": "viking.conf file with taxpayer data",
+        "conf": "viking.conf file (optional; default search chain)",
         "output_dir": "Output directory for downloaded files (default: current dir)",
         "force": "Overwrite existing files",
         "dry_run": "Show generated XML without sending",
@@ -1219,10 +1165,12 @@ when isMainModule:
     [initFiles, cmdName = "init",
       help = {
         "dir": "Directory to create files in (default: current dir)",
+        "global": "Write to ~/.config/viking/viking.conf instead of CWD",
         "force": "Overwrite existing files",
       },
       short = {
         "dir": 'd',
+        "global": 'g',
         "force": 'f',
       }
     ]

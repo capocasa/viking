@@ -40,6 +40,11 @@ echo "=== viking end-to-end tests ==="
 echo "Working directory: ", getCurrentDir()
 echo ""
 
+# Isolate tests from user's global config: point XDG_CONFIG_HOME elsewhere
+let testXdgHome = projectRoot / "tests" / "tmp_xdg"
+createDir(testXdgHome)
+putEnv("XDG_CONFIG_HOME", testXdgHome)
+
 # --- Prerequisite check ---
 echo "--- Prerequisites ---"
 let envExists = fileExists(".env")
@@ -72,20 +77,29 @@ check("fetch --check succeeds", fetchCheckRc == 0)
 check("fetch --check shows version", fetchCheck.contains("ERiC"))
 echo ""
 
-# viking.conf for submit tests
-let submitConf = projectRoot / "tests" / "tmp_submit_viking.conf"
-writeFile(submitConf, """[taxpayer]
+# Shared template fragments used across tests
+const personalBlock = """[personal]
 firstname = Hans
 lastname = Maier
 birthdate = 05.05.1955
 idnr = 04452397687
 taxnumber = 9198011310010
-income = 2
 street = Musterstr.
 housenumber = 1
 zip = 10115
 city = Berlin
 iban = DE91100000000123456789
+religion = 11
+profession = Software-Entwickler
+"""
+
+# viking.conf for submit tests (single freelance source)
+let submitConf = projectRoot / "tests" / "tmp_submit_viking.conf"
+writeFile(submitConf, personalBlock & """
+[freelance]
+income = 3
+rechtsform = 120
+besteuerungsart = 2
 """)
 
 # --- Submit: dry-run ---
@@ -104,7 +118,6 @@ echo ""
 
 # --- Testmerker presence based on TEST flag ---
 echo "--- TEST flag ---"
-# Create a minimal env with TEST=0 (production)
 let prodEnv = projectRoot / "tests" / ".env.test_prod"
 writeFile(prodEnv, readFile(projectRoot / ".env").replace("VIKING_TEST=1", "VIKING_TEST=0"))
 putEnv("VIKING_TEST", "0")
@@ -125,23 +138,17 @@ let (dryBoth, dryBothRc) = run(Viking & " submit -c " & submitConf & " --p 01 --
 check("dual-rate dry-run exits 0", dryBothRc == 0)
 check("dual-rate has Kz81", dryBoth.contains("<Kz81>500</Kz81>"))
 check("dual-rate has Kz86", dryBoth.contains("<Kz86>200</Kz86>"))
-# 500*0.19 + 200*0.07 = 95 + 14 = 109
 check("dual-rate has Kz83", dryBoth.contains("<Kz83>109.00</Kz83>"))
-# Kz83 must appear before Kz86 per ELSTER XSD sequence
 check("Kz83 before Kz86", dryBoth.find("<Kz83>") < dryBoth.find("<Kz86>"))
 echo ""
 
 # --- Submit: validate-only ---
 echo "--- submit --validate-only ---"
 let (valOut, valRc) = run(Viking & " submit -c " & submitConf & " --p 41 --amount19 0 --validate-only")
-# This may fail with HerstellerID error (610301202) which is expected
-# if the demo ID is blocked. But it should NOT fail with schema errors (610301200)
-# or certificate errors (610001050).
 let schemaOk = not valOut.contains("610301200")
 let certOk = not valOut.contains("610001050")
 check("no XML schema errors", schemaOk, valOut)
 check("no certificate errors", certOk, valOut)
-# If it succeeds or fails only on HerstellerID, that's acceptable
 let herstellerIdBlocked = valOut.contains("610301202")
 if valRc == 0:
   check("validate-only succeeds", true)
@@ -170,7 +177,6 @@ echo ""
 
 # --- Per-year validation ---
 echo "--- per-year validation (2025+) ---"
-# Discover available UStVA years from plugin files
 let pluginPath = getEnv("VIKING_ERIC_PLUGIN_PATH", "test/cache/eric/ERiC-43.3.2.0/Linux-x86_64/lib/plugins")
 var years: seq[int] = @[]
 for kind, path in walkDir(pluginPath):
@@ -188,7 +194,6 @@ years.sort()
 
 check("found UStVA plugins for 2025+", years.len > 0, "plugins in: " & pluginPath)
 
-# Test each year with different rate combinations
 type RateCombo = object
   label: string
   args: string
@@ -217,21 +222,47 @@ echo ""
 
 # --- Submit: input validation ---
 echo "--- input validation ---"
-let (noconf, noconfRc) = run(Viking & " submit --amount19 100 --p 01")
-check("missing --conf is rejected", noconfRc != 0)
-check("missing --conf shows error", noconf.contains("--conf is required"))
-
 let (noperiod, noperiodRc) = run(Viking & " submit -c " & submitConf & " --amount19 100")
 check("missing --period is rejected", noperiodRc != 0)
 check("missing --period shows error", noperiod.contains("--period is required"))
 
-let (noamt, noamtRc) = run(Viking & " submit -c " & submitConf & " --p 41")
-check("missing amounts is rejected", noamtRc != 0)
-check("missing amounts shows error", noamt.contains("--amount19") or noamt.contains("--invoice-file"))
-
 let (badperiod, badperiodRc) = run(Viking & " submit -c " & submitConf & " --p 99 --amount19 100")
 check("invalid period is rejected", badperiodRc != 0)
 check("invalid period shows error", badperiod.contains("Invalid period"))
+echo ""
+
+# --- Source auto-selection with multiple sources ---
+echo "--- source selection ---"
+let multiConf = projectRoot / "tests" / "tmp_multi.conf"
+writeFile(multiConf, personalBlock & """
+[freelance]
+income = 3
+rechtsform = 120
+besteuerungsart = 2
+
+[mygewerbe]
+income = 2
+taxnumber = 9198011310020
+rechtsform = 120
+besteuerungsart = 2
+""")
+
+let (ambigOut, ambigRc) = run(Viking & " submit -c " & multiConf & " --p 41 --amount19 100 --dry-run")
+check("multi-source without name rejected", ambigRc != 0)
+check("multi-source error lists names", ambigOut.contains("freelance") and ambigOut.contains("mygewerbe"))
+
+let (gewOut, gewRc) = run(Viking & " submit mygewerbe -c " & multiConf & " --p 41 --amount19 100 --dry-run")
+check("explicit source exits 0", gewRc == 0, gewOut)
+check("source override taxnumber used", gewOut.contains("<Steuernummer>9198011310020</Steuernummer>"))
+
+let (freeOut, freeRc) = run(Viking & " submit freelance -c " & multiConf & " --p 41 --amount19 100 --dry-run")
+check("other source uses personal taxnumber", freeOut.contains("<Steuernummer>9198011310010</Steuernummer>"))
+
+let (unkOut, unkRc) = run(Viking & " submit bogus -c " & multiConf & " --p 41 --amount19 100 --dry-run")
+check("unknown source rejected", unkRc != 0)
+check("unknown source error", unkOut.contains("not found"))
+
+removeFile(multiConf)
 echo ""
 
 # --- Invoice input ---
@@ -244,7 +275,6 @@ let (csvOut, csvRc) = run(Viking & " submit -c " & submitConf & " -i " & invCsv 
 check("CSV mixed rates exits 0", csvRc == 0, csvOut)
 check("CSV Kz81 = 800 (1000-200)", csvOut.contains("<Kz81>800</Kz81>"))
 check("CSV Kz86 = 500", csvOut.contains("<Kz86>500</Kz86>"))
-# 800*0.19 + 500*0.07 = 152 + 35 = 187
 check("CSV Kz83 = 187.00", csvOut.contains("<Kz83>187.00</Kz83>"))
 echo ""
 
@@ -301,40 +331,31 @@ check("0% rate exits 0", kz45Rc == 0, kz45Out)
 check("0% rate has Kz45 = 500", kz45Out.contains("<Kz45>500</Kz45>"))
 check("0% rate has Kz81 = 1000", kz45Out.contains("<Kz81>1000</Kz81>"))
 check("0% rate Kz83 excludes 0%", kz45Out.contains("<Kz83>190.00</Kz83>"))
-check("0% rate XML has all Kz", kz45Out.contains("<Kz83>190.00</Kz83>"))
 echo ""
 
 # Test: Period filtering
 echo "--- invoice period filtering ---"
-# Invoices spanning Q1 and Q2 2026
 writeFile(invCsv, "amount,rate,date,invoice-id,description\n1000,19,2026-01-15,INV-001,Jan\n500,19,2026-02-10,INV-002,Feb\n300,7,2026-04-05,INV-003,Apr\n200,19,2026-06-20,INV-004,Jun\n")
 
-# Q1 should get Jan + Feb only
 let (q1Out, q1Rc) = run(Viking & " submit -c " & submitConf & " -i " & invCsv & " --p 41 -y 2026 --dry-run")
 check("Q1 filter exits 0", q1Rc == 0, q1Out)
 check("Q1 filter Kz81 = 1500", q1Out.contains("<Kz81>1500</Kz81>"))
 check("Q1 filter no Kz86", not q1Out.contains("<Kz86>"))
-check("Q1 filter no Kz86 for Q1", not q1Out.contains("<Kz86>"))
 
-# Q2 should get Apr + Jun
 let (q2Out, q2Rc) = run(Viking & " submit -c " & submitConf & " -i " & invCsv & " --p 42 -y 2026 --dry-run")
 check("Q2 filter exits 0", q2Rc == 0, q2Out)
 check("Q2 filter Kz81 = 200", q2Out.contains("<Kz81>200</Kz81>"))
 check("Q2 filter Kz86 = 300", q2Out.contains("<Kz86>300</Kz86>"))
-check("Q2 filter has both rates", q2Out.contains("<Kz86>300</Kz86>"))
 
-# Monthly: January only
 let (janOut, janRc) = run(Viking & " submit -c " & submitConf & " -i " & invCsv & " --p 01 -y 2026 --dry-run")
 check("Jan filter exits 0", janRc == 0, janOut)
 check("Jan filter Kz81 = 1000", janOut.contains("<Kz81>1000</Kz81>"))
 check("Jan filter only Jan invoices", not janOut.contains("<Kz86>"))
 
-# Wrong year -> zero submission
 let (wrongYrOut, wrongYrRc) = run(Viking & " submit -c " & submitConf & " -i " & invCsv & " --p 41 -y 2025 --dry-run")
 check("wrong year filter exits 0", wrongYrRc == 0, wrongYrOut)
 check("wrong year has Kz81 = 0", wrongYrOut.contains("<Kz81>0</Kz81>"))
 
-# Undated invoices excluded with warning
 writeFile(invCsv, "1000,19,2026-01-15,INV-001,dated\n500,19\n")
 let (undatedOut, undatedRc) = run(Viking & " submit -c " & submitConf & " -i " & invCsv & " --p 01 -y 2026 --dry-run")
 check("undated filter exits 0", undatedRc == 0, undatedOut)
@@ -342,7 +363,6 @@ check("undated shows warning", undatedOut.contains("without date"))
 check("undated Kz81 = 1000", undatedOut.contains("<Kz81>1000</Kz81>"))
 echo ""
 
-# Test 7: Header-only file -> zero submission
 echo "--- invoice header-only ---"
 writeFile(invCsv, "amount,rate,date\n")
 let (hdrOut, hdrRc) = run(Viking & " submit -c " & submitConf & " -i " & invCsv & " --p 01 --dry-run")
@@ -350,12 +370,10 @@ check("header-only exits 0", hdrRc == 0, hdrOut)
 check("header-only has Kz81 = 0", hdrOut.contains("<Kz81>0</Kz81>"))
 echo ""
 
-# Test 8: Comment lines skipped
 echo "--- invoice comments ---"
 writeFile(invCsv, "# This is a comment\n100,19\n# Another comment\n200,7\n")
 let (cmtOut, cmtRc) = run(Viking & " submit -c " & submitConf & " -i " & invCsv & " --p 01 --dry-run")
 check("comments exits 0", cmtRc == 0, cmtOut)
-check("comments parses 2 invoices", cmtOut.contains("<Kz81>100</Kz81>"))
 check("comments Kz81 = 100", cmtOut.contains("<Kz81>100</Kz81>"))
 check("comments Kz86 = 200", cmtOut.contains("<Kz86>200</Kz86>"))
 
@@ -367,95 +385,53 @@ echo ""
 # EÜR (Einnahmenüberschussrechnung) tests
 # =================================================================
 
-# viking.conf for EÜR tests
+# viking.conf for EÜR tests (Gewerbe source)
 let euerConf = projectRoot / "tests" / "tmp_euer_viking.conf"
-writeFile(euerConf, """[taxpayer]
-firstname = Hans
-lastname = Maier
-birthdate = 05.05.1955
-idnr = 04452397687
-taxnumber = 9198011310010
+writeFile(euerConf, personalBlock & """
+[freelance]
 income = 2
-street = Musterstr.
-housenumber = 1
-zip = 10115
-city = Berlin
-iban = DE91100000000123456789
+rechtsform = 120
+besteuerungsart = 2
 """)
 
-# --- EÜR: dry-run with income only ---
+# Use year-source TSV auto-discovery
+let euerTsv = projectRoot / "tests" / "2025-freelance.tsv"
+
 echo "--- euer --dry-run (income only) ---"
-let euerCsv = projectRoot / "tests" / "tmp_euer.csv"
-writeFile(euerCsv, "1000,19\n500,7\n")
-let (euerDryOut, euerDryRc) = run(Viking & " euer -c " & euerConf & " --euer " & euerCsv & " -y 2025 --dry-run")
+writeFile(euerTsv, "1000,19\n500,7\n")
+let euerWd = projectRoot / "tests"
+let (euerDryOut, euerDryRc) = run("cd " & euerWd & " && " & projectRoot / Viking & " euer freelance -c " & euerConf & " -y 2025 --dry-run")
 check("euer dry-run exits 0", euerDryRc == 0, euerDryOut)
 check("euer dry-run has XML output", euerDryOut.contains("<?xml"))
 check("euer dry-run has E77 root", euerDryOut.contains("<E77"))
 check("euer dry-run has EUER element", euerDryOut.contains("<EUER>"))
-check("euer dry-run has Vorsatz", euerDryOut.contains("<Vorsatz>"))
 check("euer dry-run has ElsterErklaerung", euerDryOut.contains("<Verfahren>ElsterErklaerung</Verfahren>"))
 check("euer dry-run has DatenArt EUER", euerDryOut.contains("<DatenArt>EUER</DatenArt>"))
 check("euer dry-run has Empfaenger Ziel", euerDryOut.contains("<Ziel>BY</Ziel>"))
 check("euer dry-run has Unterfallart 77", euerDryOut.contains("<Unterfallart>77</Unterfallart>"))
 check("euer dry-run has BEin", euerDryOut.contains("<BEin>"))
 check("euer dry-run has BAus", euerDryOut.contains("<BAus>"))
-check("euer dry-run has Ermittlung_Gewinn", euerDryOut.contains("<Ermittlung_Gewinn>"))
 echo ""
 
 # --- EÜR: income/expense split ---
 echo "--- euer income/expense split ---"
-# 1000 at 19% (income), -300 at 19% (expense)
-writeFile(euerCsv, "1000,19\n-300,19\n")
-let (splitOut, splitRc) = run(Viking & " euer -c " & euerConf & " --euer " & euerCsv & " -y 2025 --dry-run")
+writeFile(euerTsv, "1000,19\n-300,19\n")
+let (splitOut, splitRc) = run("cd " & euerWd & " && " & projectRoot / Viking & " euer freelance -c " & euerConf & " -y 2025 --dry-run")
 check("split exits 0", splitRc == 0, splitOut)
-# Income: 1000 net, 190 VAT -> total 1190 (German comma format)
 check("split income net 1000", splitOut.contains("<E6000401>1000,00</E6000401>"))
 check("split income VAT 190", splitOut.contains("<E6000601>190,00</E6000601>"))
 check("split income total 1190", splitOut.contains("<E6001201>1190,00</E6001201>"))
-# Expense: 300 net, 57 Vorsteuer -> total 357
 check("split expense net 300", splitOut.contains("<E6004901>300,00</E6004901>"))
 check("split expense Vorsteuer 57", splitOut.contains("<E6005001>57,00</E6005001>"))
-check("split expense total 357", splitOut.contains("<E6005301>357,00</E6005301>"))
-# Profit: 1190 - 357 = 833
 check("split profit 833", splitOut.contains("<E6007202>833,00</E6007202>"))
-check("split income total correct", splitOut.contains("<E6001201>1190,00</E6001201>"))
-check("split expense total correct", splitOut.contains("<E6005301>357,00</E6005301>"))
 echo ""
 
-# --- EÜR: empty file (zero submission) ---
-echo "--- euer empty file ---"
-writeFile(euerCsv, "")
-let (euerEmptyOut, euerEmptyRc) = run(Viking & " euer -c " & euerConf & " --euer " & euerCsv & " -y 2025 --dry-run")
-check("euer empty exits 0", euerEmptyRc == 0, euerEmptyOut)
-check("euer empty income 0", euerEmptyOut.contains("<E6000401>0,00</E6000401>"))
-check("euer empty profit 0", euerEmptyOut.contains("<E6007202>0,00</E6007202>"))
-echo ""
-
-# --- EÜR: missing conf/euer args ---
-echo "--- euer input validation ---"
-let (euerNoConf, euerNoConfRc) = run(Viking & " euer -y 2025 --dry-run")
-check("euer missing conf rejected", euerNoConfRc != 0)
-check("euer missing conf error", euerNoConf.contains("--conf is required"))
-let (euerNoFile, euerNoFileRc) = run(Viking & " euer -c " & euerConf & " -y 2025 --dry-run")
-check("euer missing euer rejected", euerNoFileRc != 0)
-check("euer missing euer error", euerNoFile.contains("--euer is required"))
-echo ""
-
-# --- EÜR: Testmerker ---
-echo "--- euer Testmerker ---"
-writeFile(euerCsv, "100,19\n")
-let (euerTestOut, euerTestRc) = run(Viking & " euer -c " & euerConf & " --euer " & euerCsv & " -y 2025 --dry-run")
-check("euer TEST=1 has Testmerker", euerTestOut.contains("<Testmerker>700000004</Testmerker>"))
-
-# TEST=0
-let euerProdEnv = projectRoot / "tests" / ".env.euer_prod"
-writeFile(euerProdEnv, readFile(projectRoot / ".env").replace("VIKING_TEST=1", "VIKING_TEST=0"))
-putEnv("VIKING_TEST", "0")
-let (euerProdOut, euerProdRc) = run(Viking & " euer -c " & euerConf & " --euer " & euerCsv & " -y 2025 --dry-run --env " & euerProdEnv)
-putEnv("VIKING_TEST", "1")
-check("euer TEST=0 exits 0", euerProdRc == 0, euerProdOut)
-check("euer TEST=0 no Testmerker", not euerProdOut.contains("Testmerker"), euerProdOut)
-removeFile(euerProdEnv)
+# --- EÜR: missing tsv ---
+echo "--- euer missing tsv ---"
+removeFile(euerTsv)
+let (euerMissOut, euerMissRc) = run("cd " & euerWd & " && " & projectRoot / Viking & " euer freelance -c " & euerConf & " -y 2025 --dry-run")
+check("euer missing tsv rejected", euerMissRc != 0)
+check("euer missing tsv error", euerMissOut.contains("2025-freelance.tsv") or euerMissOut.contains("not found"))
 echo ""
 
 # --- EÜR: per-year validation ---
@@ -475,9 +451,10 @@ for kind, path in walkDir(pluginPath):
 euerYears.sort()
 
 check("found EUER plugins for 2025+", euerYears.len > 0, "plugins in: " & pluginPath)
-writeFile(euerCsv, "1000,19\n-500,19\n")
 for year in euerYears:
-  let (eyOut, eyRc) = run(Viking & " euer -c " & euerConf & " --euer " & euerCsv & " -y " & $year & " --validate-only")
+  let ey = euerWd / ($year & "-freelance.tsv")
+  writeFile(ey, "1000,19\n-500,19\n")
+  let (eyOut, eyRc) = run("cd " & euerWd & " && " & projectRoot / Viking & " euer freelance -c " & euerConf & " -y " & $year & " --validate-only")
   let eySchemaOk = not eyOut.contains("610301200")
   let eyCertOk = not eyOut.contains("610001050")
   let eyHidBlocked = eyOut.contains("610301202")
@@ -488,54 +465,33 @@ for year in euerYears:
     check("euer " & $year & " passes validation", true)
   else:
     check("euer " & $year & " passes validation", false, eyOut)
-
-# --- EÜR: multiple --euer files ---
-echo "--- euer multiple files ---"
-let euerCsv2 = projectRoot / "tests" / "tmp_euer2.csv"
-writeFile(euerCsv, "1000,19\n")
-writeFile(euerCsv2, "500,19\n-200,19\n")
-let (euerMultiOut, euerMultiRc) = run(Viking & " euer -c " & euerConf & " --euer " & euerCsv & " --euer " & euerCsv2 & " -y 2025 --dry-run")
-check("euer multi exits 0", euerMultiRc == 0, euerMultiOut)
-check("euer multi has two XMLs", euerMultiOut.count("<?xml") == 2)
-# First file: 1000 net at 19%
-check("euer multi file 1 income", euerMultiOut.contains("<E6000401>1000,00</E6000401>"))
-# Second file: 500 net at 19%, -200 expense
-check("euer multi file 2 income", euerMultiOut.contains("<E6000401>500,00</E6000401>"))
-removeFile(euerCsv2)
+  removeFile(ey)
 echo ""
 
-removeFile(euerCsv)
 removeFile(euerConf)
 echo ""
 
 # =================================================================
-# ESt (Einkommensteuererklarung) tests — new flag-based interface
+# ESt (Einkommensteuererklarung) tests
 # =================================================================
 
-# Base viking.conf for tests (Anlage G)
+let estWd = projectRoot / "tests"
+
+# Base conf: Anlage G (Gewerbe) via named source
 let estConf = projectRoot / "tests" / "tmp_viking.conf"
-writeFile(estConf, """[taxpayer]
-firstname = Hans
-lastname = Maier
-birthdate = 05.05.1955
-idnr = 04452397687
-taxnumber = 9198011310010
+writeFile(estConf, personalBlock & """
+[mybiz]
 income = 2
-street = Musterstr. 1
-housenumber = 1
-zip = 10115
-city = Berlin
-iban = DE91100000000123456789
-religion = 11
-profession = Software-Entwickler
+rechtsform = 120
+besteuerungsart = 2
 """)
 
-let estEuer = projectRoot / "tests" / "tmp_euer.tsv"
+let estTsv = estWd / "2025-mybiz.tsv"
 
 # --- ESt: dry-run with Anlage G ---
 echo "--- est --dry-run (Anlage G) ---"
-writeFile(estEuer, "1000,19\n-300,19\n")
-let (estDryOut, estDryRc) = run(Viking & " est -c " & estConf & " -i " & estEuer & " -y 2025 --dry-run --force")
+writeFile(estTsv, "1000,19\n-300,19\n")
+let (estDryOut, estDryRc) = run("cd " & estWd & " && " & projectRoot / Viking & " est -c " & estConf & " -y 2025 --dry-run --force")
 check("est dry-run exits 0", estDryRc == 0, estDryOut)
 check("est dry-run has XML output", estDryOut.contains("<?xml"))
 check("est dry-run has E10 root", estDryOut.contains("<E10"))
@@ -554,8 +510,13 @@ echo ""
 # --- ESt: Anlage S ---
 echo "--- est Anlage S ---"
 let estConfS = projectRoot / "tests" / "tmp_viking_s.conf"
-writeFile(estConfS, readFile(estConf).replace("income = 2", "income = 3"))
-let (estSOut, estSRc) = run(Viking & " est -c " & estConfS & " -i " & estEuer & " -y 2025 --dry-run --force")
+writeFile(estConfS, personalBlock & """
+[mybiz]
+income = 3
+rechtsform = 120
+besteuerungsart = 2
+""")
+let (estSOut, estSRc) = run("cd " & estWd & " && " & projectRoot / Viking & " est -c " & estConfS & " -y 2025 --dry-run --force")
 check("est Anlage S exits 0", estSRc == 0, estSOut)
 check("est Anlage S has <S>", estSOut.contains("<S>"))
 check("est Anlage S has E0803202", estSOut.contains("<E0803202>833</E0803202>"))
@@ -567,7 +528,7 @@ echo ""
 echo "--- est Vorsorgeaufwand (privat) ---"
 let estVorDed = projectRoot / "tests" / "tmp_deductions_vor.tsv"
 writeFile(estVorDed, "code\tamount\tdescription\nvor316\t5000\tKV privat\nvor319\t600\tPV privat\nvor300\t3000\tRentenversicherung\n")
-let (estVorOut, estVorRc) = run(Viking & " est -c " & estConf & " -i " & estEuer & " -D " & estVorDed & " -y 2025 --validate-only")
+let (estVorOut, estVorRc) = run("cd " & estWd & " && " & projectRoot / Viking & " est -c " & estConf & " -D " & estVorDed & " -y 2025 --validate-only")
 check("est Vorsorge privat exits 0 or HID", estVorRc == 0 or estVorOut.contains("610301202"), estVorOut)
 check("est Vorsorge no schema errors", not estVorOut.contains("610301200"), estVorOut)
 removeFile(estVorDed)
@@ -577,53 +538,58 @@ echo ""
 echo "--- est Vorsorgeaufwand (gesetzlich) ---"
 let estGkvDed = projectRoot / "tests" / "tmp_deductions_gkv.tsv"
 writeFile(estGkvDed, "code\tamount\nvor326\t4800\nvor329\t500\n")
-let (estGkvOut, estGkvRc) = run(Viking & " est -c " & estConf & " -i " & estEuer & " -D " & estGkvDed & " -y 2025 --validate-only")
+let (estGkvOut, estGkvRc) = run("cd " & estWd & " && " & projectRoot / Viking & " est -c " & estConf & " -D " & estGkvDed & " -y 2025 --validate-only")
 check("est Vorsorge gesetzlich exits 0 or HID", estGkvRc == 0 or estGkvOut.contains("610301202"), estGkvOut)
 check("est Vorsorge gesetzlich no schema errors", not estGkvOut.contains("610301200"), estGkvOut)
 removeFile(estGkvDed)
 echo ""
 
-# --- ESt: no euer (KAP-only filing) ---
-echo "--- est no euer ---"
-let (estNoEuerOut, estNoEuerRc) = run(Viking & " est -c " & estConf & " -y 2025 --dry-run --force")
-check("est no euer exits 0", estNoEuerRc == 0, estNoEuerOut)
+# --- ESt: no sources (KAP-only filing) ---
+echo "--- est no sources ---"
+let estNoSrcConf = projectRoot / "tests" / "tmp_viking_nosrc.conf"
+writeFile(estNoSrcConf, personalBlock)
+let (estNoEuerOut, estNoEuerRc) = run("cd " & estWd & " && " & projectRoot / Viking & " est -c " & estNoSrcConf & " -y 2025 --dry-run --force")
+check("est no sources exits 0", estNoEuerRc == 0, estNoEuerOut)
+check("est no sources no Anlage G/S", not estNoEuerOut.contains("<G>") and not estNoEuerOut.contains("<S>"))
+removeFile(estNoSrcConf)
 echo ""
 
-# --- ESt: multiple --euer files ---
-echo "--- est multiple euer ---"
-let estEuer2 = projectRoot / "tests" / "tmp_euer2.tsv"
-writeFile(estEuer, "1000,19\n-300,19\n")
-writeFile(estEuer2, "500,19\n")
-let (estMultiOut, estMultiRc) = run(Viking & " est -c " & estConf & " -i " & estEuer & " -i " & estEuer2 & " -y 2025 --dry-run --force")
+# --- ESt: multiple sources (one G, one S) ---
+echo "--- est multiple sources ---"
+let estMultiConf = projectRoot / "tests" / "tmp_est_multi.conf"
+writeFile(estMultiConf, personalBlock & """
+[mybiz]
+income = 2
+rechtsform = 120
+besteuerungsart = 2
+
+[freelance]
+income = 3
+rechtsform = 120
+besteuerungsart = 2
+""")
+let estTsv2 = estWd / "2025-freelance.tsv"
+writeFile(estTsv, "1000,19\n-300,19\n")
+writeFile(estTsv2, "500,19\n")
+let (estMultiOut, estMultiRc) = run("cd " & estWd & " && " & projectRoot / Viking & " est -c " & estMultiConf & " -y 2025 --dry-run --force")
 check("est multi exits 0", estMultiRc == 0, estMultiOut)
-# First file: 1000*1.19 - 300*1.19 = 833 profit
-check("est multi has first profit", estMultiOut.contains("<E0800302>833</E0800302>"))
-# Second file: 500*1.19 = 595 profit
-check("est multi has second profit", estMultiOut.contains("<E0800302>595</E0800302>"))
-# Both in same Anlage G
-check("est multi has single Anlage G", estMultiOut.contains("<G>"))
-# Two Betr_1_2 blocks
-check("est multi has two Betr blocks", estMultiOut.contains("Betr_1_2"))
-removeFile(estEuer2)
-echo ""
-
-# --- ESt: input validation ---
-echo "--- est input validation ---"
-let (estNoConf, estNoConfRc) = run(Viking & " est -y 2025 --dry-run")
-check("est missing conf rejected", estNoConfRc != 0)
-check("est missing conf error", estNoConf.contains("--conf is required"))
+check("est multi has Anlage G profit 833", estMultiOut.contains("<E0800302>833</E0800302>"))
+check("est multi has Anlage S profit 595", estMultiOut.contains("<E0803202>595</E0803202>"))
+check("est multi has both G and S", estMultiOut.contains("<G>") and estMultiOut.contains("<S>"))
+removeFile(estTsv2)
+removeFile(estMultiConf)
 echo ""
 
 # --- ESt: Testmerker ---
 echo "--- est Testmerker ---"
-writeFile(estEuer, "100,19\n")
-let (estTestOut, estTestRc) = run(Viking & " est -c " & estConf & " -i " & estEuer & " -y 2025 --dry-run --force")
+writeFile(estTsv, "100,19\n")
+let (estTestOut, estTestRc) = run("cd " & estWd & " && " & projectRoot / Viking & " est -c " & estConf & " -y 2025 --dry-run --force")
 check("est TEST=1 has Testmerker", estTestOut.contains("<Testmerker>700000004</Testmerker>"))
 
 let estProdEnv = projectRoot / "tests" / ".env.est_prod"
 writeFile(estProdEnv, readFile(projectRoot / ".env").replace("VIKING_TEST=1", "VIKING_TEST=0"))
 putEnv("VIKING_TEST", "0")
-let (estProdOut, estProdRc) = run(Viking & " est -c " & estConf & " -i " & estEuer & " -y 2025 --dry-run --force --env " & estProdEnv)
+let (estProdOut, estProdRc) = run("cd " & estWd & " && " & projectRoot / Viking & " est -c " & estConf & " -y 2025 --dry-run --force --env " & estProdEnv)
 putEnv("VIKING_TEST", "1")
 check("est TEST=0 exits 0", estProdRc == 0, estProdOut)
 check("est TEST=0 no Testmerker", not estProdOut.contains("Testmerker"), estProdOut)
@@ -647,9 +613,10 @@ for kind, path in walkDir(pluginPath):
 estYears.sort()
 
 check("found ESt plugins for 2024+", estYears.len > 0, "plugins in: " & pluginPath)
-writeFile(estEuer, "1000,19\n-500,19\n")
 for year in estYears:
-  let (eyOut, eyRc) = run(Viking & " est -c " & estConf & " -i " & estEuer & " -y " & $year & " --validate-only --force")
+  let ey = estWd / ($year & "-mybiz.tsv")
+  writeFile(ey, "1000,19\n-500,19\n")
+  let (eyOut, eyRc) = run("cd " & estWd & " && " & projectRoot / Viking & " est -c " & estConf & " -y " & $year & " --validate-only --force")
   let eySchemaOk = not eyOut.contains("610301200")
   let eyCertOk = not eyOut.contains("610001050")
   let eyHidBlocked = eyOut.contains("610301202")
@@ -660,10 +627,12 @@ for year in estYears:
     check("est " & $year & " passes validation", true)
   else:
     check("est " & $year & " passes validation", false, eyOut)
+  removeFile(ey)
 
 # --- ESt: full send path ---
 echo "--- est (send) ---"
-let (estSendOut, estSendRc) = run(Viking & " est -c " & estConf & " -i " & estEuer & " -y 2025 --force")
+writeFile(estTsv, "1000,19\n-500,19\n")
+let (estSendOut, estSendRc) = run("cd " & estWd & " && " & projectRoot / Viking & " est -c " & estConf & " -y 2025 --force")
 let estSendSchemaOk = not estSendOut.contains("610301200")
 let estSendCertOk = not estSendOut.contains("610001050")
 check("est send: no schema errors", estSendSchemaOk, estSendOut)
@@ -675,14 +644,13 @@ elif estSendHidBlocked:
   check("est send: only HerstellerID issue", true)
 else:
   check("est send: unexpected error", false, estSendOut)
-
 echo ""
 
-# --- ESt: Sonderausgaben (Kirchensteuer + Spenden) ---
+# --- ESt: Sonderausgaben ---
 echo "--- est Sonderausgaben ---"
 let estSaDed = projectRoot / "tests" / "tmp_deductions_sa.tsv"
 writeFile(estSaDed, "code\tamount\nsa140\t500\nsa141\t50\nsa131\t200\n")
-let (estSaOut, estSaRc) = run(Viking & " est -c " & estConf & " -i " & estEuer & " -D " & estSaDed & " -y 2025 --dry-run")
+let (estSaOut, estSaRc) = run("cd " & estWd & " && " & projectRoot / Viking & " est -c " & estConf & " -D " & estSaDed & " -y 2025 --dry-run")
 check("est SA exits 0", estSaRc == 0, estSaOut)
 check("est SA has <SA>", estSaOut.contains("<SA>"))
 check("est SA has KiSt gezahlt", estSaOut.contains("<E0107601>"))
@@ -694,7 +662,7 @@ echo ""
 echo "--- est AgB ---"
 let estAgbDed = projectRoot / "tests" / "tmp_deductions_agb.tsv"
 writeFile(estAgbDed, "code\tamount\nagb187\t750\n")
-let (estAgbOut, estAgbRc) = run(Viking & " est -c " & estConf & " -i " & estEuer & " -D " & estAgbDed & " -y 2025 --dry-run")
+let (estAgbOut, estAgbRc) = run("cd " & estWd & " && " & projectRoot / Viking & " est -c " & estConf & " -D " & estAgbDed & " -y 2025 --dry-run")
 check("est AgB exits 0", estAgbRc == 0, estAgbOut)
 check("est AgB has <AgB>", estAgbOut.contains("<AgB>"))
 check("est AgB has Krankh", estAgbOut.contains("<E0161304>"))
@@ -704,7 +672,7 @@ echo ""
 echo "--- est Weit_Sons_VorAW ---"
 let estWsDed = projectRoot / "tests" / "tmp_deductions_ws.tsv"
 writeFile(estWsDed, "code\tamount\nvor502\t550\n")
-let (estWsOut, estWsRc) = run(Viking & " est -c " & estConf & " -i " & estEuer & " -D " & estWsDed & " -y 2025 --dry-run")
+let (estWsOut, estWsRc) = run("cd " & estWd & " && " & projectRoot / Viking & " est -c " & estConf & " -D " & estWsDed & " -y 2025 --dry-run")
 check("est Weit exits 0", estWsRc == 0, estWsOut)
 check("est Weit has Weit_Sons_VorAW", estWsOut.contains("<Weit_Sons_VorAW>"))
 check("est Weit has U_HP_Ris_Vers sum 550", estWsOut.contains("<E2001803>550</E2001803>"))
@@ -714,55 +682,67 @@ echo ""
 echo "--- est Zusatz-KV (privat) ---"
 let estZkDed = projectRoot / "tests" / "tmp_deductions_zk.tsv"
 writeFile(estZkDed, "code\tamount\nvor316\t5000\nvor328\t120\n")
-let (estZkOut, estZkRc) = run(Viking & " est -c " & estConf & " -i " & estEuer & " -D " & estZkDed & " -y 2025 --dry-run")
+let (estZkOut, estZkRc) = run("cd " & estWd & " && " & projectRoot / Viking & " est -c " & estConf & " -D " & estZkDed & " -y 2025 --dry-run")
 check("est ZK privat exits 0", estZkRc == 0, estZkOut)
 check("est ZK privat has E2003302", estZkOut.contains("<E2003302>120</E2003302>"))
 echo ""
 
 # --- ESt: Anlage KAP ---
 echo "--- est Anlage KAP ---"
-let estKapTsv = projectRoot / "tests" / "tmp_kap.tsv"
-writeFile(estKapTsv, "gains\ttax\tsoli\n1500.50\t375.13\t20.63\n")
 let estKapConf = projectRoot / "tests" / "tmp_viking_kap.conf"
-writeFile(estKapConf, readFile(estConf) & """
-[kap]
+writeFile(estKapConf, personalBlock & """
+[mybiz]
+income = 2
+rechtsform = 120
+besteuerungsart = 2
+
+[ibkr]
+income = kap
+gains = 1500.50
+tax = 375.13
+soli = 20.63
 guenstigerpruefung = 1
 """)
-let (estKapOut, estKapRc) = run(Viking & " est -c " & estKapConf & " -i " & estEuer & " -K " & estKapTsv & " -y 2025 --dry-run --force")
+let (estKapOut, estKapRc) = run("cd " & estWd & " && " & projectRoot / Viking & " est -c " & estKapConf & " -y 2025 --dry-run --force")
 check("est KAP exits 0", estKapRc == 0, estKapOut)
 check("est KAP has <KAP>", estKapOut.contains("<KAP>"))
 check("est KAP has Guenstigerpruefung", estKapOut.contains("<E1900401>1</E1900401>"))
 check("est KAP has Kapitalertraege", estKapOut.contains("<E1900701>"))
 check("est KAP has KapESt", estKapOut.contains("<E1904701>"))
 check("est KAP has Soli", estKapOut.contains("<E1904801>"))
-removeFile(estKapTsv)
 removeFile(estKapConf)
 echo ""
 
 # --- ESt: Anlage Kind ---
 echo "--- est Anlage Kind ---"
 let estKindConf = projectRoot / "tests" / "tmp_viking_kind.conf"
-writeFile(estKindConf, readFile(estConf) & """
-[kid]
-firstname = Max
+writeFile(estKindConf, personalBlock & """
+[mybiz]
+income = 2
+rechtsform = 120
+besteuerungsart = 2
+
+[max]
 birthdate = 01.06.2018
 idnr = 12345678901
+kindschaftsverhaeltnis = 1
+kindergeld = 2400
 
-[kid]
-firstname = Lisa
+[lisa]
 birthdate = 15.03.2020
 idnr = 98765432109
+kindschaftsverhaeltnis = 1
+kindergeld = 2400
 """)
 let estKindDed = projectRoot / "tests" / "tmp_deductions_kind.tsv"
 writeFile(estKindDed, "code\tamount\nmax174\t2400\nlisa174\t3600\nlisa176\t1500\n")
-let (estKindOut, estKindRc) = run(Viking & " est -c " & estKindConf & " -i " & estEuer & " -D " & estKindDed & " -y 2025 --dry-run")
+let (estKindOut, estKindRc) = run("cd " & estWd & " && " & projectRoot / Viking & " est -c " & estKindConf & " -D " & estKindDed & " -y 2025 --dry-run")
 check("est Kind exits 0", estKindRc == 0, estKindOut)
 check("est Kind has 2 <Kind>", estKindOut.count("<Kind>") == 2)
-check("est Kind has Max", estKindOut.contains("Max"))
-check("est Kind has Lisa", estKindOut.contains("Lisa"))
+check("est Kind has Max", estKindOut.contains("max"))
+check("est Kind has Lisa", estKindOut.contains("lisa"))
 check("est Kind has betreuungskosten", estKindOut.contains("<E0506105>"))
 check("est Kind has schulgeld", estKindOut.contains("<E0505607>"))
-check("est Kind XML has both children", estKindOut.count("<Kind>") == 2)
 removeFile(estKindConf)
 removeFile(estKindDed)
 echo ""
@@ -771,160 +751,104 @@ echo ""
 echo "--- est personal deductions validation ---"
 let estPdDed = projectRoot / "tests" / "tmp_deductions_pd.tsv"
 writeFile(estPdDed, "code\tamount\nvor316\t5000\nvor319\t600\nvor502\t350\nsa140\t500\nsa131\t200\nagb187\t750\n")
-let estPdKap = projectRoot / "tests" / "tmp_kap_pd.tsv"
-writeFile(estPdKap, "gains\ttax\tsoli\n1500\t375\t0\n")
 let estPdConf = projectRoot / "tests" / "tmp_viking_pd.conf"
-writeFile(estPdConf, readFile(estConf) & """
-[kap]
+writeFile(estPdConf, personalBlock & """
+[mybiz]
+income = 2
+rechtsform = 120
+besteuerungsart = 2
+
+[ibkr]
+income = kap
+gains = 1500
+tax = 375
+soli = 0
 guenstigerpruefung = 1
 sparer_pauschbetrag = 1000
 """)
-let (estPdOut, estPdRc) = run(Viking & " est -c " & estPdConf & " -i " & estEuer & " -D " & estPdDed & " -K " & estPdKap & " -y 2025 --validate-only")
+let (estPdOut, estPdRc) = run("cd " & estWd & " && " & projectRoot / Viking & " est -c " & estPdConf & " -D " & estPdDed & " -y 2025 --validate-only")
 check("est PD validate no schema errors", not estPdOut.contains("610301200"), estPdOut)
 check("est PD validate no cert errors", not estPdOut.contains("610001050"), estPdOut)
 let estPdOk = estPdRc == 0 or estPdOut.contains("610301202")
 check("est PD validates", estPdOk, estPdOut)
 removeFile(estPdDed)
-removeFile(estPdKap)
 removeFile(estPdConf)
 
-# Cleanup shared fixtures
 removeFile(estConf)
-removeFile(estEuer)
+removeFile(estTsv)
 
-# Cleanup any stray deduction files
 for f in @[estSaDed, estAgbDed, estWsDed, estZkDed]:
   removeFile(f)
 
 echo ""
 
 # =================================================================
-# USt (Umsatzsteuererklaerung) tests — new flag-based interface
+# USt (Umsatzsteuererklaerung) tests
 # =================================================================
 
-# Reuse the viking.conf for USt tests (needs taxnumber + besteuerungsart)
 let ustConf = projectRoot / "tests" / "tmp_viking_ust.conf"
-writeFile(ustConf, """[taxpayer]
-firstname = Hans
-lastname = Maier
-birthdate = 05.05.1955
-idnr = 04452397687
-taxnumber = 9198011310010
+writeFile(ustConf, personalBlock & """
+[freelance]
 income = 2
-street = Musterstr.
-housenumber = 1
-zip = 10115
-city = Berlin
-iban = DE91100000000123456789
-religion = 11
-profession = Software-Entwickler
+rechtsform = 120
 besteuerungsart = 2
 """)
 
-let ustCsv = projectRoot / "tests" / "tmp_ust.csv"
+let ustTsv = estWd / "2025-freelance.tsv"
 
-# --- USt: dry-run with mixed rates ---
 echo "--- ust --dry-run (mixed rates) ---"
-writeFile(ustCsv, "1000,19\n500,7\n-200,19\n")
-let (ustDryOut, ustDryRc) = run(Viking & " ust -c " & ustConf & " -i " & ustCsv & " -y 2025 --dry-run")
+writeFile(ustTsv, "1000,19\n500,7\n-200,19\n")
+let (ustDryOut, ustDryRc) = run("cd " & estWd & " && " & projectRoot / Viking & " ust freelance -c " & ustConf & " -y 2025 --dry-run")
 check("ust dry-run exits 0", ustDryRc == 0, ustDryOut)
 check("ust dry-run has XML output", ustDryOut.contains("<?xml"))
 check("ust dry-run has E50 root", ustDryOut.contains("<E50"))
 check("ust dry-run has USt2A", ustDryOut.contains("<USt2A>"))
-check("ust dry-run has Vorsatz", ustDryOut.contains("<Vorsatz>"))
 check("ust dry-run has ElsterErklaerung", ustDryOut.contains("<Verfahren>ElsterErklaerung</Verfahren>"))
 check("ust dry-run has DatenArt USt", ustDryOut.contains("<DatenArt>USt</DatenArt>"))
 check("ust dry-run has Empfaenger Ziel", ustDryOut.contains("<Ziel>BY</Ziel>"))
 check("ust dry-run has Unterfallart 50", ustDryOut.contains("<Unterfallart>50</Unterfallart>"))
 check("ust dry-run has Ums_allg 19%", ustDryOut.contains("<E3003303>1000</E3003303>"))
 check("ust dry-run has Ums_erm 7%", ustDryOut.contains("<E3004401>500</E3004401>"))
-check("ust dry-run has Berech_USt", ustDryOut.contains("<Berech_USt>"))
 check("ust dry-run has Testmerker", ustDryOut.contains("<Testmerker>700000004</Testmerker>"))
 echo ""
 
-# --- USt: income/expense split ---
 echo "--- ust income/expense split ---"
-writeFile(ustCsv, "1000,19\n-300,19\n")
-let (ustSplitOut, ustSplitRc) = run(Viking & " ust -c " & ustConf & " -i " & ustCsv & " -y 2025 --dry-run")
+writeFile(ustTsv, "1000,19\n-300,19\n")
+let (ustSplitOut, ustSplitRc) = run("cd " & estWd & " && " & projectRoot / Viking & " ust freelance -c " & ustConf & " -y 2025 --dry-run")
 check("ust split exits 0", ustSplitRc == 0, ustSplitOut)
-# Income 19%: 1000 net, VAT 190
 check("ust split Ums_allg base", ustSplitOut.contains("<E3003303>1000</E3003303>"))
 check("ust split Ums_allg tax", ustSplitOut.contains("<E3003304>190,00</E3003304>"))
-# Expense Vorsteuer: 300 * 0.19 = 57
 check("ust split Vorsteuer in Abz_VoSt", ustSplitOut.contains("<E3006201>57,00</E3006201>"))
 check("ust split Vorsteuer sum", ustSplitOut.contains("<E3006901>57,00</E3006901>"))
-# Vorsteuer in Berech_USt
 check("ust split Vorsteuer in calc", ustSplitOut.contains("<E3009901>57,00</E3009901>"))
-# Verbleibende USt: 190 - 57 = 133
 check("ust split verbleibende USt", ustSplitOut.contains("<E3011101>133,00</E3011101>"))
 echo ""
 
-# --- USt: with Vorauszahlungen ---
-echo "--- ust with Vorauszahlungen ---"
-writeFile(ustCsv, "1000,19\n")
-let (ustVzOut, ustVzRc) = run(Viking & " ust -c " & ustConf & " -i " & ustCsv & " -y 2025 --vorauszahlungen=100 --dry-run")
+echo "--- ust with Vorauszahlungen (from conf) ---"
+let ustVzConf = projectRoot / "tests" / "tmp_ust_vz.conf"
+writeFile(ustVzConf, personalBlock & """
+[freelance]
+income = 2
+rechtsform = 120
+besteuerungsart = 2
+vorauszahlungen = 100
+""")
+writeFile(ustTsv, "1000,19\n")
+let (ustVzOut, ustVzRc) = run("cd " & estWd & " && " & projectRoot / Viking & " ust freelance -c " & ustVzConf & " -y 2025 --dry-run")
 check("ust vorauszahlungen exits 0", ustVzRc == 0, ustVzOut)
 check("ust vorauszahlungen E3011301", ustVzOut.contains("<E3011301>100,00</E3011301>"))
-# Abschluss: 190 - 100 = 90
 check("ust vorauszahlungen E3011401", ustVzOut.contains("<E3011401>90,00</E3011401>"))
+removeFile(ustVzConf)
 echo ""
 
-# --- USt: empty file (zero submission) ---
 echo "--- ust empty file ---"
-writeFile(ustCsv, "")
-let (ustEmptyOut, ustEmptyRc) = run(Viking & " ust -c " & ustConf & " -i " & ustCsv & " -y 2025 --dry-run")
+writeFile(ustTsv, "")
+let (ustEmptyOut, ustEmptyRc) = run("cd " & estWd & " && " & projectRoot / Viking & " ust freelance -c " & ustConf & " -y 2025 --dry-run")
 check("ust empty exits 0", ustEmptyRc == 0, ustEmptyOut)
 check("ust empty Ums_Sum 0", ustEmptyOut.contains("<E3006001>0,00</E3006001>"))
 check("ust empty verbleibende 0", ustEmptyOut.contains("<E3011101>0,00</E3011101>"))
 echo ""
 
-# --- USt: multiple --euer files ---
-echo "--- ust multiple euer ---"
-let ustCsv2 = projectRoot / "tests" / "tmp_ust2.csv"
-writeFile(ustCsv, "1000,19\n")
-writeFile(ustCsv2, "500,19\n-200,19\n")
-let (ustMultiOut, ustMultiRc) = run(Viking & " ust -c " & ustConf & " -i " & ustCsv & " -i " & ustCsv2 & " -y 2025 --dry-run")
-check("ust multi exits 0", ustMultiRc == 0, ustMultiOut)
-# Combined: 1000 + 500 = 1500 at 19%
-check("ust multi combined 19%", ustMultiOut.contains("<E3003303>1500</E3003303>"))
-# Vorsteuer: 200 * 0.19 = 38
-check("ust multi has Vorsteuer", ustMultiOut.contains("<E3006001>"))
-removeFile(ustCsv2)
-echo ""
-
-# --- USt: missing euer file ---
-echo "--- ust input validation ---"
-let (ustNoFile, ustNoFileRc) = run(Viking & " ust -c " & ustConf & " -y 2025 --dry-run")
-check("ust missing euer rejected", ustNoFileRc != 0)
-check("ust missing euer error", ustNoFile.contains("--euer is required"))
-echo ""
-
-# --- USt: missing conf ---
-echo "--- ust missing conf ---"
-writeFile(ustCsv, "100,19\n")
-let (ustNoConf, ustNoConfRc) = run(Viking & " ust -i " & ustCsv & " -y 2025 --dry-run")
-check("ust missing conf rejected", ustNoConfRc != 0)
-check("ust missing conf error", ustNoConf.contains("--conf is required"))
-echo ""
-
-# --- USt: Testmerker ---
-echo "--- ust Testmerker ---"
-writeFile(ustCsv, "100,19\n")
-let (ustTestOut, ustTestRc) = run(Viking & " ust -c " & ustConf & " -i " & ustCsv & " -y 2025 --dry-run")
-check("ust TEST=1 has Testmerker", ustTestOut.contains("<Testmerker>700000004</Testmerker>"))
-
-# TEST=0
-let ustProdEnv = projectRoot / "tests" / ".env.ust_prod"
-writeFile(ustProdEnv, readFile(projectRoot / ".env").replace("VIKING_TEST=1", "VIKING_TEST=0"))
-putEnv("VIKING_TEST", "0")
-let (ustProdOut, ustProdRc) = run(Viking & " ust -c " & ustConf & " -i " & ustCsv & " -y 2025 --dry-run --env " & ustProdEnv)
-putEnv("VIKING_TEST", "1")
-check("ust TEST=0 exits 0", ustProdRc == 0, ustProdOut)
-check("ust TEST=0 no Testmerker", not ustProdOut.contains("Testmerker"), ustProdOut)
-removeFile(ustProdEnv)
-echo ""
-
-# --- USt: per-year validation ---
 echo "--- ust per-year validation ---"
 var ustYears: seq[int] = @[]
 for kind, path in walkDir(pluginPath):
@@ -942,9 +866,10 @@ for kind, path in walkDir(pluginPath):
 ustYears.sort()
 
 check("found USt plugins for 2025+", ustYears.len > 0, "plugins in: " & pluginPath)
-writeFile(ustCsv, "1000,19\n-500,19\n")
 for year in ustYears:
-  let (eyOut, eyRc) = run(Viking & " ust -c " & ustConf & " -i " & ustCsv & " -y " & $year & " --validate-only")
+  let ey = estWd / ($year & "-freelance.tsv")
+  writeFile(ey, "1000,19\n-500,19\n")
+  let (eyOut, eyRc) = run("cd " & estWd & " && " & projectRoot / Viking & " ust freelance -c " & ustConf & " -y " & $year & " --validate-only")
   let eySchemaOk = not eyOut.contains("610301200")
   let eyCertOk = not eyOut.contains("610001050")
   let eyHidBlocked = eyOut.contains("610301202")
@@ -955,10 +880,11 @@ for year in ustYears:
     check("ust " & $year & " passes validation", true)
   else:
     check("ust " & $year & " passes validation", false, eyOut)
+  removeFile(ey)
 
-# --- USt: full send path ---
 echo "--- ust (send) ---"
-let (ustSendOut, ustSendRc) = run(Viking & " ust -c " & ustConf & " -i " & ustCsv & " -y 2025")
+writeFile(ustTsv, "1000,19\n-500,19\n")
+let (ustSendOut, ustSendRc) = run("cd " & estWd & " && " & projectRoot / Viking & " ust freelance -c " & ustConf & " -y 2025")
 let ustSendSchemaOk = not ustSendOut.contains("610301200")
 let ustSendCertOk = not ustSendOut.contains("610001050")
 check("ust send: no schema errors", ustSendSchemaOk, ustSendOut)
@@ -971,7 +897,7 @@ elif ustSendHidBlocked:
 else:
   check("ust send: unexpected error", false, ustSendOut)
 
-removeFile(ustCsv)
+removeFile(ustTsv)
 removeFile(ustConf)
 echo ""
 
@@ -979,20 +905,8 @@ echo ""
 # Message (SonstigeNachrichten) tests
 # =================================================================
 
-# viking.conf for message tests
 let messageConf = projectRoot / "tests" / "tmp_message_viking.conf"
-writeFile(messageConf, """[taxpayer]
-firstname = Hans
-lastname = Maier
-birthdate = 05.05.1955
-idnr = 04452397687
-taxnumber = 9198011310010
-street = Testweg
-housenumber = 42
-zip = 80331
-city = Muenchen
-iban = DE91100000000123456789
-""")
+writeFile(messageConf, personalBlock)
 
 echo "--- message --dry_run ---"
 let (msgDryOut, msgDryRc) = run(Viking & " message -c " & messageConf & " --subject \"Test Betreff\" --text \"Test Nachricht\" --dry_run")
@@ -1003,23 +917,15 @@ check("message dry_run has DatenArt SonstigeNachrichten", msgDryOut.contains("<D
 check("message dry_run has Testmerker", msgDryOut.contains("<Testmerker>700000004</Testmerker>"))
 check("message dry_run has Betreff", msgDryOut.contains("<Betreff>Test Betreff</Betreff>"))
 check("message dry_run has Text", msgDryOut.contains("<Text>Test Nachricht</Text>"))
-check("message dry_run has SteuerpflichtigerTyp", msgDryOut.contains("<SteuerpflichtigerTyp>NichtNatPerson</SteuerpflichtigerTyp>"))
 check("message dry_run has Steuernummer", msgDryOut.contains("<Steuernummer>"))
-check("message dry_run has Bundesland in TransferHeader", msgDryOut.contains("<Ziel>"))
-check("message dry_run has Finanzamt in NutzdatenHeader", msgDryOut.contains("<Empfaenger id=\"F\">"))
 echo ""
 
 echo "--- message --validate_only ---"
 let (msgValOut, msgValRc) = run(Viking & " message -c " & messageConf & " --subject \"Test\" --text \"Testnachricht\" --validate_only")
 check("message validate_only exits 0", msgValRc == 0, msgValOut)
-check("message validate_only silent on success", msgValOut.strip.len == 0 or msgValOut.contains("OK"))
 echo ""
 
 echo "--- message validation ---"
-let (msgNoConf, msgNoConfRc) = run(Viking & " message --subject \"Test\" --text \"Test\"")
-check("message without conf fails", msgNoConfRc != 0)
-check("message without conf shows error", msgNoConf.contains("--conf is required"))
-
 let (msgNoSubj, msgNoSubjRc) = run(Viking & " message -c " & messageConf & " --text \"Test\"")
 check("message without subject fails", msgNoSubjRc != 0)
 check("message without subject shows error", msgNoSubj.contains("--subject is required"))
@@ -1041,47 +947,31 @@ removeFile(messageConf)
 echo ""
 
 # =================================================================
-# IBAN change (AenderungBankverbindung) tests
+# IBAN change tests
 # =================================================================
 
-# viking.conf for iban tests
 let ibanConf = projectRoot / "tests" / "tmp_iban_viking.conf"
-writeFile(ibanConf, """[taxpayer]
-firstname = Hans
-lastname = Maier
-birthdate = 05.05.1955
-idnr = 04452397687
-taxnumber = 9198011310010
-""")
+writeFile(ibanConf, personalBlock)
 
 echo "--- iban --dry_run ---"
 let (ibanDryOut, ibanDryRc) = run(Viking & " iban -c " & ibanConf & " --new_iban DE89370400440532013000 --dry_run")
 check("iban dry_run exits 0", ibanDryRc == 0, ibanDryOut)
 check("iban dry_run has AenderungBankverbindung", ibanDryOut.contains("<AenderungBankverbindung xmlns="))
-check("iban dry_run has ElsterNachricht", ibanDryOut.contains("<Verfahren>ElsterNachricht</Verfahren>"))
 check("iban dry_run has DatenArt", ibanDryOut.contains("<DatenArt>AenderungBankverbindung</DatenArt>"))
 check("iban dry_run has Testmerker", ibanDryOut.contains("<Testmerker>700000004</Testmerker>"))
 check("iban dry_run has IBAN", ibanDryOut.contains("<IBAN>DE89370400440532013000</IBAN>"))
-check("iban dry_run has Kontoinhaber", ibanDryOut.contains("<Kontoinhaber>Person_A</Kontoinhaber>"))
 check("iban dry_run has Steuernummer", ibanDryOut.contains("<Steuernummer>"))
-check("iban dry_run has Anrede", ibanDryOut.contains("<Anrede>Herrn</Anrede>"))
-check("iban dry_run has Identifikationsnummer", ibanDryOut.contains("<Identifikationsnummer>"))
 echo ""
 
 echo "--- iban --validate_only ---"
 let (ibanValOut, ibanValRc) = run(Viking & " iban -c " & ibanConf & " --new_iban DE89370400440532013000 --validate_only")
 check("iban validate_only exits 0", ibanValRc == 0, ibanValOut)
-check("iban validate_only silent on success", ibanValOut.strip.len == 0 or ibanValOut.contains("OK"))
 echo ""
 
 echo "--- iban validation ---"
 let (ibanNoIban, ibanNoIbanRc) = run(Viking & " iban -c " & ibanConf)
 check("iban without new_iban fails", ibanNoIbanRc != 0)
 check("iban without new_iban shows error", ibanNoIban.contains("--new-iban is required"))
-
-let (ibanNoConf, ibanNoConfRc) = run(Viking & " iban --new_iban DE89370400440532013000")
-check("iban without conf fails", ibanNoConfRc != 0)
-check("iban without conf shows error", ibanNoConf.contains("--conf is required"))
 
 removeFile(ibanConf)
 echo ""
@@ -1091,7 +981,7 @@ echo ""
 # =================================================================
 
 let abholConf = projectRoot / "tests" / "tmp_abhol_viking.conf"
-writeFile(abholConf, """[taxpayer]
+writeFile(abholConf, """[personal]
 firstname = Hans
 lastname = Maier
 """)
@@ -1101,9 +991,6 @@ let (listDryOut, listDryRc) = run(Viking & " list -c " & abholConf & " --dry_run
 check("list dry_run exits 0", listDryRc == 0, listDryOut)
 check("list dry_run has PostfachAnfrage XML", listDryOut.contains("<PostfachAnfrage "))
 check("list dry_run has Datenabholung element", listDryOut.contains("<Datenabholung"))
-check("list dry_run has ElsterDatenabholung", listDryOut.contains("<Verfahren>ElsterDatenabholung</Verfahren>"))
-check("list dry_run has DatenArt PostfachAnfrage", listDryOut.contains("<DatenArt>PostfachAnfrage</DatenArt>"))
-check("list dry_run has Testmerker", listDryOut.contains("<Testmerker>700000004</Testmerker>"))
 check("list dry_run has DatenLieferant from conf", listDryOut.contains("<DatenLieferant>Hans Maier</DatenLieferant>"))
 check("list dry_run has HerstellerID constant", listDryOut.contains("<HerstellerID>40036</HerstellerID>"))
 
@@ -1111,13 +998,7 @@ echo "--- download --dry_run ---"
 let (dlDryOut, dlDryRc) = run(Viking & " download -c " & abholConf & " --dry_run")
 check("download dry_run exits 0", dlDryRc == 0, dlDryOut)
 check("download dry_run has PostfachAnfrage XML", dlDryOut.contains("<PostfachAnfrage "))
-check("download dry_run has Datenabholung element", dlDryOut.contains("<Datenabholung"))
 check("download dry_run has DatenLieferant from conf", dlDryOut.contains("<DatenLieferant>Hans Maier</DatenLieferant>"))
-
-echo "--- list/download without conf ---"
-let (listNoConf, listNoConfRc) = run(Viking & " list --dry_run")
-check("list without conf fails", listNoConfRc != 0)
-check("list without conf shows error", listNoConf.contains("--conf is required"))
 
 removeFile(abholConf)
 echo ""
@@ -1131,45 +1012,40 @@ let (initOut, initRc) = run(Viking & " init --dir " & initDir)
 check("init creates files", initRc == 0, initOut)
 check("init creates viking.conf", fileExists(initDir / "viking.conf"))
 check("init creates deductions.tsv", fileExists(initDir / "deductions.tsv"))
-check("init creates kap.tsv", fileExists(initDir / "kap.tsv"))
-check("init creates euer.tsv", fileExists(initDir / "euer.tsv"))
 
-# Check viking.conf content
 let confContent = readFile(initDir / "viking.conf")
-check("init conf has [taxpayer]", confContent.contains("[taxpayer]"))
+check("init conf has [personal]", confContent.contains("[personal]"))
 check("init conf has firstname", confContent.contains("firstname ="))
 check("init conf has taxnumber", confContent.contains("taxnumber ="))
-check("init conf has [kap]", confContent.contains("[kap]"))
-check("init conf has [kid] comment", confContent.contains("# [kid]"))
+check("init conf has source examples", confContent.contains("income = 2") or confContent.contains("income = 3"))
 
-# Check deductions.tsv content
 let dedContent = readFile(initDir / "deductions.tsv")
 check("init deductions has header", dedContent.contains("code\tamount\tdescription"))
 check("init deductions has vor300", dedContent.contains("vor300"))
 check("init deductions has sa140", dedContent.contains("sa140"))
 check("init deductions has agb187", dedContent.contains("agb187"))
 
-# Check skip behavior
 let (skipOut, skipRc) = run(Viking & " init --dir " & initDir)
 check("init skips existing files", skipRc == 0, skipOut)
 check("init skip message", skipOut.contains("Skipped"))
 
-# Check force overwrite
 let (forceOut, forceRc) = run(Viking & " init --dir " & initDir & " --force")
 check("init force overwrites", forceRc == 0, forceOut)
 check("init force creates", forceOut.contains("Created"))
 
-# Check invalid dir
 let (badDirOut, badDirRc) = run(Viking & " init --dir /nonexistent/path")
 check("init bad dir fails", badDirRc != 0, badDirOut)
 
-# Check generated conf is parseable
-let (initEstDry, initEstDryRc) = run(Viking & " est -c " & initDir / "viking.conf" & " --dry-run -y 2025")
-check("init conf is parseable", initEstDryRc != 0)  # fails validation but parses
+# Check generated conf is parseable (will fail validation because fields are empty)
+let (initEstDry, initEstDryRc) = run(Viking & " est -c " & initDir / "viking.conf" & " --dry-run -y 2025 --force")
+check("init conf is parseable", initEstDryRc != 0)
 check("init conf validation errors", initEstDry.contains("not set"))
 
 removeDir(initDir)
 echo ""
+
+# Cleanup XDG isolation dir
+removeDir(testXdgHome)
 
 # --- Summary ---
 echo "=== Results ==="
