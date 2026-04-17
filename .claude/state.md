@@ -2,6 +2,7 @@
 
 ## TODO
 
+- [ ] Document the alphanumeric code tables (income, rechtsform, besteuerungsart, religion, kindschaftsverhaeltnis, period) in the README — full word↔number reference with descriptions pulled from `codes.nim`. Error-discovery works at runtime; the reference is for accountants/power users who know the numeric codes.
 - [ ] ERiC version lookup: replace hardcoded version with a proper lookup (e.g. scrape ELSTER developer portal or maintain a version manifest). Current approach just hardcodes the known latest version.
 
 ## Done
