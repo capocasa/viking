@@ -86,8 +86,17 @@ var
   pEricDekodiereDaten: EricDekodiereDatenProc = nil
 
 import std/dynlib
+when defined(windows):
+  import std/os
 
 proc loadEricLib*(path: string): bool =
+  # On Windows, add DLL directory to PATH so dependent DLLs
+  # (ericxerces.dll, eSigner.dll) can be found by the loader
+  when defined(windows):
+    let dllDir = path.parentDir
+    let oldPath = getEnv("PATH")
+    if dllDir notin oldPath:
+      putEnv("PATH", dllDir & ";" & oldPath)
   ericLibHandle = loadLib(path)
   if ericLibHandle == nil:
     return false
