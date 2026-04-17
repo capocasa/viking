@@ -1,32 +1,45 @@
-[taxpayer]
+[personal]
 firstname = Hans
 lastname = Maier
 birthdate = 01.01.1980
 idnr = 12345678901
 taxnumber = 1234567890123
-income = 2                    ; 2=Gewerbebetrieb, 3=Selbstaendige Arbeit
 street = Musterstr.
 housenumber = 1
 zip = 10115
 city = Berlin
 iban = DE89370400440532013000
-religion = 11
+religion = keine              ; keine, rk, ev, altkath, ev_ref, ... or numeric
 profession = Software-Entwickler
 ; kv_art = privat             ; privat (default) or gesetzlich
 
-[kap]
+; Income source. income= selects the Anlage:
+;   gewerbe   -> Anlage G (Gewerbebetrieb)
+;   freiberuf -> Anlage S (Selbstaendige Arbeit)
+;   kap       -> Anlage KAP (fill gains/tax inline)
+; rechtsform: einzel, gmbh, ug, gbr, ohg, kg, ag, freiberuf, selbst, ...
+; besteuerungsart: ist (Ist-Versteuerung) or soll (Soll-Versteuerung)
+; Numeric codes still accepted for all of the above.
+[freelance]
+income = freiberuf
+rechtsform = freiberuf
+besteuerungsart = ist
+vorauszahlungen = 0
+
+; [ibkr]
+; income = kap
 ; guenstigerpruefung = 1
 ; sparer_pauschbetrag = 1000
 
-; One [kid] section per child. Kids appear in Anlage Kind
-; even without deductions in deductions.tsv.
-;
-; [kid]
-; firstname = Lena
+; One section per child. Section name is the firstname (used as the
+; prefix in deductions.tsv, e.g. lena174).
+; kindschaftsverhaeltnis: leiblich, pflege, enkel (or 1, 2, 3).
+; [lena]
 ; birthdate = 15.03.2019
 ; idnr = 02293417683
+; kindschaftsverhaeltnis = leiblich
 ;
-; [kid]
-; firstname = Max
+; [max]
 ; birthdate = 22.08.2021
 ; idnr = 02293417684
+; kindschaftsverhaeltnis = leiblich

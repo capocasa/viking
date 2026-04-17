@@ -111,9 +111,11 @@ func parseInvoices*(input: string): (seq[Invoice], seq[InvoiceError]) =
       errors.add(InvoiceError(line: lineNum, msg: "invalid amount: " & amountStr))
       continue
 
-    # Column 1: rate (optional, default 19)
+    # Column 1: rate (optional, default 19). Accepts "7" or "7%".
     if fields.len > 1 and fields[1].strip.len > 0:
-      let rateStr = fields[1].strip
+      var rateStr = fields[1].strip
+      if rateStr.endsWith("%"):
+        rateStr = rateStr[0 ..< rateStr.len - 1].strip
       try:
         inv.rate = parseInt(rateStr)
         if inv.rate != 0 and inv.rate != 7 and inv.rate != 19:

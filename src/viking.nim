@@ -4,7 +4,7 @@ import std/[strutils, strformat, times, options, os, tables]
 import cligen, cligen/argcvt
 import dotenv
 import viking/[config, ericffi, ottoffi, ustva_xml, euer_xml, est_xml, ust_xml, ericsetup, invoices, abholung_xml, nachricht_xml, bankverbindung_xml]
-import viking/[vikingconf, deductions, kap, log, abholung]
+import viking/[vikingconf, deductions, kap, log, abholung, codes]
 
 const NimblePkgVersion {.strdefine.} = "dev"
 
@@ -225,10 +225,13 @@ proc submit(
   defer: closeLog()
 
   if period == "":
-    err "Error: --period is required (01-12 for monthly, 41-44 for quarterly)"
+    err "Error: --period is required; " & periodMap.listing
     return 1
-  if not isValidPeriod(period):
-    err &"Error: Invalid period '{period}'. Use 01-12 for monthly or 41-44 for quarterly."
+  var normalizedPeriod: string
+  try:
+    normalizedPeriod = periodMap.resolve(period)
+  except ValueError:
+    err &"Error: Invalid period '{period}'; " & periodMap.listing
     return 1
 
   let srcName = if source.len > 0: source[0] else: ""
@@ -254,7 +257,7 @@ proc submit(
       return 1
 
   if tsvPath != "":
-    let (agg, totalParsed, ok) = loadAndAggregateInvoices(tsvPath, actualYear, period)
+    let (agg, totalParsed, ok) = loadAndAggregateInvoices(tsvPath, actualYear, normalizedPeriod)
     if not ok:
       return 1
     finalAmount19 = agg.amount19
@@ -274,7 +277,7 @@ proc submit(
   let xml = generateUstva(
     steuernummer = stnr,
     jahr = actualYear,
-    zeitraum = period,
+    zeitraum = normalizedPeriod,
     kz81 = finalAmount19,
     kz86 = finalAmount7,
     kz45 = finalAmount0,
@@ -850,27 +853,27 @@ housenumber = ""
 zip = ""
 city = ""
 iban = ""
-religion = 11
+religion = keine
 profession = ""
 kv_art = privat
 
 # Add one section per income source. Section name is the handle
 # you pass on the CLI (e.g. `viking ust mygewerbe`).
-# income = 2 -> Gewerbebetrieb (Anlage G)
-# income = 3 -> Selbständige Arbeit (Anlage S)
-# income = kap -> Anlage KAP (fill gains/tax inline)
+# income = gewerbe   -> Gewerbebetrieb (Anlage G)
+# income = freiberuf -> Selbständige Arbeit (Anlage S)
+# income = kap       -> Anlage KAP (fill gains/tax inline)
 
 # [freelance]
-# income = 3
-# rechtsform = 120
-# besteuerungsart = 2
+# income = freiberuf
+# rechtsform = einzel       ; einzel, gmbh, ug, gbr, ohg, kg, ag, ...
+# besteuerungsart = ist     ; ist or soll
 # vorauszahlungen = 0
 
 # [mygewerbe]
-# income = 2
+# income = gewerbe
 # taxnumber = ""
-# rechtsform = 120
-# besteuerungsart = 2
+# rechtsform = einzel
+# besteuerungsart = ist
 # vorauszahlungen = 0
 
 # [ibkr]
@@ -883,11 +886,11 @@ kv_art = privat
 
 # Add one section per kid. Section name is the firstname (used for
 # deduction prefix matching, e.g. alice174). kindschaftsverhaeltnis
-# is required (marker); default 1 = leibliches Kind.
+# is required (marker): leiblich, pflege, enkel.
 # [alice]
 # birthdate = ""
 # idnr = ""
-# kindschaftsverhaeltnis = 1
+# kindschaftsverhaeltnis = leiblich
 # kindergeld = 0
 """
 

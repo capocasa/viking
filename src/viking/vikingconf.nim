@@ -4,6 +4,7 @@
 ## -> kid; neither/both -> error.
 
 import std/[parsecfg, streams, strutils, os, tables]
+import viking/codes
 
 type
   Personal* = object
@@ -72,7 +73,7 @@ proc applyPersonal(p: var Personal, key, val: string) =
   of "zip": p.zip = val
   of "city": p.city = val
   of "iban": p.iban = val
-  of "religion": p.religion = val
+  of "religion": p.religion = religionMap.resolve(val)
   of "profession": p.profession = val
   of "kv_art", "kvart": p.kvArt = val
   else: discard
@@ -88,7 +89,7 @@ proc applySpouse(s: var Spouse, key, val: string) =
   of "housenumber": s.housenumber = val
   of "zip": s.zip = val
   of "city": s.city = val
-  of "religion": s.religion = val
+  of "religion": s.religion = religionMap.resolve(val)
   of "profession": s.profession = val
   of "kv_art", "kvart": s.kvArt = val
   else: discard
@@ -97,7 +98,8 @@ proc applyKid(k: var Kid, key, val: string) =
   case key
   of "birthdate": k.birthdate = val
   of "idnr": k.idnr = val
-  of "kindschaftsverhaeltnis": k.kindschaftsverhaeltnis = val
+  of "kindschaftsverhaeltnis":
+    k.kindschaftsverhaeltnis = kindschaftsverhaeltnisMap.resolve(val)
   of "kindergeld":
     try: k.kindergeld = parseFloat(val)
     except ValueError: discard
@@ -106,8 +108,8 @@ proc applyKid(k: var Kid, key, val: string) =
 proc applySource(s: var Source, key, val: string) =
   case key
   of "taxnumber": s.taxnumber = val
-  of "rechtsform": s.rechtsform = val
-  of "besteuerungsart": s.besteuerungsart = val
+  of "rechtsform": s.rechtsform = rechtsformMap.resolve(val)
+  of "besteuerungsart": s.besteuerungsart = besteuerungsartMap.resolve(val)
   of "owner": s.owner = val.toLowerAscii
   of "vorauszahlungen":
     try: s.vorauszahlungen = parseFloat(val)
@@ -187,13 +189,12 @@ proc classifyAndApply(conf: var VikingConf, sec: RawSection) =
         "section [" & sec.name & "]: has both 'income' and 'kindschaftsverhaeltnis'; must be one or the other")
     if hasIncome:
       var src = Source(name: sec.name, owner: "personal")
-      case sec.keys.getOrDefault("income").strip.toLowerAscii
+      let incomeVal = incomeMap.resolve(sec.keys.getOrDefault("income"))
+      case incomeVal
       of "2": src.kind = skGewerbe
       of "3": src.kind = skFreelance
       of "kap": src.kind = skKap
-      else:
-        raise newException(ValueError,
-          "section [" & sec.name & "]: income must be 2, 3, or kap")
+      else: discard
       for k, v in sec.keys:
         if k != "income": applySource(src, k, v)
       conf.sources.add(src)
@@ -229,12 +230,11 @@ proc mergeSection(conf: var VikingConf, sec: RawSection) =
       for k, v in sec.keys:
         if k != "income": applySource(conf.sources[idx], k, v)
       if "income" in sec.keys:
-        case sec.keys["income"].strip.toLowerAscii
+        case incomeMap.resolve(sec.keys["income"])
         of "2": conf.sources[idx].kind = skGewerbe
         of "3": conf.sources[idx].kind = skFreelance
         of "kap": conf.sources[idx].kind = skKap
-        else: raise newException(ValueError,
-          "section [" & sec.name & "]: income must be 2, 3, or kap")
+        else: discard
       return
     var kidIdx = -1
     for i, k in conf.kids:
@@ -347,7 +347,12 @@ proc checkSource(conf: VikingConf, src: Source, required: openArray[string]): se
       of "besteuerungsart": src.besteuerungsart
       else: ""
     if not v.isNotEmpty:
-      result.add("source [" & src.name & "]." & f & " not set")
+      var msg = "source [" & src.name & "]." & f & " not set"
+      case f
+      of "rechtsform": msg &= "; " & rechtsformMap.listing
+      of "besteuerungsart": msg &= "; " & besteuerungsartMap.listing
+      else: discard
+      result.add(msg)
     elif f == "taxnumber" and v.len != 13:
       result.add("source [" & src.name & "].taxnumber must be 13 digits, got " & $v.len)
 

@@ -229,6 +229,76 @@ check("missing --period shows error", noperiod.contains("--period is required"))
 let (badperiod, badperiodRc) = run(Viking & " submit -c " & submitConf & " --p 99 --amount19 100")
 check("invalid period is rejected", badperiodRc != 0)
 check("invalid period shows error", badperiod.contains("Invalid period"))
+check("invalid period lists words", badperiod.contains("jan") and badperiod.contains("q1"))
+echo ""
+
+# --- Alphanumeric aliases for period, income, rechtsform, besteuerungsart, religion ---
+echo "--- alphanumeric aliases ---"
+let (aliasQ1Out, aliasQ1Rc) = run(Viking & " submit -c " & submitConf & " --p q1 --amount19 100 --dry-run")
+check("period q1 exits 0", aliasQ1Rc == 0, aliasQ1Out)
+check("period q1 -> 41", aliasQ1Out.contains("<Zeitraum>41</Zeitraum>"))
+
+let (aliasMarOut, aliasMarRc) = run(Viking & " submit -c " & submitConf & " --p mar --amount19 100 --dry-run")
+check("period mar exits 0", aliasMarRc == 0, aliasMarOut)
+check("period mar -> 03", aliasMarOut.contains("<Zeitraum>03</Zeitraum>"))
+
+let (aliasPadOut, aliasPadRc) = run(Viking & " submit -c " & submitConf & " --p 3 --amount19 100 --dry-run")
+check("unpadded period 3 exits 0", aliasPadRc == 0, aliasPadOut)
+check("unpadded period 3 -> 03", aliasPadOut.contains("<Zeitraum>03</Zeitraum>"))
+
+let wordConf = projectRoot / "tests" / "tmp_words.conf"
+writeFile(wordConf, personalBlock.replace("religion = 11", "religion = rk") & """
+[freelance]
+income = freiberuf
+rechtsform = einzel
+besteuerungsart = ist
+""")
+
+# UStVA via words in conf
+let (wordUstvaOut, wordUstvaRc) = run(Viking & " submit -c " & wordConf & " --p jan --amount19 100 --dry-run")
+check("word-form conf accepted (submit)", wordUstvaRc == 0, wordUstvaOut)
+check("word-form conf -> Zeitraum 01", wordUstvaOut.contains("<Zeitraum>01</Zeitraum>"))
+
+# EÜR maps rechtsform=einzel -> 120 in XML
+writeFile(projectRoot / "2025-freelance.tsv", "amount\trate\n1000\t19\n")
+let (wordEuerOut, wordEuerRc) = run(Viking & " euer freelance -c " & wordConf & " --year 2025 --dry-run")
+check("word-form euer exits 0", wordEuerRc == 0, wordEuerOut)
+check("rechtsform einzel -> 120", wordEuerOut.contains("<E6000602>120</E6000602>"))
+
+# USt maps besteuerungsart=ist -> 2 in XML
+let (wordUstOut, wordUstRc) = run(Viking & " ust freelance -c " & wordConf & " --year 2025 --dry-run")
+check("word-form ust exits 0", wordUstRc == 0, wordUstOut)
+check("besteuerungsart ist -> 2", wordUstOut.contains("<E3002203>2</E3002203>"))
+
+# ESt maps religion=rk -> 03 in XML
+let (wordEstOut, wordEstRc) = run(Viking & " est -c " & wordConf & " --year 2025 --force --dry-run")
+check("word-form est exits 0", wordEstRc == 0, wordEstOut)
+check("religion rk -> 03", wordEstOut.contains("<E0100402>03</E0100402>"))
+
+# Bad values mention the listing
+let badConf = projectRoot / "tests" / "tmp_bad_codes.conf"
+writeFile(badConf, personalBlock & """
+[freelance]
+income = freiberuf
+rechtsform = zzz
+besteuerungsart = ist
+""")
+let (badRfOut, badRfRc) = run(Viking & " submit -c " & badConf & " --p q1 --amount19 100 --dry-run")
+check("bad rechtsform rejected", badRfRc != 0)
+check("bad rechtsform lists words", badRfOut.contains("einzel") and badRfOut.contains("gmbh"))
+
+# VAT rate accepts trailing %
+writeFile(projectRoot / "tests" / "tmp_pct.tsv", "amount\trate\n1000\t19%\n500\t7%\n")
+let (pctOut, pctRc) = run(Viking & " submit -c " & submitConf & " -i " &
+  (projectRoot / "tests" / "tmp_pct.tsv") & " --p 01 --dry-run")
+check("VAT rate 19% / 7% accepted", pctRc == 0, pctOut)
+check("VAT 19% aggregated into Kz81", pctOut.contains("<Kz81>1000</Kz81>"))
+check("VAT 7% aggregated into Kz86", pctOut.contains("<Kz86>500</Kz86>"))
+
+removeFile(projectRoot / "2025-freelance.tsv")
+removeFile(projectRoot / "tests" / "tmp_pct.tsv")
+removeFile(wordConf)
+removeFile(badConf)
 echo ""
 
 # --- Source auto-selection with multiple sources ---
@@ -1017,7 +1087,8 @@ let confContent = readFile(initDir / "viking.conf")
 check("init conf has [personal]", confContent.contains("[personal]"))
 check("init conf has firstname", confContent.contains("firstname ="))
 check("init conf has taxnumber", confContent.contains("taxnumber ="))
-check("init conf has source examples", confContent.contains("income = 2") or confContent.contains("income = 3"))
+check("init conf has source examples",
+  confContent.contains("income = gewerbe") or confContent.contains("income = freiberuf"))
 
 let dedContent = readFile(initDir / "deductions.tsv")
 check("init deductions has header", dedContent.contains("code\tamount\tdescription"))
