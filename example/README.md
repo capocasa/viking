@@ -12,8 +12,8 @@ even submit (with `--test`) end-to-end.
 | `viking.conf`         | All section types in one place, all aliases used           |
 | `viking.pin`          | Plain-text PIN (`123456`, the public test PIN)             |
 | `viking.pin.sh`       | Alternative: a script that prints the PIN to stdout        |
-| `2025-freelance.tsv`  | Auto-loaded for `freelance` source                         |
-| `2025-mygewerbe.tsv`  | Auto-loaded for `mygewerbe` source                         |
+| `2025-freiberuf.tsv`  | Auto-loaded for `freiberuf` source                         |
+| `2025-gewerbe.tsv`  | Auto-loaded for `gewerbe` source                         |
 | `deductions.tsv`      | All deduction code groups (vor / sa / agb / per-kid)       |
 
 ## Setup
@@ -52,13 +52,13 @@ viking submit --test --period mar --amount19 100  --dry-run     # -> 03
 viking submit --test --period 3   --amount19 100  --dry-run     # -> 03
 
 # Multiple sources -> name the one you want
-viking submit  freelance --test --period q1 --amount19 0 --dry-run
-viking submit  mygewerbe --test --period q1 --amount19 0 --dry-run
-viking euer    freelance --test --year 2025 --dry-run            # auto-loads 2025-freelance.tsv
-viking euer    mygewerbe --test --year 2025 --dry-run
-viking ust     mygewerbe --test --year 2025 --dry-run            # vorauszahlungen=100 picked up
+viking submit  freiberuf --test --period q1 --amount19 0 --dry-run
+viking submit  gewerbe --test --period q1 --amount19 0 --dry-run
+viking euer    freiberuf --test --year 2025 --dry-run            # auto-loads 2025-freiberuf.tsv
+viking euer    gewerbe --test --year 2025 --dry-run
+viking ust     gewerbe --test --year 2025 --dry-run            # vorauszahlungen=100 picked up
 
-# ESt aggregates every source: Anlage S (freelance) + Anlage G (mygewerbe)
+# ESt aggregates every source: Anlage S (freiberuf) + Anlage G (gewerbe)
 # + Anlage KAP (ibkr inline values) + Anlage Kind for max & lisa.
 viking est --test --year 2025 --deductions deductions.tsv --dry-run
 ```
@@ -89,6 +89,6 @@ lookup ...`), gpg, age. See `viking.pin.sh` for examples.
 ## Multi-conf chain
 
 Stick a `viking.conf` in `~/.config/viking/` for shared defaults (your
-[personal] block, say). Per-project confs in CWD override field-by-field.
+taxpayer block, say). Per-project confs in CWD override field-by-field.
 Both get loaded automatically — pass `--conf` only when you want to bypass
 the chain entirely.

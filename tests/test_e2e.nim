@@ -89,28 +89,24 @@ check("fetch --check shows version", fetchCheck.contains("ERiC"))
 echo ""
 
 # Shared template fragments used across tests
-const personalBlock = """[personal]
-firstname = Hans
-lastname = Maier
-birthdate = 05.05.1955
-idnr = 04452397687
-taxnumber = 9198011310010
-street = Musterstr.
-housenumber = 1
-zip = 10115
-city = Berlin
-iban = DE91100000000123456789
-religion = 11
-profession = Software-Entwickler
+const personalBlock = """[Hans Maier]
+geburtsdatum = 05.05.1955
+idnr         = 04452397687
+steuernr     = 9198011310010
+strasse      = Musterstr.
+nr           = 1
+plz          = 10115
+ort          = Berlin
+iban         = DE91100000000123456789
+religion     = 11
+beruf        = Software-Entwickler
 """
 
-# viking.conf for submit tests (single freelance source)
+# viking.conf for submit tests (single freiberuf source)
 let submitConf = projectRoot / "tests" / "tmp_submit_viking.conf"
 writeConf(submitConf, personalBlock & """
-[freelance]
-income = 3
-rechtsform = 120
-besteuerungsart = 2
+[freiberuf]
+versteuerung = 2
 """)
 
 # --- Submit: dry-run ---
@@ -254,11 +250,10 @@ check("unpadded period 3 exits 0", aliasPadRc == 0, aliasPadOut)
 check("unpadded period 3 -> 03", aliasPadOut.contains("<Zeitraum>03</Zeitraum>"))
 
 let wordConf = projectRoot / "tests" / "tmp_words.conf"
-writeConf(wordConf, personalBlock.replace("religion = 11", "religion = rk") & """
+writeConf(wordConf, personalBlock.replace("religion     = 11", "religion     = rk") & """
 [freelance]
-income = freiberuf
 rechtsform = einzel
-besteuerungsart = ist
+versteuerung = ist
 """)
 
 # UStVA via words in conf
@@ -286,9 +281,8 @@ check("religion rk -> 03", wordEstOut.contains("<E0100402>03</E0100402>"))
 let badConf = projectRoot / "tests" / "tmp_bad_codes.conf"
 writeConf(badConf, personalBlock & """
 [freelance]
-income = freiberuf
 rechtsform = zzz
-besteuerungsart = ist
+versteuerung = ist
 """)
 let (badRfOut, badRfRc) = run(Viking & " submit -c " & badConf & " --p q1 --amount19 100 --dry-run")
 check("bad rechtsform rejected", badRfRc != 0)
@@ -312,27 +306,23 @@ echo ""
 echo "--- source selection ---"
 let multiConf = projectRoot / "tests" / "tmp_multi.conf"
 writeConf(multiConf, personalBlock & """
-[freelance]
-income = 3
-rechtsform = 120
-besteuerungsart = 2
+[freiberuf]
+versteuerung = 2
 
 [mygewerbe]
-income = 2
-taxnumber = 9198011310020
-rechtsform = 120
-besteuerungsart = 2
+steuernr = 9198011310020
+versteuerung = 2
 """)
 
 let (ambigOut, ambigRc) = run(Viking & " submit -c " & multiConf & " --p 41 --amount19 100 --dry-run")
 check("multi-source without name rejected", ambigRc != 0)
-check("multi-source error lists names", ambigOut.contains("freelance") and ambigOut.contains("mygewerbe"))
+check("multi-source error lists names", ambigOut.contains("freiberuf") and ambigOut.contains("mygewerbe"))
 
 let (gewOut, gewRc) = run(Viking & " submit mygewerbe -c " & multiConf & " --p 41 --amount19 100 --dry-run")
 check("explicit source exits 0", gewRc == 0, gewOut)
 check("source override taxnumber used", gewOut.contains("<Steuernummer>9198011310020</Steuernummer>"))
 
-let (freeOut, freeRc) = run(Viking & " submit freelance -c " & multiConf & " --p 41 --amount19 100 --dry-run")
+let (freeOut, freeRc) = run(Viking & " submit freiberuf -c " & multiConf & " --p 41 --amount19 100 --dry-run")
 check("other source uses personal taxnumber", freeOut.contains("<Steuernummer>9198011310010</Steuernummer>"))
 
 let (unkOut, unkRc) = run(Viking & " submit bogus -c " & multiConf & " --p 41 --amount19 100 --dry-run")
@@ -466,9 +456,7 @@ echo ""
 let euerConf = projectRoot / "tests" / "tmp_euer_viking.conf"
 writeConf(euerConf, personalBlock & """
 [freelance]
-income = 2
-rechtsform = 120
-besteuerungsart = 2
+versteuerung = 2
 """)
 
 # Use year-source TSV auto-discovery
@@ -558,9 +546,7 @@ let estWd = projectRoot / "tests"
 let estConf = projectRoot / "tests" / "tmp_viking.conf"
 writeConf(estConf, personalBlock & """
 [mybiz]
-income = 2
-rechtsform = 120
-besteuerungsart = 2
+versteuerung = 2
 """)
 
 let estTsv = estWd / "2025-mybiz.tsv"
@@ -588,17 +574,18 @@ echo ""
 echo "--- est Anlage S ---"
 let estConfS = projectRoot / "tests" / "tmp_viking_s.conf"
 writeConf(estConfS, personalBlock & """
-[mybiz]
-income = 3
-rechtsform = 120
-besteuerungsart = 2
+[freiberuf]
+versteuerung = 2
 """)
+let estSTsv = estWd / "2025-freiberuf.tsv"
+writeFile(estSTsv, "1000,19\n-300,19\n")
 let (estSOut, estSRc) = run("cd " & estWd & " && " & projectRoot / Viking & " est -c " & estConfS & " -y 2025 --dry-run --force")
 check("est Anlage S exits 0", estSRc == 0, estSOut)
 check("est Anlage S has <S>", estSOut.contains("<S>"))
 check("est Anlage S has E0803202", estSOut.contains("<E0803202>833</E0803202>"))
 check("est Anlage S no <G>", not estSOut.contains("<G>"))
 removeFile(estConfS)
+removeFile(estSTsv)
 echo ""
 
 # --- ESt: Vorsorgeaufwand (privat) ---
@@ -636,16 +623,12 @@ echo "--- est multiple sources ---"
 let estMultiConf = projectRoot / "tests" / "tmp_est_multi.conf"
 writeConf(estMultiConf, personalBlock & """
 [mybiz]
-income = 2
-rechtsform = 120
-besteuerungsart = 2
+versteuerung = 2
 
-[freelance]
-income = 3
-rechtsform = 120
-besteuerungsart = 2
+[freiberuf]
+versteuerung = 2
 """)
-let estTsv2 = estWd / "2025-freelance.tsv"
+let estTsv2 = estWd / "2025-freiberuf.tsv"
 writeFile(estTsv, "1000,19\n-300,19\n")
 writeFile(estTsv2, "500,19\n")
 let (estMultiOut, estMultiRc) = run("cd " & estWd & " && " & projectRoot / Viking & " est -c " & estMultiConf & " -y 2025 --dry-run --force")
@@ -764,12 +747,9 @@ echo "--- est Anlage KAP ---"
 let estKapConf = projectRoot / "tests" / "tmp_viking_kap.conf"
 writeConf(estKapConf, personalBlock & """
 [mybiz]
-income = 2
-rechtsform = 120
-besteuerungsart = 2
+versteuerung = 2
 
 [ibkr]
-income = kap
 gains = 1500.50
 tax = 375.13
 soli = 20.63
@@ -790,20 +770,18 @@ echo "--- est Anlage Kind ---"
 let estKindConf = projectRoot / "tests" / "tmp_viking_kind.conf"
 writeConf(estKindConf, personalBlock & """
 [mybiz]
-income = 2
-rechtsform = 120
-besteuerungsart = 2
+versteuerung = 2
 
-[max]
-birthdate = 01.06.2018
+[Max Maier]
+geburtsdatum = 01.06.2018
 idnr = 12345678901
-kindschaftsverhaeltnis = 1
+verhaeltnis = 1
 kindergeld = 2400
 
-[lisa]
-birthdate = 15.03.2020
+[Lisa Maier]
+geburtsdatum = 15.03.2020
 idnr = 98765432109
-kindschaftsverhaeltnis = 1
+verhaeltnis = 1
 kindergeld = 2400
 """)
 let estKindDed = projectRoot / "tests" / "tmp_deductions_kind.tsv"
@@ -811,8 +789,8 @@ writeFile(estKindDed, "code\tamount\nmax174\t2400\nlisa174\t3600\nlisa176\t1500\
 let (estKindOut, estKindRc) = run("cd " & estWd & " && " & projectRoot / Viking & " est -c " & estKindConf & " -D " & estKindDed & " -y 2025 --dry-run")
 check("est Kind exits 0", estKindRc == 0, estKindOut)
 check("est Kind has 2 <Kind>", estKindOut.count("<Kind>") == 2)
-check("est Kind has Max", estKindOut.contains("max"))
-check("est Kind has Lisa", estKindOut.contains("lisa"))
+check("est Kind has Max", estKindOut.contains("Max"))
+check("est Kind has Lisa", estKindOut.contains("Lisa"))
 check("est Kind has betreuungskosten", estKindOut.contains("<E0506105>"))
 check("est Kind has schulgeld", estKindOut.contains("<E0505607>"))
 # Kid without kindschaftsverhaeltnis_b -> no <K_Verh_B>.
@@ -829,15 +807,13 @@ echo "--- est Anlage Kind K_Verh_B gated on [spouse] ---"
 let estKindBNoSpouseConf = projectRoot / "tests" / "tmp_viking_kind_b_nospouse.conf"
 writeConf(estKindBNoSpouseConf, personalBlock & """
 [mybiz]
-income = 2
-rechtsform = 120
-besteuerungsart = 2
+versteuerung = 2
 
-[max]
-birthdate = 01.06.2018
+[Max Maier]
+geburtsdatum = 01.06.2018
 idnr = 12345678901
-kindschaftsverhaeltnis = leiblich
-kindschaftsverhaeltnis_b = leiblich
+verhaeltnis = leiblich
+personb-verhaeltnis = leiblich
 familienkasse = Berlin
 """)
 let (estNoSpOut, estNoSpRc) = run("cd " & estWd & " && " & projectRoot / Viking &
@@ -858,17 +834,15 @@ removeFile(estKindBNoSpouseConf)
 let estKindAndPConf = projectRoot / "tests" / "tmp_viking_kind_and_p.conf"
 writeConf(estKindAndPConf, personalBlock & """
 [mybiz]
-income = 2
-rechtsform = 120
-besteuerungsart = 2
+versteuerung = 2
 
-[max]
-birthdate = 01.06.2018
-idnr = 12345678901
-kindschaftsverhaeltnis   = leiblich
-kindschaftsverhaeltnis_b = leiblich
-parent_b_name            = Greta Maier
-familienkasse            = Berlin
+[Max Maier]
+geburtsdatum         = 01.06.2018
+idnr                 = 12345678901
+verhaeltnis          = leiblich
+personb-verhaeltnis  = leiblich
+personb-name         = Greta Maier
+familienkasse        = Berlin
 """)
 let (estAndPOut, estAndPRc) = run("cd " & estWd & " && " & projectRoot / Viking &
   " est -c " & estKindAndPConf & " -y 2025 --dry-run --force")
@@ -888,22 +862,19 @@ removeFile(estKindAndPConf)
 # (2) [spouse] present + kindschaftsverhaeltnis_b set -> K_Verh_B emitted
 let estKindBConf = projectRoot / "tests" / "tmp_viking_kind_b.conf"
 writeConf(estKindBConf, personalBlock & """
-[spouse]
-firstname = Greta
-lastname = Maier
-birthdate = 12.07.1956
+[Greta Maier]
+ehepartner = ja
+geburtsdatum = 12.07.1956
 idnr = 04452397688
 
 [mybiz]
-income = 2
-rechtsform = 120
-besteuerungsart = 2
+versteuerung = 2
 
-[max]
-birthdate = 01.06.2018
+[Max Maier]
+geburtsdatum = 01.06.2018
 idnr = 12345678901
-kindschaftsverhaeltnis = leiblich
-kindschaftsverhaeltnis_b = leiblich
+verhaeltnis = leiblich
+personb-verhaeltnis = leiblich
 familienkasse = Berlin
 """)
 let (estKbOut, estKbRc) = run("cd " & estWd & " && " & projectRoot / Viking &
@@ -921,14 +892,12 @@ removeFile(estKindBConf)
 let estKindNoFkConf = projectRoot / "tests" / "tmp_viking_kind_nofk.conf"
 writeConf(estKindNoFkConf, personalBlock & """
 [mybiz]
-income = 2
-rechtsform = 120
-besteuerungsart = 2
+versteuerung = 2
 
-[max]
-birthdate = 01.06.2018
+[Max Maier]
+geburtsdatum = 01.06.2018
 idnr = 12345678901
-kindschaftsverhaeltnis = leiblich
+verhaeltnis = leiblich
 """)
 let (estNoFkOut, estNoFkRc) = run("cd " & estWd & " && " & projectRoot / Viking &
   " est -c " & estKindNoFkConf & " -y 2025 --dry-run --force")
@@ -945,17 +914,14 @@ writeFile(estPdDed, "code\tamount\nvor316\t5000\nvor319\t600\nvor502\t350\nsa140
 let estPdConf = projectRoot / "tests" / "tmp_viking_pd.conf"
 writeConf(estPdConf, personalBlock & """
 [mybiz]
-income = 2
-rechtsform = 120
-besteuerungsart = 2
+versteuerung = 2
 
 [ibkr]
-income = kap
 gains = 1500
 tax = 375
 soli = 0
 guenstigerpruefung = 1
-sparer_pauschbetrag = 1000
+pauschbetrag = 1000
 """)
 let (estPdOut, estPdRc) = run("cd " & estWd & " && " & projectRoot / Viking & " est -c " & estPdConf & " -D " & estPdDed & " -y 2025 --validate-only")
 check("est PD validate no schema errors", not estPdOut.contains("610301200"), estPdOut)
@@ -980,9 +946,7 @@ echo ""
 let ustConf = projectRoot / "tests" / "tmp_viking_ust.conf"
 writeConf(ustConf, personalBlock & """
 [freelance]
-income = 2
-rechtsform = 120
-besteuerungsart = 2
+versteuerung = 2
 """)
 
 let ustTsv = estWd / "2025-freelance.tsv"
@@ -1019,9 +983,7 @@ echo "--- ust with Vorauszahlungen (from conf) ---"
 let ustVzConf = projectRoot / "tests" / "tmp_ust_vz.conf"
 writeConf(ustVzConf, personalBlock & """
 [freelance]
-income = 2
-rechtsform = 120
-besteuerungsart = 2
+versteuerung = 2
 vorauszahlungen = 100
 """)
 writeFile(ustTsv, "1000,19\n")
@@ -1172,9 +1134,7 @@ echo ""
 # =================================================================
 
 let abholConf = projectRoot / "tests" / "tmp_abhol_viking.conf"
-writeConf(abholConf, """[personal]
-firstname = Hans
-lastname = Maier
+writeConf(abholConf, """[Hans Maier]
 """)
 
 echo "--- list --dry_run ---"
@@ -1205,11 +1165,11 @@ check("init creates viking.conf", fileExists(initDir / "viking.conf"))
 check("init creates deductions.tsv", fileExists(initDir / "deductions.tsv"))
 
 let confContent = readFile(initDir / "viking.conf")
-check("init conf has [personal]", confContent.contains("[personal]"))
-check("init conf has firstname", confContent.contains("firstname ="))
-check("init conf has taxnumber", confContent.contains("taxnumber ="))
+check("init conf has full-name taxpayer section", confContent.contains("[Vorname Nachname]"))
+check("init conf has geburtsdatum", confContent.contains("geburtsdatum ="))
+check("init conf has steuernr",    confContent.contains("steuernr     ="))
 check("init conf has source examples",
-  confContent.contains("income = gewerbe") or confContent.contains("income = freiberuf"))
+  confContent.contains("[freiberuf]") or confContent.contains("[gewerbe]"))
 
 let dedContent = readFile(initDir / "deductions.tsv")
 check("init deductions has header", dedContent.contains("code\tamount\tdescription"))

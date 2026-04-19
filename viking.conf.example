@@ -1,56 +1,46 @@
-[personal]
-firstname = Hans
-lastname = Maier
-birthdate = 01.01.1980
-idnr = 12345678901
-taxnumber = 1234567890123
-street = Musterstr.
-housenumber = 1
-zip = 10115
-city = Berlin
-iban = DE89370400440532013000
-religion = keine              ; keine, rk, ev, altkath, ev_ref, ... or numeric
-profession = Software-Entwickler
-; kv_art = privat             ; privat (default) or gesetzlich
+; First section is the taxpayer. Section name = "Vornamen Nachname"
+; (last word = Nachname, rest = Vornamen).
+[Hans Maier]
+geburtsdatum = 01.01.1980
+idnr         = 12345678901
+steuernr     = 1234567890123
+strasse      = Musterstr.
+nr           = 1
+plz          = 10115
+ort          = Berlin
+iban         = DE89370400440532013000
+religion     = keine          ; keine, rk, ev, altkath, ev_ref, ... or numeric
+beruf        = Software-Entwickler
+; krankenkasse = privat       ; privat (default) or gesetzlich
 
-; Income source. income= selects the Anlage:
-;   gewerbe   -> Anlage G (Gewerbebetrieb)
-;   freiberuf -> Anlage S (Selbstaendige Arbeit)
-;   kap       -> Anlage KAP (fill gains/tax inline)
-; rechtsform: einzel, gmbh, ug, gbr, ohg, kg, ag, freiberuf, selbst, ...
-; besteuerungsart: ist (Ist-Versteuerung) or soll (Soll-Versteuerung)
-; Numeric codes still accepted for all of the above.
-[freelance]
-income = freiberuf
-rechtsform = freiberuf
-besteuerungsart = ist
+; Income sources. Reserved names: freiberuf (Anlage S), gewerbe
+; (Einzelgewerbe). Otherwise rechtsform is inferred from a legal-form
+; suffix in the section name (GmbH, UG, KG, OHG, GbR, PartG, eK, eG,
+; KGaA, SE, "GmbH & Co. KG", …). No suffix → Einzelgewerbe.
+; Anlage KAP marker: `guenstigerpruefung` or `pauschbetrag`.
+
+[freiberuf]
+versteuerung    = ist         ; ist (Ist-Versteuerung) or soll
 vorauszahlungen = 0
 
-; [ibkr]
-; income = kap
-; guenstigerpruefung = 1
-; sparer_pauschbetrag = 1000
+; [gewerbe]
+; versteuerung    = ist
+; vorauszahlungen = 0
 
-; One section per child. Section name is the firstname (used as the
-; prefix in deductions.tsv, e.g. lena174).
-; kindschaftsverhaeltnis / kindschaftsverhaeltnis_b: leiblich, pflege,
-;   enkel (or 1, 2, 3). _b is the relationship to the other parent.
-; parent_b_name: full name of the non-co-filing other parent. Required
-;   on Einzelveranlagung when there's a second parent (ERiC plausi
-;   100500048); emitted as E0501103 plus full-year Dauer/Art.
-; familienkasse: Familienkasse responsible for Kindergeld.
-; [lena]
-; birthdate = 15.03.2019
-; idnr = 02293417683
-; kindschaftsverhaeltnis   = leiblich
-; kindschaftsverhaeltnis_b = leiblich
-; parent_b_name            = Anna Mustermann
-; familienkasse            = Berlin
-;
-; [max]
-; birthdate = 22.08.2021
-; idnr = 02293417684
-; kindschaftsverhaeltnis   = leiblich
-; kindschaftsverhaeltnis_b = leiblich
-; parent_b_name            = Anna Mustermann
-; familienkasse            = Berlin
+; [Musterfirma GmbH]          ; rechtsform inferred from suffix: GmbH
+; versteuerung    = soll
+
+; [ibkr]
+; guenstigerpruefung  = 1
+; pauschbetrag        = 1000
+
+; Kids. Marker: `verhaeltnis`. Section name = full name (last word =
+; Nachname). First word of given names (lowercased) is the deduction-
+; code prefix, e.g. lena174.
+; [Lena Maier]
+; geburtsdatum        = 15.03.2019
+; idnr                = 02293417683
+; verhaeltnis         = leiblich
+; personb-verhaeltnis = leiblich
+; personb-name        = Anna Mustermann
+; familienkasse       = Berlin

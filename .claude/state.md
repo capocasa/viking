@@ -32,6 +32,31 @@
 
 ## Done
 
+- [x] Nicer conf interface (German, name-inferred). `viking.conf` is now
+  driven by section-name and key markers — no more `income = …` field.
+  First section is the taxpayer, named by full name (`[Hans Maier]`;
+  last word = Nachname, rest = Vornamen, handles middle names).
+  Reserved section names shrunk to three: `[auth]`, `[freiberuf]`
+  (Anlage S), `[gewerbe]` (Einzelgewerbe). Classification rules:
+  `ehepartner = ja` → spouse (section name = full name — `[spouse]`
+  reserved name dropped); `verhaeltnis` → kid (full name);
+  `guenstigerpruefung` or `pauschbetrag` → Anlage KAP; section name
+  ends with a legal-form suffix (GmbH/UG/AG/KG/OHG/GbR/PartG/eK/eG/
+  KGaA/SE, plus "GmbH & Co. KG" / "AG & Co. KG" / "GmbH & Co. OHG" /
+  "AG & Co. OHG") → Anlage G with that Rechtsform; otherwise
+  Einzelgewerbe. German INI keys throughout (`geburtsdatum`,
+  `steuernr`, `strasse`, `nr`, `plz`, `ort`, `beruf`, `krankenkasse`,
+  `versteuerung`, `verhaeltnis`, `personb-verhaeltnis`, `personb-name`,
+  `pauschbetrag`) with English aliases accepted for backward compat on
+  the parse side. Kid deduction prefix (e.g. `max174`) now matches the
+  first word of the kid's firstname, lowercased, so `[Max Maier]` still
+  resolves `max174`. Docs, README, example conf, init template, and
+  `viking.conf.example` rewritten in the new style; `viking.conf.new`
+  spec consumed and removed. Test rewrite: test_e2e 306/306 green,
+  test_example 53/53 green (incl. real ELSTER sandbox validation for
+  UStVA/EÜR/USt/ESt). Example TSVs renamed to match the new handles
+  (`2025-freiberuf.tsv`, `2025-gewerbe.tsv`).
+
 - [x] ESt Anlage Kind `K_Verh_and_P` (satisfies ERiC rules
   `Regel_Kind_2020_100500048` and `Kind_Kindschaftsverhaeltnis_100500001`).
   Root cause: on Einzelveranlagung with a second parent ERiC requires

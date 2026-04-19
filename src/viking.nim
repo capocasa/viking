@@ -926,60 +926,65 @@ proc message(
   submitAndCheck(xml, "SonstigeNachrichten_21")
   return 0
 
-const initConfTemplate = """[personal]
-firstname = ""
-lastname = ""
-birthdate = ""
-idnr = ""
-taxnumber = ""
-street = ""
-housenumber = ""
-zip = ""
-city = ""
-iban = ""
-religion = keine
-profession = ""
-kv_art = privat
+const initConfTemplate = """; First section = taxpayer. Section name = "Vornamen Nachname".
+[Vorname Nachname]
+geburtsdatum = ""
+idnr         = ""
+steuernr     = ""
+strasse      = ""
+nr           = ""
+plz          = ""
+ort          = ""
+iban         = ""
+religion     = keine
+beruf        = ""
+krankenkasse = privat
 
-# Add one section per income source. Section name is the handle
-# you pass on the CLI (e.g. `viking ust mygewerbe`).
-# income = gewerbe   -> Gewerbebetrieb (Anlage G)
-# income = freiberuf -> Selbständige Arbeit (Anlage S)
-# income = kap       -> Anlage KAP (fill gains/tax inline)
+; Spouse (optional, for Zusammenveranlagung). Marker: `ehepartner = ja`.
+; Section name = spouse's full name.
+; [Vorname Nachname]
+; ehepartner   = ja
+; geburtsdatum = ""
+; idnr         = ""
+; religion     = keine
 
-# [freelance]
-# income = freiberuf
-# rechtsform = einzel       ; einzel, gmbh, ug, gbr, ohg, kg, ag, ...
-# besteuerungsart = ist     ; ist or soll
-# vorauszahlungen = 0
+; Income sources. Reserved names: freiberuf (Anlage S), gewerbe
+; (Einzelgewerbe). Otherwise the section name IS a handle; rechtsform
+; is inferred from a legal-form suffix (GmbH, UG, AG, KG, OHG, GbR,
+; PartG, eK, eG, KGaA, SE, "GmbH & Co. KG", …). No suffix = Einzelgewerbe.
+; Section name also picks the TSV: <year>-<section>.tsv.
 
-# [mygewerbe]
-# income = gewerbe
-# taxnumber = ""
-# rechtsform = einzel
-# besteuerungsart = ist
-# vorauszahlungen = 0
+; [freiberuf]
+; versteuerung    = ist      ; ist or soll
+; vorauszahlungen = 0
 
-# [ibkr]
-# income = kap
-# gains = 0
-# tax = 0
-# soli = 0
-# guenstigerpruefung = 0
-# sparer_pauschbetrag = 1000
+; [gewerbe]
+; versteuerung    = ist
+; vorauszahlungen = 0
 
-# Add one section per kid. Section name is the firstname (used for
-# deduction prefix matching, e.g. alice174). kindschaftsverhaeltnis
-# is required (marker): leiblich, pflege, enkel.
-#   _b = relationship to the other parent (same values).
-# familienkasse = Familienkasse responsible for Kindergeld.
-# [alice]
-# birthdate = ""
-# idnr = ""
-# kindschaftsverhaeltnis   = leiblich
-# kindschaftsverhaeltnis_b = leiblich
-# familienkasse            = Berlin
-# kindergeld = 0
+; [Musterfirma GmbH]          ; rechtsform inferred: gmbh
+; versteuerung    = soll
+; vorauszahlungen = 0
+
+; Anlage KAP. Marker: guenstigerpruefung or pauschbetrag.
+; [ibkr]
+; guenstigerpruefung = 1
+; pauschbetrag       = 1000
+; gains              = 0
+; tax                = 0
+; soli               = 0
+
+; Kids. Marker: verhaeltnis (leiblich | pflege | enkel).
+; Section name = full name. The firstname's first word (lowercased) is
+; the deduction-code prefix, e.g. alice174.
+; [Alice Maier]
+; geburtsdatum        = ""
+; idnr                = ""
+; verhaeltnis         = leiblich
+; personb-verhaeltnis = leiblich
+; personb-name        = ""
+; familienkasse       = ""
+; kindergeld          = 0
 """
 
 const initDeductionsTemplate =

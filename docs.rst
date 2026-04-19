@@ -19,17 +19,28 @@ The configuration model was reworked. Highlights:
 
 - A single `viking.conf` per project drives every command. No more `.env`,
   no more `VIKING_*` env vars.
-- INI sections classify themselves: `[personal]`, `[spouse]`, `[auth]` are
-  reserved; everything else is either an income source (has `income =`) or
-  a kid (has `kindschaftsverhaeltnis =`).
+- INI sections classify themselves by **name and markers** — no `income =`
+  field needed. The first section is the taxpayer, named by full name
+  (`[Hans Maier]`). Only `[auth]`, `[freiberuf]`, `[gewerbe]` are reserved.
+  Everything else falls out from the shape of the section:
+
+  - `ehepartner = ja`              → spouse (section name = full name)
+  - `verhaeltnis = ...`            → kid (section name = full name)
+  - `guenstigerpruefung`/`pauschbetrag` → Anlage KAP source
+  - section name ends with a legal-form suffix (GmbH, UG, KG, OHG, GbR,
+    PartG, eK, eG, KGaA, SE, "GmbH & Co. KG", …) → Anlage G with that
+    Rechtsform
+  - anything else → Einzelgewerbe (Anlage G with rechtsform einzel)
+
 - German-word aliases for every numeric ELSTER code you used to look up:
   `freiberuf` instead of `3`, `einzel` instead of `120`, `q1` instead of
   `41`, `rk` instead of `03`. Numerics still work.
 - A new `[auth]` section with sensible defaults — drop `viking.pfx` +
   `viking.pin` next to the conf and you're done. Wire up `pass`,
   Keychain or libsecret with a one-line script.
-- Multi-source per conf: declare `[freelance]` and `[mygewerbe]` and
-  `[ibkr]` (KAP) side-by-side; commands pick by section name.
+- Multi-source per conf: declare `[freiberuf]`, `[gewerbe]`,
+  `[Musterfirma GmbH]` and `[ibkr]` (KAP) side-by-side; commands pick by
+  section name.
 - Two-file conf chain: `~/.config/viking/viking.conf` for shared
   defaults, `./viking.conf` to override per project.
 
@@ -59,20 +70,16 @@ The simplest viable conf: one person, one freelance income source.
 
 .. code-block:: ini
 
-    [personal]
-    firstname    = Hans
-    lastname     = Maier
-    taxnumber    = 9198011310010
-    street       = Musterstr.
-    housenumber  = 1
-    zip          = 10115
-    city         = Berlin
-    iban         = DE91100000000123456789
+    [Hans Maier]
+    steuernr = 9198011310010
+    strasse  = Musterstr.
+    nr       = 1
+    plz      = 10115
+    ort      = Berlin
+    iban     = DE91100000000123456789
 
-    [freelance]
-    income          = freiberuf
-    rechtsform      = freiberuf
-    besteuerungsart = ist
+    [freiberuf]
+    versteuerung = ist
 
 That's enough for a UStVA:
 
@@ -80,7 +87,7 @@ That's enough for a UStVA:
 
     viking submit --period q1 --amount19 1000
 
-`freelance` is the only source, so you don't need to name it. Quarterly
+`freiberuf` is the only source, so you don't need to name it. Quarterly
 period `q1` is the same as `41`; either works.
 
 For an annual EÜR or USt you need amounts. Drop a TSV named
@@ -89,7 +96,7 @@ automatically:
 
 .. code-block:: sh
 
-    cat > 2025-freelance.tsv <<'EOF'
+    cat > 2025-freiberuf.tsv <<'EOF'
     amount  rate    date            id              description
     1200    19      2025-01-15      INV-001         January
     -300    19      2025-02-01      EXP-001         Office supplies
@@ -103,36 +110,35 @@ are optional; `date` enables period filtering on `submit --period`.
 Multiple sources
 ################
 
-Add a second section with `income =` and you've declared a second
-source. Names are freeform — use whatever's meaningful to you.
+Add more sections — each one is a source. Section names can be the
+reserved `[freiberuf]` (Anlage S) / `[gewerbe]` (Einzelgewerbe), or a
+company name whose suffix picks the Rechtsform:
 
 .. code-block:: ini
 
-    [freelance]
-    income          = freiberuf       ; -> Anlage S
-    rechtsform      = freiberuf
-    besteuerungsart = ist
+    [freiberuf]                    ; Anlage S, rechtsform freiberuf
+    versteuerung = ist
 
-    [mygewerbe]
-    income          = gewerbe         ; -> Anlage G
-    taxnumber       = 9198011310020   ; overrides personal.taxnumber for this source
-    rechtsform      = einzel
-    besteuerungsart = soll
+    [Musterfirma GmbH]             ; Anlage G, rechtsform gmbh (350)
+    steuernr        = 9198011310020   ; overrides personal.steuernr for this source
+    versteuerung    = soll
     vorauszahlungen = 100
 
-Now commands need to know which source to act on:
+    [mygewerbe]                    ; no suffix → Einzelgewerbe (120)
+    versteuerung = soll
+
+Now commands need to know which source to act on. The section name is
+the handle:
 
 .. code-block:: sh
 
-    viking submit freelance  --period q1 --amount19 1000
-    viking submit mygewerbe  --period q1 --amount19 5000
-    viking euer    freelance --year 2025
-    viking euer    mygewerbe --year 2025
-    viking ust     mygewerbe --year 2025      # picks up vorauszahlungen=100
+    viking submit freiberuf          --period q1 --amount19 1000
+    viking submit "Musterfirma GmbH" --period q1 --amount19 5000
+    viking euer   mygewerbe          --year 2025
+    viking ust    "Musterfirma GmbH" --year 2025      # picks up vorauszahlungen=100
 
 `viking est` is special — it scans every source and emits Anlage G for
-each `income = gewerbe` and Anlage S for each `income = freiberuf`,
-all in one return:
+each Gewerbe and Anlage S for each `[freiberuf]`, all in one return:
 
 .. code-block:: sh
 
@@ -147,11 +153,10 @@ zeros are optional.
 
 .. code-block:: ini
 
-    income          = freiberuf       ; or 3
-    rechtsform      = einzel          ; or 120
-    besteuerungsart = ist             ; or 2
-    religion        = rk              ; or 03
-    kindschaftsverhaeltnis = leiblich ; or 1
+    rechtsform   = einzel          ; or 120 (usually set via the name suffix)
+    versteuerung = ist             ; or 2
+    religion     = rk              ; or 03
+    verhaeltnis  = leiblich        ; or 1
 
 The CLI gets the same treatment for `--period`:
 
@@ -178,17 +183,17 @@ is tolerated, so you can write `19%` and `7%` if you prefer.
 Anlage KAP (capital gains)
 ##########################
 
-KAP sources don't need a TSV — gains, withheld tax and Soli go inline:
+KAP sources don't need a TSV — gains, withheld tax and Soli go inline.
+Marker: `guenstigerpruefung` or `pauschbetrag`:
 
 .. code-block:: ini
 
     [ibkr]
-    income              = kap
-    gains               = 1500.50
-    tax                 = 375.13
-    soli                = 20.63
-    guenstigerpruefung  = 1
-    sparer_pauschbetrag = 1000
+    guenstigerpruefung = 1
+    pauschbetrag       = 1000
+    gains              = 1500.50
+    tax                = 375.13
+    soli               = 20.63
 
 `viking est` aggregates every KAP source into one Anlage KAP. The
 section name (here `ibkr`) is just a label for your benefit.
@@ -196,45 +201,46 @@ section name (here `ibkr`) is just a label for your benefit.
 Spouse and kids
 ###############
 
-Add a `[spouse]` section for joint filing (Zusammenveranlagung):
+Add a spouse section for joint filing (Zusammenveranlagung). Name it
+with the spouse's full name; the marker is `ehepartner = ja`:
 
 .. code-block:: ini
 
-    [spouse]
-    firstname  = Greta
-    lastname   = Maier
-    birthdate  = 12.07.1956
-    idnr       = 04452397688
-    religion   = ev
-    profession = Lehrerin
+    [Greta Maier]
+    ehepartner   = ja
+    geburtsdatum = 12.07.1956
+    idnr         = 04452397688
+    religion     = ev
+    beruf        = Lehrerin
 
-Add one section per kid. The section name is the firstname — and it's
-significant: it becomes the prefix for that kid's deduction codes.
+Add one section per kid. The section name is the full name; the
+first given word (lowercased) becomes the prefix for that kid's
+deduction codes. Marker: `verhaeltnis`.
 
 .. code-block:: ini
 
-    [max]
-    birthdate                = 01.06.2018
-    idnr                     = 12345678901
-    kindschaftsverhaeltnis   = leiblich    ; to Person A (the filer)
-    kindschaftsverhaeltnis_b = leiblich    ; to Person B (other parent)
-    familienkasse            = Berlin      ; Familienkasse zustaendig fuer Kindergeld
-    kindergeld               = 2400
+    [Max Maier]
+    geburtsdatum         = 01.06.2018
+    idnr                 = 12345678901
+    verhaeltnis          = leiblich    ; to Person A (the filer)
+    personb-verhaeltnis  = leiblich    ; to Person B (other parent)
+    familienkasse        = Berlin      ; Familienkasse zustaendig fuer Kindergeld
+    kindergeld           = 2400
 
-    [lisa]
-    birthdate                = 15.03.2020
-    idnr                     = 98765432109
-    kindschaftsverhaeltnis   = leiblich
-    kindschaftsverhaeltnis_b = leiblich
-    familienkasse            = Berlin
-    kindergeld               = 2400
+    [Lisa Maier]
+    geburtsdatum         = 15.03.2020
+    idnr                 = 98765432109
+    verhaeltnis          = leiblich
+    personb-verhaeltnis  = leiblich
+    familienkasse        = Berlin
+    kindergeld           = 2400
 
-``kindschaftsverhaeltnis_b`` and ``familienkasse`` are optional but
-ERiC's Anlage Kind plausibility checks ask for them — set them if
-you want a clean validation. ``_b`` is the Kindschaftsverhältnis to
-the other parent (can differ from ``_a`` for stepchild / foster
-cases). ``familienkasse`` is the office name (usually a city like
-``Berlin`` or ``Regensburg``).
+``personb-verhaeltnis`` and ``familienkasse`` are optional but ERiC's
+Anlage Kind plausibility checks ask for them — set them if you want a
+clean validation. ``personb-verhaeltnis`` is the Kindschaftsverhältnis
+to the other parent (can differ from ``verhaeltnis`` for stepchild /
+foster cases). ``familienkasse`` is the office name (usually a city
+like ``Berlin`` or ``Regensburg``).
 
 Then in `deductions.tsv`, prefix the per-kid codes with the firstname:
 
@@ -245,7 +251,7 @@ Then in `deductions.tsv`, prefix the per-kid codes with the firstname:
     lisa174     3600    Betreuungskosten Lisa
     lisa176     1500    Schulgeld Lisa
 
-`viking est` emits one `<Kind>` block per `[<name>]` section.
+`viking est` emits one `<Kind>` block per kid section.
 
 Authentication
 ##############
@@ -297,9 +303,9 @@ Viking loads two confs and merges them field-by-field, CWD wins:
 1. ``~/.config/viking/viking.conf`` — global defaults
 2. ``./viking.conf`` — per-project overrides
 
-Stick your `[personal]` block in the global one and just declare income
+Stick your personal block in the global one and just declare income
 sources locally per project. Or override anything else — `[auth]`
-defaults, taxnumber, even religion if your circumstances change.
+defaults, steuernr, even religion if your circumstances change.
 
 Pass `--conf <path>` to bypass the chain entirely; that explicit file
 becomes the only conf loaded.
@@ -336,68 +342,60 @@ default that just picks up `viking.pfx` + `viking.pin`:
 
 .. code-block:: ini
 
-    [personal]
-    firstname    = Hans
-    lastname     = Maier
-    birthdate    = 05.05.1955
+    [Hans Maier]
+    geburtsdatum = 05.05.1955
     idnr         = 04452397687
-    taxnumber    = 9198011310010
-    street       = Musterstr.
-    housenumber  = 1
-    zip          = 10115
-    city         = Berlin
+    steuernr     = 9198011310010
+    strasse      = Musterstr.
+    nr           = 1
+    plz          = 10115
+    ort          = Berlin
     iban         = DE91100000000123456789
     religion     = rk
-    profession   = Software-Entwickler
-    kv_art       = privat
+    beruf        = Software-Entwickler
+    krankenkasse = privat
 
-    [spouse]
-    firstname    = Greta
-    lastname     = Maier
-    birthdate    = 12.07.1956
+    [Greta Maier]
+    ehepartner   = ja
+    geburtsdatum = 12.07.1956
     idnr         = 04452397688
     religion     = ev
-    profession   = Lehrerin
+    beruf        = Lehrerin
 
-    [freelance]
-    income          = freiberuf
-    rechtsform      = freiberuf
-    besteuerungsart = ist
+    [freiberuf]
+    versteuerung = ist
 
     [mygewerbe]
-    income          = gewerbe
-    taxnumber       = 9198011310020
-    rechtsform      = einzel
-    besteuerungsart = soll
+    steuernr        = 9198011310020
+    versteuerung    = soll
     vorauszahlungen = 100
 
     [ibkr]
-    income              = kap
-    gains               = 1500.50
-    tax                 = 375.13
-    soli                = 20.63
-    guenstigerpruefung  = 1
-    sparer_pauschbetrag = 1000
+    guenstigerpruefung = 1
+    pauschbetrag       = 1000
+    gains              = 1500.50
+    tax                = 375.13
+    soli               = 20.63
 
-    [max]
-    birthdate                = 01.06.2018
-    idnr                     = 12345678901
-    kindschaftsverhaeltnis   = leiblich
-    kindschaftsverhaeltnis_b = leiblich
-    familienkasse            = Berlin
-    kindergeld               = 2400
+    [Max Maier]
+    geburtsdatum        = 01.06.2018
+    idnr                = 12345678901
+    verhaeltnis         = leiblich
+    personb-verhaeltnis = leiblich
+    familienkasse       = Berlin
+    kindergeld          = 2400
 
-    [lisa]
-    birthdate                = 15.03.2020
-    idnr                     = 98765432109
-    kindschaftsverhaeltnis   = leiblich
-    kindschaftsverhaeltnis_b = leiblich
-    familienkasse            = Berlin
-    kindergeld               = 2400
+    [Lisa Maier]
+    geburtsdatum        = 15.03.2020
+    idnr                = 98765432109
+    verhaeltnis         = leiblich
+    personb-verhaeltnis = leiblich
+    familienkasse       = Berlin
+    kindergeld          = 2400
 
-This is `example/viking.conf` in the repo, with three TSVs and a
-deductions file alongside it. Copy the directory and you have a working
-sandbox project.
+This is `example/viking.conf` in the repo, with TSVs and a deductions
+file alongside it. Copy the directory and you have a working sandbox
+project.
 
 Postfach
 ########

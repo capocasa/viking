@@ -41,14 +41,14 @@ viking submit --period 41 --amount19 1000
 viking submit --period 01 --amount19 5000 --amount7 2000
 
 # EÜR (profit/loss statement) for a named source
-# loads 2025-freelance.tsv alongside viking.conf
-viking euer freelance --year 2025
+# loads 2025-freiberuf.tsv alongside viking.conf
+viking euer freiberuf --year 2025
 
 # ESt (income tax return) — aggregates all sources
 viking est --year 2025
 
 # USt (annual VAT return) for a named source
-viking ust freelance --year 2025
+viking ust freiberuf --year 2025
 
 # Retrieve documents from Finanzamt (Steuerbescheide etc.)
 viking list                              # show available documents
@@ -73,7 +73,36 @@ The `download` command queries the ELSTER Postfach, downloads documents from the
 
 ## Configuration
 
-`viking.conf` holds personal, source, and (optional) auth information. See `viking init` for a template. The file is loaded from:
+`viking.conf` is an INI file. The first section is the taxpayer — its name is your full name ("Vornamen Nachname"). Everything else classifies itself:
+
+```ini
+[Hans Maier]
+steuernr = 1234567890123
+strasse  = Musterstr.
+nr       = 1
+plz      = 10115
+ort      = Berlin
+iban     = DE89370400440532013000
+
+[freiberuf]              ; reserved → Anlage S
+versteuerung = ist
+
+[Musterfirma GmbH]       ; suffix → Anlage G, rechtsform=gmbh
+versteuerung = soll
+
+[ibkr]                   ; marker → Anlage KAP
+guenstigerpruefung = 1
+pauschbetrag       = 1000
+
+[Lena Maier]             ; marker → kid
+verhaeltnis   = leiblich
+geburtsdatum  = 15.03.2019
+idnr          = 02293417683
+```
+
+Rules: `[auth]`, `[freiberuf]` and `[gewerbe]` are the only reserved section names; `ehepartner = ja` flags a spouse, `verhaeltnis` a kid, `guenstigerpruefung`/`pauschbetrag` Anlage KAP. A trailing legal-form in the section name (GmbH, UG, KG, OHG, GbR, PartG, eK, eG, KGaA, SE, "GmbH & Co. KG", …) picks the Rechtsform; otherwise it's an Einzelgewerbe. See `viking init` for a full template and `docs.rst` for the slow tour.
+
+The conf is loaded from:
 
 1. `~/.config/viking/viking.conf` (global defaults)
 2. `./viking.conf` (per-directory overrides)

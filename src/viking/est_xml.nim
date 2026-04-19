@@ -1,7 +1,7 @@
 ## ESt XML Generation
 ## Generates ELSTER XML for Einkommensteuererklarung (income tax return)
 
-import std/[strformat, tables]
+import std/[strformat, strutils, tables]
 import viking/[vikingconf, deductions, kap, config]
 
 type
@@ -264,9 +264,13 @@ proc generateEst*(input: EstInput): string =
           <K_Verh>{kVerhParts}
           </K_Verh>""")
 
-    # Child-specific deductions from deductions.tsv
-    let kidDeductions = if kid.firstname in input.deductions.kids:
-                          input.deductions.kids[kid.firstname]
+    # Child-specific deductions from deductions.tsv (matched on first word,
+    # lowercased — mirrors the deduction-code prefix like `max174`).
+    let kidKey = block:
+      let words = kid.firstname.splitWhitespace
+      if words.len > 0: words[0].toLowerAscii else: ""
+    let kidDeductions = if kidKey in input.deductions.kids:
+                          input.deductions.kids[kidKey]
                         else:
                           initTable[string, float]()
 

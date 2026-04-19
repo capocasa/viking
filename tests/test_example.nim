@@ -77,7 +77,7 @@ proc inEx(args: string): tuple[output: string, code: int] =
 # Conf parses with the full feature kit (words, KAP, kids, spouse)
 # -----------------------------------------------------------------
 echo "--- conf parses with all features ---"
-let (h, hRc) = inEx("submit freelance --test --period q1 --amount19 0 --dry-run")
+let (h, hRc) = inEx("submit freiberuf --test --period q1 --amount19 0 --dry-run")
 check("conf with words/spouse/kids/KAP parses", hRc == 0, h)
 check("personal taxnumber in XML", h.contains("<Steuernummer>9198011310010</Steuernummer>"))
 echo ""
@@ -88,11 +88,11 @@ echo ""
 echo "--- multi-source dispatch ---"
 let (amb, ambRc) = inEx("submit --test --period q1 --amount19 0 --dry-run")
 check("ambiguous source rejected", ambRc != 0)
-check("error lists every source", amb.contains("freelance") and
-                                   amb.contains("mygewerbe"))
+check("error lists every source", amb.contains("freiberuf") and
+                                   amb.contains("gewerbe"))
 
-let (gw, _) = inEx("submit mygewerbe --test --period q1 --amount19 0 --dry-run")
-check("mygewerbe -> inherits personal taxnumber",
+let (gw, _) = inEx("submit gewerbe --test --period q1 --amount19 0 --dry-run")
+check("gewerbe -> inherits personal taxnumber",
       gw.contains("<Steuernummer>9198011310010</Steuernummer>"))
 echo ""
 
@@ -100,11 +100,11 @@ echo ""
 # Period aliases (word, padded numeric, unpadded numeric)
 # -----------------------------------------------------------------
 echo "--- period word/number aliases ---"
-let (pMar, _) = inEx("submit freelance --test --period mar --amount19 100 --dry-run")
+let (pMar, _) = inEx("submit freiberuf --test --period mar --amount19 100 --dry-run")
 check("period mar -> 03", pMar.contains("<Zeitraum>03</Zeitraum>"))
-let (pQ1,  _) = inEx("submit freelance --test --period q1  --amount19 100 --dry-run")
+let (pQ1,  _) = inEx("submit freiberuf --test --period q1  --amount19 100 --dry-run")
 check("period q1 -> 41", pQ1.contains("<Zeitraum>41</Zeitraum>"))
-let (p3,   _) = inEx("submit freelance --test --period 3   --amount19 100 --dry-run")
+let (p3,   _) = inEx("submit freiberuf --test --period 3   --amount19 100 --dry-run")
 check("period 3 -> 03 (padded)", p3.contains("<Zeitraum>03</Zeitraum>"))
 echo ""
 
@@ -112,11 +112,11 @@ echo ""
 # Auto-loaded <year>-<source>.tsv with date-based period filter
 # -----------------------------------------------------------------
 echo "--- TSV auto-discovery + period filter ---"
-let (uQ1, uQ1Rc) = inEx("submit freelance --test --period q1 --year 2025 --dry-run")
-check("Q1 freelance from TSV ok", uQ1Rc == 0, uQ1)
+let (uQ1, uQ1Rc) = inEx("submit freiberuf --test --period q1 --year 2025 --dry-run")
+check("Q1 freiberuf from TSV ok", uQ1Rc == 0, uQ1)
 check("Jan+Feb invoices summed (1200+800)", uQ1.contains("<Kz81>2000</Kz81>"))
 
-let (uQ2, _) = inEx("submit freelance --test --period q2 --year 2025 --dry-run")
+let (uQ2, _) = inEx("submit freiberuf --test --period q2 --year 2025 --dry-run")
 check("Q2 (Apr+May) sums 19% rates", uQ2.contains("<Kz81>2400</Kz81>"))
 check("Q2 picks up 7% from May", uQ2.contains("<Kz86>500</Kz86>"))
 echo ""
@@ -125,12 +125,12 @@ echo ""
 # EÜR per source — rechtsform aliases get translated correctly
 # -----------------------------------------------------------------
 echo "--- EÜR per source ---"
-let (eF, eFRc) = inEx("euer freelance --test --year 2025 --dry-run")
-check("euer freelance ok", eFRc == 0, eF)
+let (eF, eFRc) = inEx("euer freiberuf --test --year 2025 --dry-run")
+check("euer freiberuf ok", eFRc == 0, eF)
 check("rechtsform=freiberuf -> 140", eF.contains("<E6000602>140</E6000602>"))
 
-let (eM, eMRc) = inEx("euer mygewerbe --test --year 2025 --dry-run")
-check("euer mygewerbe ok", eMRc == 0, eM)
+let (eM, eMRc) = inEx("euer gewerbe --test --year 2025 --dry-run")
+check("euer gewerbe ok", eMRc == 0, eM)
 check("rechtsform=einzel -> 120", eM.contains("<E6000602>120</E6000602>"))
 echo ""
 
@@ -138,7 +138,7 @@ echo ""
 # Annual USt with conf-side vorauszahlungen
 # -----------------------------------------------------------------
 echo "--- annual USt + vorauszahlungen ---"
-let (u, uRc) = inEx("ust mygewerbe --test --year 2025 --dry-run")
+let (u, uRc) = inEx("ust gewerbe --test --year 2025 --dry-run")
 check("ust dry-run ok", uRc == 0, u)
 check("vorauszahlungen=100 carried into XML",
       u.contains("<E3011301>100,00</E3011301>"))
@@ -152,8 +152,8 @@ echo ""
 echo "--- ESt aggregation across all sources ---"
 let (e, eRc) = inEx("est --test --year 2025 --deductions deductions.tsv --dry-run")
 check("est dry-run ok", eRc == 0, e)
-check("Anlage G emitted (mygewerbe)",  e.contains("<G>"))
-check("Anlage S emitted (freelance)",  e.contains("<S>"))
+check("Anlage G emitted (gewerbe)",  e.contains("<G>"))
+check("Anlage S emitted (freiberuf)",  e.contains("<S>"))
 check("Anlage KAP emitted (ibkr)",     e.contains("<KAP>"))
 check("two Anlage Kind blocks",        e.count("<Kind>") == 2)
 check("KAP guenstigerpruefung set",    e.contains("<E1900401>1</E1900401>"))
@@ -202,15 +202,15 @@ echo ""
 if testCertAvailable:
   echo "--- ELSTER validation (--test --validate-only) ---"
 
-  let (vU, vURc) = inEx("submit freelance --test --period q1 --amount19 0 --validate-only")
+  let (vU, vURc) = inEx("submit freiberuf --test --period q1 --amount19 0 --validate-only")
   check("UStVA validates",       validateOk(vU, vURc), vU)
   check("UStVA no schema errors", not vU.contains("610301200"), vU)
 
-  let (vE, vERc) = inEx("euer freelance --test --year 2025 --validate-only")
+  let (vE, vERc) = inEx("euer freiberuf --test --year 2025 --validate-only")
   check("EÜR validates",         validateOk(vE, vERc), vE)
   check("EÜR no schema errors",   not vE.contains("610301200"), vE)
 
-  let (vUst, vUstRc) = inEx("ust mygewerbe --test --year 2025 --validate-only")
+  let (vUst, vUstRc) = inEx("ust gewerbe --test --year 2025 --validate-only")
   check("USt validates",         validateOk(vUst, vUstRc), vUst)
   check("USt no schema errors",   not vUst.contains("610301200"), vUst)
 
@@ -240,7 +240,7 @@ if testCertAvailable:
   writeFile(confPath, baseConf &
     "\n[auth]\ncert = " & testCertPath &
     "\npincmd = " & (tmp / "viking.pin.sh") & "\n")
-  let (pc, pcRc) = inEx("submit freelance --test --period q1 --amount19 0 --validate-only")
+  let (pc, pcRc) = inEx("submit freiberuf --test --period q1 --amount19 0 --validate-only")
   check("pincmd script PIN accepted", validateOk(pc, pcRc), pc)
   echo ""
 else:
