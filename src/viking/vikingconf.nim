@@ -1,9 +1,19 @@
-## viking.conf parser
-## Reserved sections: [personal], [spouse]. All other sections are inferred
-## by their fields: has `income` -> income source; has `kindschaftsverhaeltnis`
-## -> kid; neither/both -> error.
+## viking.conf parser, validator, and auth resolver.
+##
+## INI sections are reserved by name (`[personal]`, `[spouse]`, `[auth]`)
+## or inferred by the fields they contain:
+##
+## * has `income`                    → income `Source`
+## * has `kindschaftsverhaeltnis`    → `Kid`
+## * has source-only fields, no `income` → error (catches typos)
+## * neither / both                  → error
+##
+## `loadVikingConf` merges the global and CWD confs (or honours an explicit
+## `--conf` path); `validateForX` returns a `seq[string]` of human-readable
+## errors per command. `resolveCertPath` / `resolvePinPath` / `readPin`
+## locate signing material per the rules described in the user docs.
 
-import std/[parsecfg, streams, strutils, os, tables]
+import std/[parsecfg, streams, strutils, os, osproc, tables]
 import viking/codes
 
 type
@@ -21,7 +31,11 @@ type
   Kid* = object
     firstname*: string   ## from section name
     birthdate*, idnr*: string
-    kindschaftsverhaeltnis*: string  ## default "1" (leibliches Kind)
+    kindschaftsverhaeltnis*: string  ## Person A; default "1" (leibliches Kind)
+    kindschaftsverhaeltnisB*: string ## Person B; unset = don't emit K_Verh_B
+    parentBName*: string             ## Other parent name, Einzelveranlagung only
+                                     ## (E0501103 in K_Verh_and_P/Ang_Pers)
+    familienkasse*: string           ## Anlage Kind line 6/7, E0500706
     kindergeld*: float
 
   SourceKind* = enum
@@ -41,11 +55,20 @@ type
     gains*, tax*, soli*, kirchensteuer*, sparerPauschbetrag*: float
     guenstigerpruefung*: bool
 
+  Auth* = object
+    ## Raw [auth] values from the conf; paths not yet resolved.
+    cert*: string    ## optional cert path, absolute or relative to confDir
+    pin*: string     ## optional plaintext pin file path
+    pincmd*: string  ## optional executable pin-command file path
+
   VikingConf* = object
     personal*: Personal
     spouse*: Spouse
     kids*: seq[Kid]
     sources*: seq[Source]
+    auth*: Auth
+    confDir*: string           ## dir of the last loaded conf (for default resolution)
+    confBase*: string          ## basename (no extension) of the last loaded conf
 
 const SourceOnlyFields = [
   "taxnumber", "rechtsform", "besteuerungsart", "vorauszahlungen",
@@ -100,9 +123,20 @@ proc applyKid(k: var Kid, key, val: string) =
   of "idnr": k.idnr = val
   of "kindschaftsverhaeltnis":
     k.kindschaftsverhaeltnis = kindschaftsverhaeltnisMap.resolve(val)
+  of "kindschaftsverhaeltnis_b", "kindschaftsverhaeltnisb":
+    k.kindschaftsverhaeltnisB = kindschaftsverhaeltnisMap.resolve(val)
+  of "parent_b_name", "parentbname": k.parentBName = val
+  of "familienkasse": k.familienkasse = val
   of "kindergeld":
     try: k.kindergeld = parseFloat(val)
     except ValueError: discard
+  else: discard
+
+proc applyAuth(a: var Auth, key, val: string) =
+  case key
+  of "cert": a.cert = val
+  of "pin": a.pin = val
+  of "pincmd": a.pincmd = val
   else: discard
 
 proc applySource(s: var Source, key, val: string) =
@@ -181,6 +215,8 @@ proc classifyAndApply(conf: var VikingConf, sec: RawSection) =
   of "spouse":
     conf.spouse.present = true
     for k, v in sec.keys: applySpouse(conf.spouse, k, v)
+  of "auth":
+    for k, v in sec.keys: applyAuth(conf.auth, k, v)
   else:
     let hasIncome = "income" in sec.keys
     let hasKindschaft = "kindschaftsverhaeltnis" in sec.keys
@@ -219,6 +255,8 @@ proc mergeSection(conf: var VikingConf, sec: RawSection) =
   of "spouse":
     conf.spouse.present = true
     for k, v in sec.keys: applySpouse(conf.spouse, k, v)
+  of "auth":
+    for k, v in sec.keys: applyAuth(conf.auth, k, v)
   else:
     # Check if source with this name already exists
     var idx = -1
@@ -248,14 +286,21 @@ proc mergeSection(conf: var VikingConf, sec: RawSection) =
 
 proc loadSingleFile(path: string): VikingConf =
   result.personal = defaultPersonal()
+  result.confDir = path.parentDir
+  result.confBase = path.extractFilename.changeFileExt("")
   for sec in readSections(path):
     classifyAndApply(result, sec)
 
 proc mergeFile(conf: var VikingConf, path: string) =
+  conf.confDir = path.parentDir
+  conf.confBase = path.extractFilename.changeFileExt("")
   for sec in readSections(path):
     mergeSection(conf, sec)
 
 proc globalConfPath*(): string =
+  ## XDG-aware path of the global conf
+  ## (`$XDG_CONFIG_HOME/viking/viking.conf`, falling back to
+  ## `~/.config/viking/viking.conf`).
   let xdg = getEnv("XDG_CONFIG_HOME")
   let base = if xdg != "": xdg else: getHomeDir() / ".config"
   base / "viking" / "viking.conf"
@@ -282,6 +327,84 @@ proc loadVikingConf*(explicit: string = ""): VikingConf =
   result = loadSingleFile(paths[0])
   for i in 1 ..< paths.len:
     mergeFile(result, paths[i])
+
+## ---- Auth resolution ----
+
+const PinExtensions* = [".pin", ".pin.sh", ".pin.ps1", ".pin.cmd", ".pin.bat", ".pin.exe"]
+
+proc resolveRelative(conf: VikingConf, path: string): string =
+  ## Absolute paths stay as-is; relative paths resolve against the conf dir.
+  if path.isAbsolute: path
+  else: conf.confDir / path
+
+proc resolveCertPath*(conf: VikingConf): string =
+  ## Cert path: [auth].cert, else <confBase>.pfx next to the conf.
+  let raw = if conf.auth.cert != "": conf.auth.cert
+            else: conf.confBase & ".pfx"
+  conf.resolveRelative(raw)
+
+proc resolvePinPath*(conf: VikingConf): string =
+  ## Explicit pin/pincmd win. Otherwise scan <confBase>.pin{,.sh,.ps1,.cmd,.bat,.exe}
+  ## next to the conf. Exactly one must exist; zero or >1 is an error.
+  if conf.auth.pin != "" and conf.auth.pincmd != "":
+    raise newException(ValueError,
+      "[auth]: set pin or pincmd, not both")
+  if conf.auth.pin != "":
+    return conf.resolveRelative(conf.auth.pin)
+  if conf.auth.pincmd != "":
+    return conf.resolveRelative(conf.auth.pincmd)
+  var found: seq[string]
+  for ext in PinExtensions:
+    let p = conf.confDir / (conf.confBase & ext)
+    if fileExists(p):
+      found.add(p)
+  if found.len == 0:
+    raise newException(IOError,
+      "no pin file found next to " & (conf.confDir / conf.confBase) &
+      "; expected one of " & PinExtensions.join(", ") &
+      ", or set [auth] pin=/pincmd= in viking.conf")
+  if found.len > 1:
+    raise newException(ValueError,
+      "multiple pin files found: " & found.join(", ") &
+      "; set [auth] pin= or pincmd= explicitly")
+  found[0]
+
+proc readPin*(path: string): string =
+  ## Read the pin by dispatching on file extension. Plain `.pin` is read;
+  ## `.pin.sh`/`.ps1`/`.cmd`/`.bat`/`.exe` are executed, stdout is the pin.
+  let name = path.toLowerAscii
+  type Mode = enum mPlain, mSh, mPs1, mCmdBat, mExe
+  let mode =
+    if name.endsWith(".pin.sh"): mSh
+    elif name.endsWith(".pin.ps1"): mPs1
+    elif name.endsWith(".pin.cmd") or name.endsWith(".pin.bat"): mCmdBat
+    elif name.endsWith(".pin.exe"): mExe
+    elif name.endsWith(".pin"): mPlain
+    else:
+      raise newException(ValueError, "unsupported pin file extension: " & path)
+  case mode
+  of mPlain:
+    result = readFile(path).strip
+  of mSh:
+    let (output, rc) = execCmdEx("sh " & path.quoteShell)
+    if rc != 0:
+      raise newException(IOError, "pin command failed (exit " & $rc & "): " & output)
+    result = output.strip
+  of mPs1:
+    let (output, rc) = execCmdEx("powershell -NoProfile -File " & path.quoteShell)
+    if rc != 0:
+      raise newException(IOError, "pin command failed (exit " & $rc & "): " & output)
+    result = output.strip
+  of mCmdBat:
+    let (output, rc) = execCmdEx("cmd /c " & path.quoteShell)
+    if rc != 0:
+      raise newException(IOError, "pin command failed (exit " & $rc & "): " & output)
+    result = output.strip
+  of mExe:
+    let (output, rc) = execCmdEx(path.quoteShell)
+    if rc != 0:
+      raise newException(IOError, "pin command failed (exit " & $rc & "): " & output)
+    result = output.strip
 
 ## ---- Accessors ----
 

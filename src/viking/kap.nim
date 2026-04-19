@@ -1,4 +1,8 @@
-## KAP totals aggregation (from conf sources, no TSV)
+## Aggregation for Anlage KAP source sections.
+##
+## KAP data sits inline in `viking.conf` (no TSV needed), one section per
+## broker/account. `aggregateKap` rolls every `income = kap` source up into
+## a single `KapTotals` for `viking est`.
 
 import viking/vikingconf
 

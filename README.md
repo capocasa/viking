@@ -2,7 +2,7 @@
 
 CLI tool for German tax submissions and document retrieval via the ELSTER ERiC library.
 
-Supports UStVA, EUeR, ESt, USt annual returns, and downloading Steuerbescheide (tax assessments) from the ELSTER Postfach.
+Supports UStVA, EÜR, ESt, USt annual returns, and downloading Steuerbescheide (tax assessments) from the ELSTER Postfach.
 
 This is experimental — tax submissions are irreversible, so verify independently.
 
@@ -10,10 +10,26 @@ This is experimental — tax submissions are irreversible, so verify independent
 
 ```sh
 nimble build
-./viking fetch          # downloads ERiC library + test certificates
+./viking fetch   # downloads and extracts the ERiC library
 ```
 
-Edit `.env` with your configuration (see below).
+Then drop your ELSTER signing certificate (`.pfx`) next to your `viking.conf`, and put the PIN in a matching `.pin` file:
+
+```
+viking.conf
+viking.pfx
+viking.pin        # contains the PIN (plain text)
+```
+
+Naming is by convention: `viking.conf` → `viking.pfx` + `viking.pin`. Different conf basename? Same rule: `uncle.conf` → `uncle.pfx` + `uncle.pin`. Override in viking.conf:
+
+```ini
+[auth]
+cert = /elsewhere/softorg.pfx
+pin = /elsewhere/softorg.pin
+# or:
+# pincmd = /elsewhere/softorg.pin.sh
+```
 
 ## Usage
 
@@ -24,11 +40,11 @@ viking submit --period 41 --amount19 1000
 # Both rates
 viking submit --period 01 --amount19 5000 --amount7 2000
 
-# EUeR (profit/loss statement) for a named source
+# EÜR (profit/loss statement) for a named source
 # loads 2025-freelance.tsv alongside viking.conf
 viking euer freelance --year 2025
 
-# ESt (income tax return) - aggregates all sources
+# ESt (income tax return) — aggregates all sources
 viking est --year 2025
 
 # USt (annual VAT return) for a named source
@@ -46,42 +62,71 @@ viking submit --period 41 --amount19 1000 --validate-only
 # Dry run (show generated XML)
 viking submit --period 41 --amount19 1000 --dry-run
 
-# Use a different config profile
-viking submit --env .env.production --period 41 --amount19 1000
+# Sandbox submission (uses ELSTER test endpoint; XML gets a Testmerker)
+viking submit --test --period 41 --amount19 1000
+
+# Use a different conf
+viking submit --conf ./client-foo/viking.conf --period 41 --amount19 1000
 ```
 
 The `download` command queries the ELSTER Postfach, downloads documents from the OTTER server via `libotto`, and sends the mandatory confirmation (PostfachBestaetigung). Existing files are skipped unless `--force` is given.
 
 ## Configuration
 
-All configuration is via `.env` files. Copy and edit for different profiles:
+`viking.conf` holds personal, source, and (optional) auth information. See `viking init` for a template. The file is loaded from:
+
+1. `~/.config/viking/viking.conf` (global defaults)
+2. `./viking.conf` (per-directory overrides)
+3. `--conf <path>` (explicit — replaces the chain)
+
+`[auth]` section is optional; the default is `<conf-basename>.pfx` + `<conf-basename>.pin` next to the conf.
+
+### Pin file formats
+
+Picked by file extension. Exactly one of these must exist for the default to resolve:
+
+| File | How viking reads it |
+|------|---------------------|
+| `viking.pin` | plain text — pin is the file contents |
+| `viking.pin.sh` | run via `sh`, stdout is the pin |
+| `viking.pin.ps1` | run via `powershell`, stdout is the pin |
+| `viking.pin.cmd` / `.bat` | run via `cmd /c`, stdout is the pin |
+| `viking.pin.exe` | run directly, stdout is the pin |
+
+For secret-manager integration, make a script that prints the pin:
 
 ```sh
-# Test mode (1=sandbox, 0=production)
-TEST=1
+#!/bin/sh
+exec pass show elster/main
+```
 
-# ERiC library paths (set automatically by `viking fetch`)
-ERIC_LIB_PATH=...
-ERIC_PLUGIN_PATH=...
+Save as `viking.pin.sh`. Works with pass, 1Password CLI, macOS Keychain (`security find-generic-password ...`), libsecret (`secret-tool lookup ...`), gpg, age, or anything else that prints to stdout.
 
-# Certificate
-CERT_PATH=path/to/certificate.pfx
-CERT_PIN=123456
-# Or use a command to fetch the PIN:
-# CERT_PIN_CMD=pass show elster/pin
+### Viking data directory
 
-# Hersteller-ID (register at https://www.elster.de/elsterweb/entwickler)
-HERSTELLER_ID=40036
-PRODUKT_NAME=Viking
+`viking fetch` installs ERiC under `~/.local/share/viking/` (Linux), `~/Library/Application Support/viking/` (macOS), or `%APPDATA%\viking\` (Windows). Override with `--data-dir <path>` on any subcommand.
 
-# Sender information
-DATENLIEFERANT_NAME=Your Name
-DATENLIEFERANT_STRASSE=Street 1
-DATENLIEFERANT_PLZ=10115
-DATENLIEFERANT_ORT=Berlin
+Layout:
 
-# Tax number
-STEUERNUMMER=9198011310010
+```
+<data-dir>/
+  eric/...        # extracted ERiC runtime (only the current platform's files)
+  logs/           # ERiC log output
+```
+
+## Testing against ELSTER sandbox
+
+Grab the public test certificates from ELSTER:
+
+```sh
+wget https://download.elster.de/download/schnittstellen/Test_Zertifikate.zip
+unzip Test_Zertifikate.zip
+```
+
+Pick one of the `.pfx` files (softpers for personal, softorg for business), point your viking.conf's `[auth]` at it, write `123456` into the matching `.pin` file, and run with `--test`:
+
+```sh
+viking submit --test --period 41 --amount19 0 --conf ./test-viking.conf
 ```
 
 ## Testing
@@ -90,7 +135,7 @@ STEUERNUMMER=9198011310010
 nim c -r tests/test_e2e.nim
 ```
 
-Requires ERiC + test certificates (`viking fetch`).
+Requires ERiC installed (`viking fetch`) and the test certificates placed under `<data-dir>/certificates/`.
 
 ## License
 

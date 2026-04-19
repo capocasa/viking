@@ -1,8 +1,24 @@
-## viking - German tax submissions via ELSTER ERiC
+## viking — German tax submissions via the ELSTER ERiC library.
+##
+## CLI entry point. One subcommand per Steuerart:
+##
+## * `submit`   — UStVA (Umsatzsteuervoranmeldung)
+## * `euer`     — EÜR (Einnahmenüberschussrechnung)
+## * `est`      — ESt (Einkommensteuererklärung), aggregates every source
+## * `ust`      — annual USt (Umsatzsteuererklärung)
+## * `iban`     — change bank account (AenderungBankverbindung)
+## * `message`  — SonstigeNachrichten (free-text message to the Finanzamt)
+## * `list`     — list documents in the ELSTER Postfach
+## * `download` — fetch documents from the Postfach
+## * `fetch`    — download/install the ERiC runtime
+## * `init`     — seed `viking.conf` and `deductions.tsv` skeletons
+##
+## Configuration lives in `viking.conf`; signing in `[auth]`. See
+## `vikingconf <vikingconf.html>`_ for the data model and `docs.rst`
+## for the user guide.
 
 import std/[strutils, strformat, times, options, os, tables]
 import cligen, cligen/argcvt
-import dotenv
 import viking/[config, ericffi, ottoffi, ustva_xml, euer_xml, est_xml, ust_xml, ericsetup, invoices, abholung_xml, nachricht_xml, bankverbindung_xml]
 import viking/[vikingconf, deductions, kap, log, abholung, codes]
 
@@ -88,21 +104,36 @@ proc loadConfForSource(conf: string, srcName: string,
     return (false, vc, src)
   return (true, vc, src)
 
-proc loadTechConfig(env: string, validateOnly: bool, dryRun: bool): tuple[ok: bool, cfg: Config] =
-  var cfg: Config
-  try:
-    cfg = loadConfig(env)
-  except IOError as e:
-    err &"Error: {e.msg}"
-    return (false, cfg)
-  let errors = if validateOnly and not dryRun: cfg.validateForValidateOnly()
-               else: cfg.validate()
+proc loadTechConfig(dataDir: string, test: bool): tuple[ok: bool, cfg: Config] =
+  ## Derive ERiC paths from the data dir and carry the --test flag.
+  let cfg = loadConfig(dataDir, test)
+  let errors = cfg.validate()
   if errors.len > 0:
-    err "Configuration errors in .env:"
+    err "Configuration error:"
     for e in errors:
       err &"  - {e}"
     return (false, cfg)
   return (true, cfg)
+
+proc resolveSigningAuth(vc: VikingConf): tuple[ok: bool, certPath, certPin: string] =
+  ## Resolve cert path + pin for actual signing. Returns (false, ...) on error.
+  let certPath = vc.resolveCertPath()
+  if not fileExists(certPath):
+    err &"Error: cert not found: {certPath} (set [auth] cert= or place <conf-basename>.pfx next to viking.conf)"
+    return (false, "", "")
+  var pinPath: string
+  try:
+    pinPath = vc.resolvePinPath()
+  except CatchableError as e:
+    err &"Error: {e.msg}"
+    return (false, "", "")
+  var pin: string
+  try:
+    pin = readPin(pinPath)
+  except CatchableError as e:
+    err &"Error reading pin from {pinPath}: {e.msg}"
+    return (false, "", "")
+  (true, certPath, pin)
 
 proc defaultTsvPath(year: int, source: string): string =
   &"{year}-{source}.tsv"
@@ -145,7 +176,7 @@ template initEric(cfg: Config, dryRun: bool, xml: string) =
     echo xml
     return 0
 
-template initBuffersAndCert(cfg: Config, validateOnly: bool, outputPdf: string) =
+template initBuffersAndCert(certPath, certPin: string, validateOnly: bool, outputPdf: string) =
   let responseBuf {.inject.} = ericRueckgabepufferErzeugen()
   let serverBuf {.inject.} = ericRueckgabepufferErzeugen()
   if responseBuf == nil or serverBuf == nil:
@@ -173,14 +204,14 @@ template initBuffersAndCert(cfg: Config, validateOnly: bool, outputPdf: string) 
   var certHandle: EricZertifikatHandle = 0
   if not validateOnly:
     block:
-      let (ericCertRc {.inject.}, ericCertHandle {.inject.}) = ericGetHandleToCertificate(cfg.certPath)
+      let (ericCertRc {.inject.}, ericCertHandle {.inject.}) = ericGetHandleToCertificate(certPath)
       if ericCertRc != 0:
         err &"Error: Failed to open certificate: {ericHoleFehlerText(ericCertRc)}"
         return 1
       certHandle = ericCertHandle
     cryptParam.version = 3
     cryptParam.zertifikatHandle = certHandle
-    cryptParam.pin = cfg.certPin.cstring
+    cryptParam.pin = certPin.cstring
     cryptParamPtr = addr cryptParam
   defer:
     if certHandle != 0:
@@ -211,7 +242,8 @@ proc submit(
   dry_run: bool = false,
   verbose: bool = false,
   output_pdf: string = "",
-  env: string = ".env",
+  data_dir: string = "",
+  test: bool = false,
 ): int =
   ## Submit a UStVA (Umsatzsteuervoranmeldung) for a source.
   ##
@@ -266,7 +298,7 @@ proc submit(
     if finalAmount19.isNone and finalAmount7.isNone and finalAmount0.isNone:
       finalAmount19 = some(0.0)
 
-  let (techOk, cfg) = loadTechConfig(env, validateOnly, dryRun)
+  let (techOk, cfg) = loadTechConfig(dataDir, test)
   if not techOk: return 1
 
   let p = vikingConf.personal
@@ -289,8 +321,14 @@ proc submit(
     produktVersion = NimblePkgVersion,
   )
 
+  var certPath, certPin: string
+  if not validateOnly and not dryRun:
+    let (authOk, cp, pn) = resolveSigningAuth(vikingConf)
+    if not authOk: return 1
+    certPath = cp; certPin = pn
+
   initEric(cfg, dryRun, xml)
-  initBuffersAndCert(cfg, validateOnly, outputPdf)
+  initBuffersAndCert(certPath, certPin, validateOnly, outputPdf)
 
   submitAndCheck(xml, &"UStVA_{actualYear}")
   return 0
@@ -303,7 +341,8 @@ proc euer(
   dry_run: bool = false,
   verbose: bool = false,
   output_pdf: string = "",
-  env: string = ".env",
+  data_dir: string = "",
+  test: bool = false,
 ): int =
   ## Submit an EÜR for a source.
   ##
@@ -327,7 +366,7 @@ proc euer(
   let (agg, ok) = loadAndAggregateForEuer(tsvPath)
   if not ok: return 1
 
-  let (techOk, cfg) = loadTechConfig(env, validateOnly, dryRun)
+  let (techOk, cfg) = loadTechConfig(dataDir, test)
   if not techOk: return 1
 
   let p = vikingConf.personal
@@ -347,8 +386,14 @@ proc euer(
     test: cfg.test, produktVersion: NimblePkgVersion,
   ))
 
+  var certPath, certPin: string
+  if not validateOnly and not dryRun:
+    let (authOk, cp, pn) = resolveSigningAuth(vikingConf)
+    if not authOk: return 1
+    certPath = cp; certPin = pn
+
   initEric(cfg, dryRun, xml)
-  initBuffersAndCert(cfg, validateOnly, outputPdf)
+  initBuffersAndCert(certPath, certPin, validateOnly, outputPdf)
 
   submitAndCheck(xml, &"EUER_{actualYear}")
   return 0
@@ -362,7 +407,8 @@ proc est(
   verbose: bool = false,
   force: bool = false,
   output_pdf: string = "",
-  env: string = ".env",
+  data_dir: string = "",
+  test: bool = false,
 ): int =
   ## Submit an ESt (Einkommensteuererklarung / income tax return).
   ##
@@ -410,7 +456,7 @@ proc est(
   elif not force:
     err "Warning: no deductions file provided. Use --force to suppress, or pass --deductions <file>"
 
-  let (techOk, cfg) = loadTechConfig(env, validateOnly, dryRun)
+  let (techOk, cfg) = loadTechConfig(dataDir, test)
   if not techOk: return 1
 
   let xml = generateEst(EstInput(
@@ -420,8 +466,14 @@ proc est(
     test: cfg.test, produktVersion: NimblePkgVersion,
   ))
 
+  var certPath, certPin: string
+  if not validateOnly and not dryRun:
+    let (authOk, cp, pn) = resolveSigningAuth(vikingConf)
+    if not authOk: return 1
+    certPath = cp; certPin = pn
+
   initEric(cfg, dryRun, xml)
-  initBuffersAndCert(cfg, validateOnly, outputPdf)
+  initBuffersAndCert(certPath, certPin, validateOnly, outputPdf)
 
   submitAndCheck(xml, &"ESt_{actualYear}")
   return 0
@@ -434,7 +486,8 @@ proc ust(
   dry_run: bool = false,
   verbose: bool = false,
   output_pdf: string = "",
-  env: string = ".env",
+  data_dir: string = "",
+  test: bool = false,
 ): int =
   ## Submit an annual VAT return (Umsatzsteuererklaerung) for a source.
   ##
@@ -458,7 +511,7 @@ proc ust(
   let (agg, ok) = loadAndAggregateForUst(tsvPath)
   if not ok: return 1
 
-  let (techOk, cfg) = loadTechConfig(env, validateOnly, dryRun)
+  let (techOk, cfg) = loadTechConfig(dataDir, test)
   if not techOk: return 1
 
   let p = vikingConf.personal
@@ -474,24 +527,29 @@ proc ust(
     test: cfg.test, produktVersion: NimblePkgVersion,
   ))
 
+  var certPath, certPin: string
+  if not validateOnly and not dryRun:
+    let (authOk, cp, pn) = resolveSigningAuth(vikingConf)
+    if not authOk: return 1
+    certPath = cp; certPin = pn
+
   initEric(cfg, dryRun, xml)
-  initBuffersAndCert(cfg, validateOnly, outputPdf)
+  initBuffersAndCert(certPath, certPin, validateOnly, outputPdf)
 
   submitAndCheck(xml, &"USt_{actualYear}")
   return 0
 
-proc fetch(file: string = "", check: bool = false, env: string = ".env"): int =
-  ## Fetch ERiC library and test certificates
-
-  let envPath = if env.isAbsolute: env else: getCurrentDir() / env
-  if fileExists(envPath):
-    load(envPath.parentDir, envPath.extractFilename)
+proc fetch(file: string = "", check: bool = false, data_dir: string = ""): int =
+  ## Fetch and install the ERiC library.
 
   initLog()
   defer: closeLog()
 
+  let effectiveDataDir = if dataDir != "": dataDir else: getAppDataDir()
+  let ericDir = effectiveDataDir / "eric"
+
   if check:
-    let existing = findExistingEric()
+    let existing = findExistingEric(ericDir)
     if existing.valid:
       printStatus(existing)
       let years = listAvailableYears(existing)
@@ -509,47 +567,49 @@ proc fetch(file: string = "", check: bool = false, env: string = ".env"): int =
       return 0
     else:
       stderr.writeLine "No ERiC installation found."
-      printDownloadInstructions()
+      printDownloadInstructions(effectiveDataDir)
       return 1
-
-  let (certPath, certPin, certSuccess) = downloadTestCertificates()
 
   var installation: EricInstallation
   if file != "":
-    installation = setupEric(file)
+    installation = setupEric(file, ericDir)
   else:
-    installation = findExistingEric()
+    installation = findExistingEric(ericDir)
     if not installation.valid:
-      let (inst, success) = fetchEric()
+      let (inst, success) = fetchEric(effectiveDataDir)
       if success:
         installation = inst
       else:
         return 1
 
   if installation.valid:
-    if certSuccess:
-      updateEnvFile(installation, certPath, certPin)
-    else:
-      updateEnvFile(installation)
+    echo &"ERiC installed at {installation.path}"
+    stderr.writeLine ""
+    stderr.writeLine "For sandbox testing, grab ELSTER's test certs:"
+    stderr.writeLine "  wget https://download.elster.de/download/schnittstellen/Test_Zertifikate.zip"
+    stderr.writeLine "  unzip Test_Zertifikate.zip   # PIN for all certs: 123456"
     return 0
   else:
     stderr.writeLine "ERiC setup incomplete. Use 'viking fetch --file=<path>' with a local archive."
     return 1
 
-proc loadConfigAndEricForAbholung(conf: string, env: string): tuple[rc: int, cfg: Config, name: string] =
+proc loadConfigAndEricForAbholung(
+    conf, dataDir: string, test: bool
+): tuple[rc: int, cfg: Config, vc: VikingConf, name: string] =
   let (confOk, vikingConf) = loadConf(conf, validateForAbholung)
   var cfg: Config
-  if not confOk: return (1, cfg, "")
+  var emptyVc: VikingConf
+  if not confOk: return (1, cfg, emptyVc, "")
 
-  let (techOk, cfgLoaded) = loadTechConfig(env, false, false)
-  if not techOk: return (1, cfgLoaded, "")
+  let (techOk, cfgLoaded) = loadTechConfig(dataDir, test)
+  if not techOk: return (1, cfgLoaded, emptyVc, "")
   cfg = cfgLoaded
 
   let name = vikingConf.personal.firstname & " " & vikingConf.personal.lastname
 
   if not loadEricLib(cfg.ericLibPath):
     err &"Error: Failed to load ERiC library from {cfg.ericLibPath}"
-    return (1, cfg, "")
+    return (1, cfg, emptyVc, "")
 
   createDir(cfg.ericLogPath)
 
@@ -557,15 +617,16 @@ proc loadConfigAndEricForAbholung(conf: string, env: string): tuple[rc: int, cfg
   if initRc != 0:
     err &"Error: ERiC initialization failed: {ericHoleFehlerText(initRc)}"
     unloadEricLib()
-    return (1, cfg, "")
+    return (1, cfg, emptyVc, "")
 
-  return (0, cfg, name)
+  return (0, cfg, vikingConf, name)
 
 proc list(
   conf: string = "",
   verbose: bool = false,
   dry_run: bool = false,
-  env: string = ".env",
+  data_dir: string = "",
+  test: bool = false,
 ): int =
   ## List available documents in the tax office Postfach
 
@@ -573,7 +634,7 @@ proc list(
   initLog()
   defer: closeLog()
 
-  let (cfgRc, cfg, name) = loadConfigAndEricForAbholung(conf, env)
+  let (cfgRc, cfg, vc, name) = loadConfigAndEricForAbholung(conf, dataDir, test)
   if cfgRc != 0: return cfgRc
   defer:
     discard ericBeende()
@@ -583,7 +644,11 @@ proc list(
     echo generatePostfachAnfrageXml(name, cfg.test, NimblePkgVersion)
     return 0
 
-  let (rc, bereitstellungen, _) = initEricAndQueryPostfach(cfg, name, NimblePkgVersion, verbose)
+  let (authOk, certPath, certPin) = resolveSigningAuth(vc)
+  if not authOk: return 1
+
+  let (rc, bereitstellungen, _) = initEricAndQueryPostfach(
+    cfg, certPath, certPin, name, NimblePkgVersion, verbose)
   if rc != 0: return rc
 
   displayBereitstellungen(bereitstellungen)
@@ -596,7 +661,8 @@ proc download(
   force: bool = false,
   verbose: bool = false,
   dry_run: bool = false,
-  env: string = ".env",
+  data_dir: string = "",
+  test: bool = false,
 ): int =
   ## Download documents from the tax office Postfach
 
@@ -604,7 +670,7 @@ proc download(
   initLog()
   defer: closeLog()
 
-  let (cfgRc, cfg, name) = loadConfigAndEricForAbholung(conf, env)
+  let (cfgRc, cfg, vc, name) = loadConfigAndEricForAbholung(conf, dataDir, test)
   if cfgRc != 0: return cfgRc
   defer:
     discard ericBeende()
@@ -614,7 +680,11 @@ proc download(
     echo generatePostfachAnfrageXml(name, cfg.test, NimblePkgVersion)
     return 0
 
-  let (rc, bereitstellungen, _) = initEricAndQueryPostfach(cfg, name, NimblePkgVersion, verbose)
+  let (authOk, certPath, certPin) = resolveSigningAuth(vc)
+  if not authOk: return 1
+
+  let (rc, bereitstellungen, _) = initEricAndQueryPostfach(
+    cfg, certPath, certPin, name, NimblePkgVersion, verbose)
   if rc != 0: return rc
 
   if bereitstellungen.len == 0:
@@ -671,7 +741,7 @@ proc download(
 
       let dlRc = ottoDatenAbholen(
         ottoInstanz, a.dateiReferenzId, a.dateiGroesse.uint32,
-        cfg.certPath, cfg.certPin, HerstellerId, ottoBuf,
+        certPath, certPin, HerstellerId, ottoBuf,
       )
 
       if dlRc != 0:
@@ -697,7 +767,7 @@ proc download(
       confirmedIds.add(b.id)
 
   if confirmedIds.len > 0:
-    let (certRc, certHandle) = ericGetHandleToCertificate(cfg.certPath)
+    let (certRc, certHandle) = ericGetHandleToCertificate(certPath)
     if certRc != 0:
       err &"Error: Failed to open certificate for confirmation: {ericHoleFehlerText(certRc)}"
       err "Documents were downloaded but not confirmed. Run 'viking download' again."
@@ -707,7 +777,7 @@ proc download(
     var cryptParam: EricVerschluesselungsParameterT
     cryptParam.version = 3
     cryptParam.zertifikatHandle = certHandle
-    cryptParam.pin = cfg.certPin.cstring
+    cryptParam.pin = certPin.cstring
 
     let bestXml = generatePostfachBestaetigungXml(
       confirmedIds, name, cfg.test, NimblePkgVersion,
@@ -746,7 +816,8 @@ proc iban(
   dry_run: bool = false,
   verbose: bool = false,
   output_pdf: string = "",
-  env: string = ".env",
+  data_dir: string = "",
+  test: bool = false,
 ): int =
   ## Change bank account (IBAN) at the Finanzamt
 
@@ -759,7 +830,7 @@ proc iban(
     return 1
   let (confOk, vikingConf) = loadConf(conf, validateForBankverbindung)
   if not confOk: return 1
-  let (techOk, cfg) = loadTechConfig(env, validateOnly, dryRun)
+  let (techOk, cfg) = loadTechConfig(dataDir, test)
   if not techOk: return 1
 
   let p = vikingConf.personal
@@ -771,8 +842,14 @@ proc iban(
     iban = new_iban, test = cfg.test,
   )
 
+  var certPath, certPin: string
+  if not validateOnly and not dryRun:
+    let (authOk, cp, pn) = resolveSigningAuth(vikingConf)
+    if not authOk: return 1
+    certPath = cp; certPin = pn
+
   initEric(cfg, dryRun, xml)
-  initBuffersAndCert(cfg, validateOnly, outputPdf)
+  initBuffersAndCert(certPath, certPin, validateOnly, outputPdf)
 
   submitAndCheck(xml, "AenderungBankverbindung_20")
   return 0
@@ -786,7 +863,8 @@ proc message(
   dry_run: bool = false,
   verbose: bool = false,
   output_pdf: string = "",
-  env: string = ".env",
+  data_dir: string = "",
+  test: bool = false,
 ): int =
   ## Send a message (Sonstige Nachricht) to the Finanzamt
 
@@ -823,7 +901,7 @@ proc message(
 
   let (confOk, vikingConf) = loadConf(conf, validateForNachricht)
   if not confOk: return 1
-  let (techOk, cfg) = loadTechConfig(env, validateOnly, dryRun)
+  let (techOk, cfg) = loadTechConfig(dataDir, test)
   if not techOk: return 1
 
   let p = vikingConf.personal
@@ -836,8 +914,14 @@ proc message(
     test: cfg.test, produktVersion: NimblePkgVersion,
   ))
 
+  var certPath, certPin: string
+  if not validateOnly and not dryRun:
+    let (authOk, cp, pn) = resolveSigningAuth(vikingConf)
+    if not authOk: return 1
+    certPath = cp; certPin = pn
+
   initEric(cfg, dryRun, xml)
-  initBuffersAndCert(cfg, validateOnly, outputPdf)
+  initBuffersAndCert(certPath, certPin, validateOnly, outputPdf)
 
   submitAndCheck(xml, "SonstigeNachrichten_21")
   return 0
@@ -887,10 +971,14 @@ kv_art = privat
 # Add one section per kid. Section name is the firstname (used for
 # deduction prefix matching, e.g. alice174). kindschaftsverhaeltnis
 # is required (marker): leiblich, pflege, enkel.
+#   _b = relationship to the other parent (same values).
+# familienkasse = Familienkasse responsible for Kindergeld.
 # [alice]
 # birthdate = ""
 # idnr = ""
-# kindschaftsverhaeltnis = leiblich
+# kindschaftsverhaeltnis   = leiblich
+# kindschaftsverhaeltnis_b = leiblich
+# familienkasse            = Berlin
 # kindergeld = 0
 """
 
@@ -993,7 +1081,8 @@ when isMainModule:
         "dry_run": "Show generated XML without processing",
         "verbose": "Show full server response XML",
         "output_pdf": "Write PDF of submitted forms to file",
-        "env": "Path to env file (default: .env)",
+        "data_dir": "Viking data dir (default: ~/.local/share/viking)",
+        "test": "Submit to ELSTER sandbox instead of production",
       },
       short = {
         "amount19": '1',
@@ -1007,7 +1096,6 @@ when isMainModule:
         "dry_run": 'd',
         "verbose": 'v',
         "output_pdf": 'o',
-        "env": 'e',
       }
     ],
     [euer,
@@ -1020,7 +1108,8 @@ when isMainModule:
         "dry_run": "Show generated XML without processing",
         "verbose": "Show full server response XML",
         "output_pdf": "Write PDF of submitted forms to file",
-        "env": "Path to env file (default: .env)",
+        "data_dir": "Viking data dir (default: ~/.local/share/viking)",
+        "test": "Submit to ELSTER sandbox instead of production",
       },
       short = {
         "year": 'y',
@@ -1029,7 +1118,6 @@ when isMainModule:
         "dry_run": 'd',
         "verbose": 'v',
         "output_pdf": 'o',
-        "env": 'e',
       }
     ],
     [est,
@@ -1042,7 +1130,8 @@ when isMainModule:
         "verbose": "Show full server response XML",
         "force": "Suppress warnings (e.g. no deductions)",
         "output_pdf": "Write PDF of submitted forms to file",
-        "env": "Path to env file (default: .env)",
+        "data_dir": "Viking data dir (default: ~/.local/share/viking)",
+        "test": "Submit to ELSTER sandbox instead of production",
       },
       short = {
         "year": 'y',
@@ -1053,7 +1142,6 @@ when isMainModule:
         "verbose": 'v',
         "force": 'f',
         "output_pdf": 'o',
-        "env": 'e',
       }
     ],
     [ust,
@@ -1066,7 +1154,8 @@ when isMainModule:
         "dry_run": "Show generated XML without processing",
         "verbose": "Show full server response XML",
         "output_pdf": "Write PDF of submitted forms to file",
-        "env": "Path to env file (default: .env)",
+        "data_dir": "Viking data dir (default: ~/.local/share/viking)",
+        "test": "Submit to ELSTER sandbox instead of production",
       },
       short = {
         "year": 'y',
@@ -1075,7 +1164,6 @@ when isMainModule:
         "dry_run": 'd',
         "verbose": 'v',
         "output_pdf": 'o',
-        "env": 'e',
       }
     ],
     [iban,
@@ -1086,7 +1174,8 @@ when isMainModule:
         "dry_run": "Show generated XML without processing",
         "verbose": "Show full server response XML",
         "output_pdf": "Write PDF of submitted forms to file",
-        "env": "Path to env file (default: .env)",
+        "data_dir": "Viking data dir (default: ~/.local/share/viking)",
+        "test": "Submit to ELSTER sandbox instead of production",
       },
       short = {
         "new_iban": 'i',
@@ -1095,7 +1184,6 @@ when isMainModule:
         "dry_run": 'd',
         "verbose": 'v',
         "output_pdf": 'o',
-        "env": 'e',
       }
     ],
     [message,
@@ -1107,7 +1195,8 @@ when isMainModule:
         "dry_run": "Show generated XML without processing",
         "verbose": "Show full server response XML",
         "output_pdf": "Write PDF of submitted forms to file",
-        "env": "Path to env file (default: .env)",
+        "data_dir": "Viking data dir (default: ~/.local/share/viking)",
+        "test": "Submit to ELSTER sandbox instead of production",
       },
       short = {
         "subject": 's',
@@ -1117,7 +1206,6 @@ when isMainModule:
         "dry_run": 'd',
         "verbose": 'v',
         "output_pdf": 'o',
-        "env": 'e',
       }
     ],
     [list,
@@ -1125,13 +1213,13 @@ when isMainModule:
         "conf": "viking.conf file (optional; default search chain)",
         "dry_run": "Show generated XML without sending",
         "verbose": "Show full server response XML",
-        "env": "Path to env file (default: .env)",
+        "data_dir": "Viking data dir (default: ~/.local/share/viking)",
+        "test": "Query ELSTER sandbox instead of production",
       },
       short = {
         "conf": 'c',
         "dry_run": 'd',
         "verbose": 'v',
-        "env": 'e',
       }
     ],
     [download,
@@ -1142,7 +1230,8 @@ when isMainModule:
         "force": "Overwrite existing files",
         "dry_run": "Show generated XML without sending",
         "verbose": "Show full server response and confirmation XML",
-        "env": "Path to env file (default: .env)",
+        "data_dir": "Viking data dir (default: ~/.local/share/viking)",
+        "test": "Query ELSTER sandbox instead of production",
       },
       short = {
         "conf": 'c',
@@ -1150,19 +1239,17 @@ when isMainModule:
         "force": 'f',
         "dry_run": 'd',
         "verbose": 'v',
-        "env": 'e',
       }
     ],
     [fetch,
       help = {
         "file": "Path to local ERiC archive (JAR/ZIP/tar.gz)",
         "check": "Check existing ERiC installation in cache",
-        "env": "Path to env file (default: .env)",
+        "data_dir": "Viking data dir (default: ~/.local/share/viking)",
       },
       short = {
         "file": 'f',
         "check": 'c',
-        "env": 'e',
       }
     ],
     [initFiles, cmdName = "init",

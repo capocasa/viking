@@ -33,13 +33,24 @@ vorauszahlungen = 0
 
 ; One section per child. Section name is the firstname (used as the
 ; prefix in deductions.tsv, e.g. lena174).
-; kindschaftsverhaeltnis: leiblich, pflege, enkel (or 1, 2, 3).
+; kindschaftsverhaeltnis / kindschaftsverhaeltnis_b: leiblich, pflege,
+;   enkel (or 1, 2, 3). _b is the relationship to the other parent.
+; parent_b_name: full name of the non-co-filing other parent. Required
+;   on Einzelveranlagung when there's a second parent (ERiC plausi
+;   100500048); emitted as E0501103 plus full-year Dauer/Art.
+; familienkasse: Familienkasse responsible for Kindergeld.
 ; [lena]
 ; birthdate = 15.03.2019
 ; idnr = 02293417683
-; kindschaftsverhaeltnis = leiblich
+; kindschaftsverhaeltnis   = leiblich
+; kindschaftsverhaeltnis_b = leiblich
+; parent_b_name            = Anna Mustermann
+; familienkasse            = Berlin
 ;
 ; [max]
 ; birthdate = 22.08.2021
 ; idnr = 02293417684
-; kindschaftsverhaeltnis = leiblich
+; kindschaftsverhaeltnis   = leiblich
+; kindschaftsverhaeltnis_b = leiblich
+; parent_b_name            = Anna Mustermann
+; familienkasse            = Berlin

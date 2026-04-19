@@ -10,6 +10,14 @@ bin           = @["viking"]
 # Dependencies
 
 requires "nim >= 2.0.0"
-requires "dotenv >= 2.0.0"
 requires "cligen >= 1.7.0"
 requires "zippy >= 0.10.0"
+
+# Tasks
+
+task docs, "Generate HTML docs (API + user guide) into doc/":
+  rmDir "doc/api"
+  mkDir "doc/api"
+  exec "nim doc --project --index:on --outdir:doc/api src/viking.nim"
+  exec "nim rst2html --outdir:doc docs.rst"
+  echo "Wrote doc/docs.html and doc/api/*.html"

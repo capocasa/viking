@@ -139,11 +139,11 @@ proc sendPostfachAnfrage*(
   let bereitstellungen = parsePostfachAntwort(xmlDoc)
   return (0, bereitstellungen, serverResponse)
 
-proc initEricAndQueryPostfach*(cfg: Config, name: string, produktVersion: string, verbose: bool): tuple[rc: int, bereitstellungen: seq[AbholBereitstellung], serverResponse: string] =
+proc initEricAndQueryPostfach*(cfg: Config, certPath, certPin, name, produktVersion: string, verbose: bool): tuple[rc: int, bereitstellungen: seq[AbholBereitstellung], serverResponse: string] =
   ## Shared helper: send PostfachAnfrage, parse response.
   ## Caller must have loaded ERiC lib and called ericInitialisiere already.
 
-  let (certRc, certHandle) = ericGetHandleToCertificate(cfg.certPath)
+  let (certRc, certHandle) = ericGetHandleToCertificate(certPath)
   if certRc != 0:
     err &"Error: Failed to open certificate: {ericHoleFehlerText(certRc)}"
     return (1, @[], "")
@@ -152,7 +152,7 @@ proc initEricAndQueryPostfach*(cfg: Config, name: string, produktVersion: string
   var cryptParam: EricVerschluesselungsParameterT
   cryptParam.version = 3
   cryptParam.zertifikatHandle = certHandle
-  cryptParam.pin = cfg.certPin.cstring
+  cryptParam.pin = certPin.cstring
 
   let (rc, bereitstellungen, serverResponse) = sendPostfachAnfrage(cfg, name, produktVersion, addr cryptParam, "alle", verbose)
   if rc != 0:

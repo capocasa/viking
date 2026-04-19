@@ -209,6 +209,9 @@ proc generateEst*(input: EstInput): string =
               <E0500108>{p.lastname}</E0500108>""")
     allgParts.add(&"""
               <E0500701>{kid.birthdate}</E0500701>""")
+    if kid.familienkasse != "":
+      allgParts.add(&"""
+              <E0500706>{kid.familienkasse}</E0500706>""")
 
     kindParts.add(&"""
           <Ang_Kind>
@@ -221,14 +224,44 @@ proc generateEst*(input: EstInput): string =
             </WS>
           </Ang_Kind>""")
 
-    # Kindschaftsverhältnis
-    let kvh = if kid.kindschaftsverhaeltnis != "": kid.kindschaftsverhaeltnis else: "1"
-    kindParts.add(&"""
-          <K_Verh>
+    # Kindschaftsverhältnis — A is the filer (Anlage Kind line 10
+    # left, Kz 02). B is either:
+    #   - the co-filing spouse (Zusammenveranlagung): K_Verh_B with
+    #     E0500808 + E0500805. ERiC rule 5075 rejects K_Verh_B on
+    #     Einzelveranlagung, so emit only when [spouse] is present.
+    #   - the non-co-filing other parent (Einzelveranlagung):
+    #     K_Verh_and_P/Ang_Pers with E0501103 (name), E0501903
+    #     (Dauer) and E0501106 (Art). Required together by plausi
+    #     rule 100500001; omitting them trips rule 100500048 ("nur
+    #     ein Kindschaftsverhältnis … angegeben").
+    let kvhA = if kid.kindschaftsverhaeltnis != "": kid.kindschaftsverhaeltnis else: "1"
+    var kVerhParts = &"""
             <K_Verh_A>
-              <E0500807>{kvh}</E0500807>
+              <E0500807>{kvhA}</E0500807>
               <E0500601>01.01-31.12</E0500601>
-            </K_Verh_A>
+            </K_Verh_A>"""
+    if input.conf.spouse.present and kid.kindschaftsverhaeltnisB != "":
+      kVerhParts.add(&"""
+            <K_Verh_B>
+              <E0500808>{kid.kindschaftsverhaeltnisB}</E0500808>
+              <E0500805>01.01-31.12</E0500805>
+            </K_Verh_B>""")
+    elif not input.conf.spouse.present and kid.parentBName != "":
+      # E0501106 enum: only "1" (leiblich/Adoptiv) or "2" (Pflege).
+      # kindschaftsverhaeltnis_b "3" (Enkel/Stief) doesn't map here;
+      # fall back to "1" in that case.
+      let kvhB = if kid.kindschaftsverhaeltnisB in ["1", "2"]: kid.kindschaftsverhaeltnisB
+                 else: "1"
+      kVerhParts.add(&"""
+            <K_Verh_and_P>
+              <Ang_Pers>
+                <E0501103>{kid.parentBName}</E0501103>
+                <E0501903>01.01-31.12</E0501903>
+                <E0501106>{kvhB}</E0501106>
+              </Ang_Pers>
+            </K_Verh_and_P>""")
+    kindParts.add(&"""
+          <K_Verh>{kVerhParts}
           </K_Verh>""")
 
     # Child-specific deductions from deductions.tsv

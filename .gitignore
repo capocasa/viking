@@ -5,3 +5,7 @@ test/cache/
 nimble.develop
 nimble.paths
 nimbledeps
+/doc/
+/tests/test_e2e
+/tests/test_example
+/tests/tmp_*

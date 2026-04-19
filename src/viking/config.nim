@@ -1,8 +1,13 @@
-## Configuration module
-## Loads configuration from .env file
+## Technical configuration and arithmetic helpers.
+##
+## `Config` carries the resolved ERiC paths (derived from the data dir) plus
+## the `--test` flag. Personal/business data lives in `vikingconf` instead;
+## signing credentials in its `[auth]` section. Also exposes the
+## German-locale money formatters (`roundCents`, `roundEuro`, `formatEurDE`)
+## and the Steuernummer→Bundesland map used by every form generator.
 
-import std/[os, osproc, strutils, tables, math]
-import dotenv
+import std/[os, strutils, tables, math]
+import ericsetup
 
 const HerstellerId* = "40036"
 const ProduktName* = "Viking"
@@ -22,73 +27,28 @@ func formatEurDE*(val: float): string =
 
 type
   Config* = object
+    dataDir*: string
     ericLibPath*: string
     ericPluginPath*: string
     ericLogPath*: string
-    certPath*: string
-    certPin*: string
     test*: bool
 
-proc loadConfig*(envFile: string = ".env"): Config =
-  ## Load configuration from env file
-
-  let path = if envFile.isAbsolute: envFile
-             else: getCurrentDir() / envFile
-  if fileExists(path):
-    load(path.parentDir, path.extractFilename)
-  else:
-    if envFile != ".env":
-      raise newException(IOError, "Config file not found: " & path)
-
-  result.ericLibPath = getEnv("VIKING_ERIC_LIB_PATH", "")
-  result.ericPluginPath = getEnv("VIKING_ERIC_PLUGIN_PATH", "")
-  result.ericLogPath = getEnv("VIKING_ERIC_LOG_PATH", getTempDir() / "eric_logs")
-  result.certPath = getEnv("VIKING_CERT_PATH", "")
-  let certPinCmd = getEnv("VIKING_CERT_PIN_CMD", "")
-  if certPinCmd != "":
-    let (output, exitCode) = execCmdEx(certPinCmd)
-    if exitCode != 0:
-      raise newException(IOError, "VIKING_CERT_PIN_CMD failed (exit " & $exitCode & "): " & output.strip)
-    result.certPin = output.strip
-  else:
-    result.certPin = getEnv("VIKING_CERT_PIN", "")
-  result.test = getEnv("VIKING_TEST", "0") == "1"
+proc loadConfig*(dataDir: string, test: bool): Config =
+  ## Derive ERiC paths from the data dir; carry the --test flag through.
+  result.dataDir = if dataDir != "": dataDir else: getAppDataDir()
+  result.test = test
+  result.ericLogPath = result.dataDir / "logs"
+  let installation = findExistingEricIn(result.dataDir / "eric")
+  if installation.valid:
+    result.ericLibPath = installation.libPath / EricApiLib
+    result.ericPluginPath = installation.pluginPath
 
 proc validate*(cfg: Config): seq[string] =
-  ## Validate configuration and return list of errors
-  result = @[]
-
-  if cfg.ericLibPath == "":
-    result.add("VIKING_ERIC_LIB_PATH not set")
-  elif not fileExists(cfg.ericLibPath):
-    result.add("VIKING_ERIC_LIB_PATH does not exist: " & cfg.ericLibPath)
-
-  if cfg.ericPluginPath == "":
-    result.add("VIKING_ERIC_PLUGIN_PATH not set")
-  elif not dirExists(cfg.ericPluginPath):
-    result.add("VIKING_ERIC_PLUGIN_PATH directory does not exist: " & cfg.ericPluginPath)
-
-  if cfg.certPath == "":
-    result.add("VIKING_CERT_PATH not set")
-  elif not fileExists(cfg.certPath):
-    result.add("VIKING_CERT_PATH does not exist: " & cfg.certPath)
-
-  if cfg.certPin == "":
-    result.add("VIKING_CERT_PIN not set")
-
-proc validateForValidateOnly*(cfg: Config): seq[string] =
-  ## Minimal validation for validate-only mode (no cert needed)
-  result = @[]
-
-  if cfg.ericLibPath == "":
-    result.add("VIKING_ERIC_LIB_PATH not set")
-  elif not fileExists(cfg.ericLibPath):
-    result.add("VIKING_ERIC_LIB_PATH does not exist: " & cfg.ericLibPath)
-
-  if cfg.ericPluginPath == "":
-    result.add("VIKING_ERIC_PLUGIN_PATH not set")
-  elif not dirExists(cfg.ericPluginPath):
-    result.add("VIKING_ERIC_PLUGIN_PATH directory does not exist: " & cfg.ericPluginPath)
+  ## Verify ERiC is installed.
+  if cfg.ericLibPath == "" or not fileExists(cfg.ericLibPath) or
+     cfg.ericPluginPath == "" or not dirExists(cfg.ericPluginPath):
+    result.add("ERiC not installed in " & (cfg.dataDir / "eric") &
+               " — run 'viking fetch'")
 
 const BundeslandMap = {
   "10": "BE", "11": "BB",
@@ -111,5 +71,3 @@ func bundeslandFromSteuernummer*(stnr: string): string =
   if prefix in BundeslandMap:
     return BundeslandMap[prefix]
   return ""
-
-

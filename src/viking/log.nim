@@ -1,11 +1,14 @@
-## Logging module
-## Logs to ~/.local/share/viking/YEAR.log and optionally to stdout.
+## Logging.
+##
+## Append-only log per tax year at `~/.local/share/viking/viking.<YEAR>.log`.
+## `log` writes to file (and stdout when `verbose` is true); `err` writes to
+## file and stderr unconditionally.
 
 import std/[os, strformat, times]
 
 var logFile: File
-var logPath*: string
-var verbose*: bool = false
+var logPath*: string         ## Path of the currently-open log file.
+var verbose*: bool = false   ## When true, `log` also echoes to stdout.
 
 proc initLog*(year: int = now().year) =
   ## Open log file for the given year. Creates data dir if needed.
@@ -18,6 +21,7 @@ proc initLog*(year: int = now().year) =
   logFile.flushFile()
 
 proc closeLog*() =
+  ## Close the log file. Safe to call without `initLog`.
   if logFile != nil:
     logFile.close()
 

@@ -2,7 +2,6 @@
 ## Requires: ERiC library + test certificates in test/cache (run `viking fetch` first)
 
 import std/[osproc, strutils, os, algorithm]
-import dotenv
 import viking/ericsetup
 
 when defined(windows):
@@ -32,10 +31,6 @@ proc run(cmd: string): tuple[output: string, code: int] =
 let projectRoot = currentSourcePath().parentDir.parentDir
 setCurrentDir(projectRoot)
 
-# Load .env if present
-if fileExists(".env"):
-  load()
-
 echo "=== viking end-to-end tests ==="
 echo "Working directory: ", getCurrentDir()
 echo ""
@@ -45,10 +40,26 @@ let testXdgHome = projectRoot / "tests" / "tmp_xdg"
 createDir(testXdgHome)
 putEnv("XDG_CONFIG_HOME", testXdgHome)
 
+# Test cert fixture — install with:
+#   wget https://download.elster.de/download/schnittstellen/Test_Zertifikate.zip
+#   unzip -d <data-dir>/certificates Test_Zertifikate.zip
+let testCertPath = getAppDataDir() / "certificates" / "test-softorg-pse.pfx"
+let testCertAvailable = fileExists(testCertPath)
+
+# Shared pin file used by every test viking.conf via [auth] pin=.
+let testPinPath = projectRoot / "tests" / "tmp_viking.pin"
+writeFile(testPinPath, "123456")
+
+proc authBlock(): string =
+  ## Append this to test viking.conf content to wire up cert+pin.
+  "\n[auth]\ncert = " & testCertPath & "\npin = " & testPinPath & "\n"
+
+proc writeConf(path, body: string) =
+  ## writeFile + append [auth] section.
+  writeFile(path, body & authBlock())
+
 # --- Prerequisite check ---
 echo "--- Prerequisites ---"
-let envExists = fileExists(".env")
-check("dotenv file exists", envExists)
 
 let binaryExists = fileExists(Viking)
 check("viking binary exists", binaryExists)
@@ -95,7 +106,7 @@ profession = Software-Entwickler
 
 # viking.conf for submit tests (single freelance source)
 let submitConf = projectRoot / "tests" / "tmp_submit_viking.conf"
-writeFile(submitConf, personalBlock & """
+writeConf(submitConf, personalBlock & """
 [freelance]
 income = 3
 rechtsform = 120
@@ -104,7 +115,7 @@ besteuerungsart = 2
 
 # --- Submit: dry-run ---
 echo "--- submit --dry-run ---"
-let (dryOut, dryRc) = run(Viking & " submit -c " & submitConf & " --p 41 --amount19 1000 --dry-run")
+let (dryOut, dryRc) = run(Viking & " submit --test -c " & submitConf & " --p 41 --amount19 1000 --dry-run")
 check("dry-run exits 0", dryRc == 0, "exit code: " & $dryRc & "\n        " & dryOut)
 check("dry-run has XML output", dryOut.contains("<?xml"))
 check("dry-run shows XML", dryOut.contains("<Elster"))
@@ -116,20 +127,15 @@ check("dry-run XML has Testmerker 700000004", dryOut.contains("<Testmerker>70000
 check("dry-run XML has Empfaenger", dryOut.contains("""<Empfaenger id="F">9198</Empfaenger>"""))
 echo ""
 
-# --- Testmerker presence based on TEST flag ---
-echo "--- TEST flag ---"
-let prodEnv = projectRoot / "tests" / ".env.test_prod"
-writeFile(prodEnv, readFile(projectRoot / ".env").replace("VIKING_TEST=1", "VIKING_TEST=0"))
-putEnv("VIKING_TEST", "0")
-let (prodOut, prodRc) = run(Viking & " submit -c " & submitConf & " --p 41 --amount19 0 --dry-run --env " & prodEnv)
-putEnv("VIKING_TEST", "1")
-check("TEST=0 dry-run exits 0", prodRc == 0, prodOut)
-check("TEST=0 no Testmerker", not prodOut.contains("Testmerker"), prodOut)
+# --- Testmerker presence based on --test flag ---
+echo "--- --test flag ---"
+let (prodOut, prodRc) = run(Viking & " submit -c " & submitConf & " --p 41 --amount19 0 --dry-run")
+check("production dry-run exits 0", prodRc == 0, prodOut)
+check("production no Testmerker", not prodOut.contains("Testmerker"), prodOut)
 
-let (testOut, testRc) = run(Viking & " submit -c " & submitConf & " --p 41 --amount19 0 --dry-run")
-check("TEST=1 dry-run exits 0", testRc == 0, testOut)
-check("TEST=1 has Testmerker", testOut.contains("<Testmerker>700000004</Testmerker>"))
-removeFile(prodEnv)
+let (testOut, testRc) = run(Viking & " submit --test -c " & submitConf & " --p 41 --amount19 0 --dry-run")
+check("--test dry-run exits 0", testRc == 0, testOut)
+check("--test has Testmerker", testOut.contains("<Testmerker>700000004</Testmerker>"))
 echo ""
 
 # --- Submit: dry-run with both rates ---
@@ -160,7 +166,7 @@ echo ""
 
 # --- Submit: full send path ---
 echo "--- submit (send) ---"
-let (sendOut, sendRc) = run(Viking & " submit -c " & submitConf & " --p 41 --amount19 0")
+let (sendOut, sendRc) = run(Viking & " submit --test -c " & submitConf & " --p 41 --amount19 0")
 let sendSchemaOk = not sendOut.contains("610301200")
 let sendCertOk = not sendOut.contains("610001050")
 check("send: no XML schema errors", sendSchemaOk, sendOut)
@@ -177,7 +183,8 @@ echo ""
 
 # --- Per-year validation ---
 echo "--- per-year validation (2025+) ---"
-let pluginPath = getEnv("VIKING_ERIC_PLUGIN_PATH", "test/cache/eric/ERiC-43.3.2.0/Linux-x86_64/lib/plugins")
+let installation = findExistingEric(getEricDataDir())
+let pluginPath = installation.pluginPath
 var years: seq[int] = @[]
 for kind, path in walkDir(pluginPath):
   if kind == pcFile:
@@ -247,7 +254,7 @@ check("unpadded period 3 exits 0", aliasPadRc == 0, aliasPadOut)
 check("unpadded period 3 -> 03", aliasPadOut.contains("<Zeitraum>03</Zeitraum>"))
 
 let wordConf = projectRoot / "tests" / "tmp_words.conf"
-writeFile(wordConf, personalBlock.replace("religion = 11", "religion = rk") & """
+writeConf(wordConf, personalBlock.replace("religion = 11", "religion = rk") & """
 [freelance]
 income = freiberuf
 rechtsform = einzel
@@ -277,7 +284,7 @@ check("religion rk -> 03", wordEstOut.contains("<E0100402>03</E0100402>"))
 
 # Bad values mention the listing
 let badConf = projectRoot / "tests" / "tmp_bad_codes.conf"
-writeFile(badConf, personalBlock & """
+writeConf(badConf, personalBlock & """
 [freelance]
 income = freiberuf
 rechtsform = zzz
@@ -304,7 +311,7 @@ echo ""
 # --- Source auto-selection with multiple sources ---
 echo "--- source selection ---"
 let multiConf = projectRoot / "tests" / "tmp_multi.conf"
-writeFile(multiConf, personalBlock & """
+writeConf(multiConf, personalBlock & """
 [freelance]
 income = 3
 rechtsform = 120
@@ -457,7 +464,7 @@ echo ""
 
 # viking.conf for EÜR tests (Gewerbe source)
 let euerConf = projectRoot / "tests" / "tmp_euer_viking.conf"
-writeFile(euerConf, personalBlock & """
+writeConf(euerConf, personalBlock & """
 [freelance]
 income = 2
 rechtsform = 120
@@ -549,7 +556,7 @@ let estWd = projectRoot / "tests"
 
 # Base conf: Anlage G (Gewerbe) via named source
 let estConf = projectRoot / "tests" / "tmp_viking.conf"
-writeFile(estConf, personalBlock & """
+writeConf(estConf, personalBlock & """
 [mybiz]
 income = 2
 rechtsform = 120
@@ -561,7 +568,7 @@ let estTsv = estWd / "2025-mybiz.tsv"
 # --- ESt: dry-run with Anlage G ---
 echo "--- est --dry-run (Anlage G) ---"
 writeFile(estTsv, "1000,19\n-300,19\n")
-let (estDryOut, estDryRc) = run("cd " & estWd & " && " & projectRoot / Viking & " est -c " & estConf & " -y 2025 --dry-run --force")
+let (estDryOut, estDryRc) = run("cd " & estWd & " && " & projectRoot / Viking & " est --test -c " & estConf & " -y 2025 --dry-run --force")
 check("est dry-run exits 0", estDryRc == 0, estDryOut)
 check("est dry-run has XML output", estDryOut.contains("<?xml"))
 check("est dry-run has E10 root", estDryOut.contains("<E10"))
@@ -580,7 +587,7 @@ echo ""
 # --- ESt: Anlage S ---
 echo "--- est Anlage S ---"
 let estConfS = projectRoot / "tests" / "tmp_viking_s.conf"
-writeFile(estConfS, personalBlock & """
+writeConf(estConfS, personalBlock & """
 [mybiz]
 income = 3
 rechtsform = 120
@@ -617,7 +624,7 @@ echo ""
 # --- ESt: no sources (KAP-only filing) ---
 echo "--- est no sources ---"
 let estNoSrcConf = projectRoot / "tests" / "tmp_viking_nosrc.conf"
-writeFile(estNoSrcConf, personalBlock)
+writeConf(estNoSrcConf, personalBlock)
 let (estNoEuerOut, estNoEuerRc) = run("cd " & estWd & " && " & projectRoot / Viking & " est -c " & estNoSrcConf & " -y 2025 --dry-run --force")
 check("est no sources exits 0", estNoEuerRc == 0, estNoEuerOut)
 check("est no sources no Anlage G/S", not estNoEuerOut.contains("<G>") and not estNoEuerOut.contains("<S>"))
@@ -627,7 +634,7 @@ echo ""
 # --- ESt: multiple sources (one G, one S) ---
 echo "--- est multiple sources ---"
 let estMultiConf = projectRoot / "tests" / "tmp_est_multi.conf"
-writeFile(estMultiConf, personalBlock & """
+writeConf(estMultiConf, personalBlock & """
 [mybiz]
 income = 2
 rechtsform = 120
@@ -653,17 +660,12 @@ echo ""
 # --- ESt: Testmerker ---
 echo "--- est Testmerker ---"
 writeFile(estTsv, "100,19\n")
-let (estTestOut, estTestRc) = run("cd " & estWd & " && " & projectRoot / Viking & " est -c " & estConf & " -y 2025 --dry-run --force")
-check("est TEST=1 has Testmerker", estTestOut.contains("<Testmerker>700000004</Testmerker>"))
+let (estTestOut, estTestRc) = run("cd " & estWd & " && " & projectRoot / Viking & " est --test -c " & estConf & " -y 2025 --dry-run --force")
+check("est --test has Testmerker", estTestOut.contains("<Testmerker>700000004</Testmerker>"))
 
-let estProdEnv = projectRoot / "tests" / ".env.est_prod"
-writeFile(estProdEnv, readFile(projectRoot / ".env").replace("VIKING_TEST=1", "VIKING_TEST=0"))
-putEnv("VIKING_TEST", "0")
-let (estProdOut, estProdRc) = run("cd " & estWd & " && " & projectRoot / Viking & " est -c " & estConf & " -y 2025 --dry-run --force --env " & estProdEnv)
-putEnv("VIKING_TEST", "1")
-check("est TEST=0 exits 0", estProdRc == 0, estProdOut)
-check("est TEST=0 no Testmerker", not estProdOut.contains("Testmerker"), estProdOut)
-removeFile(estProdEnv)
+let (estProdOut, estProdRc) = run("cd " & estWd & " && " & projectRoot / Viking & " est -c " & estConf & " -y 2025 --dry-run --force")
+check("est production exits 0", estProdRc == 0, estProdOut)
+check("est production no Testmerker", not estProdOut.contains("Testmerker"), estProdOut)
 echo ""
 
 # --- ESt: per-year validation ---
@@ -702,7 +704,7 @@ for year in estYears:
 # --- ESt: full send path ---
 echo "--- est (send) ---"
 writeFile(estTsv, "1000,19\n-500,19\n")
-let (estSendOut, estSendRc) = run("cd " & estWd & " && " & projectRoot / Viking & " est -c " & estConf & " -y 2025 --force")
+let (estSendOut, estSendRc) = run("cd " & estWd & " && " & projectRoot / Viking & " est --test -c " & estConf & " -y 2025 --force")
 let estSendSchemaOk = not estSendOut.contains("610301200")
 let estSendCertOk = not estSendOut.contains("610001050")
 check("est send: no schema errors", estSendSchemaOk, estSendOut)
@@ -760,7 +762,7 @@ echo ""
 # --- ESt: Anlage KAP ---
 echo "--- est Anlage KAP ---"
 let estKapConf = projectRoot / "tests" / "tmp_viking_kap.conf"
-writeFile(estKapConf, personalBlock & """
+writeConf(estKapConf, personalBlock & """
 [mybiz]
 income = 2
 rechtsform = 120
@@ -786,7 +788,7 @@ echo ""
 # --- ESt: Anlage Kind ---
 echo "--- est Anlage Kind ---"
 let estKindConf = projectRoot / "tests" / "tmp_viking_kind.conf"
-writeFile(estKindConf, personalBlock & """
+writeConf(estKindConf, personalBlock & """
 [mybiz]
 income = 2
 rechtsform = 120
@@ -813,8 +815,127 @@ check("est Kind has Max", estKindOut.contains("max"))
 check("est Kind has Lisa", estKindOut.contains("lisa"))
 check("est Kind has betreuungskosten", estKindOut.contains("<E0506105>"))
 check("est Kind has schulgeld", estKindOut.contains("<E0505607>"))
+# Kid without kindschaftsverhaeltnis_b -> no <K_Verh_B>.
+check("est Kind no K_Verh_B without kindschaftsverhaeltnis_b",
+      estKindOut.contains("<K_Verh_A>") and
+      not estKindOut.contains("<K_Verh_B>"), estKindOut)
 removeFile(estKindConf)
 removeFile(estKindDed)
+
+# --- ESt: K_Verh_B is gated on [spouse] (Einzel vs Zusammen) ---
+echo "--- est Anlage Kind K_Verh_B gated on [spouse] ---"
+# (1) No [spouse] + kindschaftsverhaeltnis_b set -> K_Verh_B suppressed
+# (ERiC rule 5075 rejects K_Verh_B on Einzelveranlagung).
+let estKindBNoSpouseConf = projectRoot / "tests" / "tmp_viking_kind_b_nospouse.conf"
+writeConf(estKindBNoSpouseConf, personalBlock & """
+[mybiz]
+income = 2
+rechtsform = 120
+besteuerungsart = 2
+
+[max]
+birthdate = 01.06.2018
+idnr = 12345678901
+kindschaftsverhaeltnis = leiblich
+kindschaftsverhaeltnis_b = leiblich
+familienkasse = Berlin
+""")
+let (estNoSpOut, estNoSpRc) = run("cd " & estWd & " && " & projectRoot / Viking &
+  " est -c " & estKindBNoSpouseConf & " -y 2025 --dry-run --force")
+check("est Kind no-spouse exits 0", estNoSpRc == 0, estNoSpOut)
+check("est Kind no K_Verh_B without [spouse]",
+      not estNoSpOut.contains("<K_Verh_B>"), estNoSpOut)
+check("est Kind emits familienkasse as E0500706",
+      estNoSpOut.contains("<E0500706>Berlin</E0500706>"), estNoSpOut)
+# Without parent_b_name: no K_Verh_and_P emitted (plausi 100500048 will fire
+# at sandbox-time; schema still valid).
+check("est Kind no K_Verh_and_P without parent_b_name",
+      not estNoSpOut.contains("<K_Verh_and_P>"), estNoSpOut)
+removeFile(estKindBNoSpouseConf)
+
+# (1b) No [spouse] + parent_b_name set -> K_Verh_and_P emitted with
+# E0501103/E0501903/E0501106 (plausi rules 100500048 + 100500001).
+let estKindAndPConf = projectRoot / "tests" / "tmp_viking_kind_and_p.conf"
+writeConf(estKindAndPConf, personalBlock & """
+[mybiz]
+income = 2
+rechtsform = 120
+besteuerungsart = 2
+
+[max]
+birthdate = 01.06.2018
+idnr = 12345678901
+kindschaftsverhaeltnis   = leiblich
+kindschaftsverhaeltnis_b = leiblich
+parent_b_name            = Greta Maier
+familienkasse            = Berlin
+""")
+let (estAndPOut, estAndPRc) = run("cd " & estWd & " && " & projectRoot / Viking &
+  " est -c " & estKindAndPConf & " -y 2025 --dry-run --force")
+check("est Kind and_P exits 0", estAndPRc == 0, estAndPOut)
+check("est Kind emits K_Verh_and_P without [spouse] when parent_b_name set",
+      estAndPOut.contains("<K_Verh_and_P>"), estAndPOut)
+check("est Kind K_Verh_and_P has E0501103",
+      estAndPOut.contains("<E0501103>Greta Maier</E0501103>"), estAndPOut)
+check("est Kind K_Verh_and_P has E0501903",
+      estAndPOut.contains("<E0501903>01.01-31.12</E0501903>"), estAndPOut)
+check("est Kind K_Verh_and_P has E0501106",
+      estAndPOut.contains("<E0501106>1</E0501106>"), estAndPOut)
+check("est Kind still no K_Verh_B on Einzel",
+      not estAndPOut.contains("<K_Verh_B>"), estAndPOut)
+removeFile(estKindAndPConf)
+
+# (2) [spouse] present + kindschaftsverhaeltnis_b set -> K_Verh_B emitted
+let estKindBConf = projectRoot / "tests" / "tmp_viking_kind_b.conf"
+writeConf(estKindBConf, personalBlock & """
+[spouse]
+firstname = Greta
+lastname = Maier
+birthdate = 12.07.1956
+idnr = 04452397688
+
+[mybiz]
+income = 2
+rechtsform = 120
+besteuerungsart = 2
+
+[max]
+birthdate = 01.06.2018
+idnr = 12345678901
+kindschaftsverhaeltnis = leiblich
+kindschaftsverhaeltnis_b = leiblich
+familienkasse = Berlin
+""")
+let (estKbOut, estKbRc) = run("cd " & estWd & " && " & projectRoot / Viking &
+  " est -c " & estKindBConf & " -y 2025 --dry-run --force")
+check("est Kind B exits 0", estKbRc == 0, estKbOut)
+check("est Kind emits K_Verh_B with [spouse]",
+      estKbOut.contains("<K_Verh_B>"), estKbOut)
+check("est Kind K_Verh_B uses E0500808",
+      estKbOut.contains("<E0500808>1</E0500808>"), estKbOut)
+check("est Kind K_Verh_B period uses E0500805",
+      estKbOut.contains("<E0500805>01.01-31.12</E0500805>"), estKbOut)
+removeFile(estKindBConf)
+
+# Kid without familienkasse -> no E0500706 emitted.
+let estKindNoFkConf = projectRoot / "tests" / "tmp_viking_kind_nofk.conf"
+writeConf(estKindNoFkConf, personalBlock & """
+[mybiz]
+income = 2
+rechtsform = 120
+besteuerungsart = 2
+
+[max]
+birthdate = 01.06.2018
+idnr = 12345678901
+kindschaftsverhaeltnis = leiblich
+""")
+let (estNoFkOut, estNoFkRc) = run("cd " & estWd & " && " & projectRoot / Viking &
+  " est -c " & estKindNoFkConf & " -y 2025 --dry-run --force")
+check("est Kind no familienkasse exits 0", estNoFkRc == 0, estNoFkOut)
+check("est Kind no E0500706 without familienkasse",
+      not estNoFkOut.contains("<E0500706>"), estNoFkOut)
+removeFile(estKindNoFkConf)
 echo ""
 
 # --- ESt: validate deductions against ERiC ---
@@ -822,7 +943,7 @@ echo "--- est personal deductions validation ---"
 let estPdDed = projectRoot / "tests" / "tmp_deductions_pd.tsv"
 writeFile(estPdDed, "code\tamount\nvor316\t5000\nvor319\t600\nvor502\t350\nsa140\t500\nsa131\t200\nagb187\t750\n")
 let estPdConf = projectRoot / "tests" / "tmp_viking_pd.conf"
-writeFile(estPdConf, personalBlock & """
+writeConf(estPdConf, personalBlock & """
 [mybiz]
 income = 2
 rechtsform = 120
@@ -857,7 +978,7 @@ echo ""
 # =================================================================
 
 let ustConf = projectRoot / "tests" / "tmp_viking_ust.conf"
-writeFile(ustConf, personalBlock & """
+writeConf(ustConf, personalBlock & """
 [freelance]
 income = 2
 rechtsform = 120
@@ -868,7 +989,7 @@ let ustTsv = estWd / "2025-freelance.tsv"
 
 echo "--- ust --dry-run (mixed rates) ---"
 writeFile(ustTsv, "1000,19\n500,7\n-200,19\n")
-let (ustDryOut, ustDryRc) = run("cd " & estWd & " && " & projectRoot / Viking & " ust freelance -c " & ustConf & " -y 2025 --dry-run")
+let (ustDryOut, ustDryRc) = run("cd " & estWd & " && " & projectRoot / Viking & " ust freelance --test -c " & ustConf & " -y 2025 --dry-run")
 check("ust dry-run exits 0", ustDryRc == 0, ustDryOut)
 check("ust dry-run has XML output", ustDryOut.contains("<?xml"))
 check("ust dry-run has E50 root", ustDryOut.contains("<E50"))
@@ -896,7 +1017,7 @@ echo ""
 
 echo "--- ust with Vorauszahlungen (from conf) ---"
 let ustVzConf = projectRoot / "tests" / "tmp_ust_vz.conf"
-writeFile(ustVzConf, personalBlock & """
+writeConf(ustVzConf, personalBlock & """
 [freelance]
 income = 2
 rechtsform = 120
@@ -954,7 +1075,7 @@ for year in ustYears:
 
 echo "--- ust (send) ---"
 writeFile(ustTsv, "1000,19\n-500,19\n")
-let (ustSendOut, ustSendRc) = run("cd " & estWd & " && " & projectRoot / Viking & " ust freelance -c " & ustConf & " -y 2025")
+let (ustSendOut, ustSendRc) = run("cd " & estWd & " && " & projectRoot / Viking & " ust freelance -c " & ustConf & " -y 2025 --test")
 let ustSendSchemaOk = not ustSendOut.contains("610301200")
 let ustSendCertOk = not ustSendOut.contains("610001050")
 check("ust send: no schema errors", ustSendSchemaOk, ustSendOut)
@@ -976,10 +1097,10 @@ echo ""
 # =================================================================
 
 let messageConf = projectRoot / "tests" / "tmp_message_viking.conf"
-writeFile(messageConf, personalBlock)
+writeConf(messageConf, personalBlock)
 
 echo "--- message --dry_run ---"
-let (msgDryOut, msgDryRc) = run(Viking & " message -c " & messageConf & " --subject \"Test Betreff\" --text \"Test Nachricht\" --dry_run")
+let (msgDryOut, msgDryRc) = run(Viking & " message --test -c " & messageConf & " --subject \"Test Betreff\" --text \"Test Nachricht\" --dry_run")
 check("message dry_run exits 0", msgDryRc == 0, msgDryOut)
 check("message dry_run has Nachricht element", msgDryOut.contains("<Nachricht xmlns="))
 check("message dry_run has ElsterNachricht", msgDryOut.contains("<Verfahren>ElsterNachricht</Verfahren>"))
@@ -1021,10 +1142,10 @@ echo ""
 # =================================================================
 
 let ibanConf = projectRoot / "tests" / "tmp_iban_viking.conf"
-writeFile(ibanConf, personalBlock)
+writeConf(ibanConf, personalBlock)
 
 echo "--- iban --dry_run ---"
-let (ibanDryOut, ibanDryRc) = run(Viking & " iban -c " & ibanConf & " --new_iban DE89370400440532013000 --dry_run")
+let (ibanDryOut, ibanDryRc) = run(Viking & " iban --test -c " & ibanConf & " --new_iban DE89370400440532013000 --dry_run")
 check("iban dry_run exits 0", ibanDryRc == 0, ibanDryOut)
 check("iban dry_run has AenderungBankverbindung", ibanDryOut.contains("<AenderungBankverbindung xmlns="))
 check("iban dry_run has DatenArt", ibanDryOut.contains("<DatenArt>AenderungBankverbindung</DatenArt>"))
@@ -1034,7 +1155,7 @@ check("iban dry_run has Steuernummer", ibanDryOut.contains("<Steuernummer>"))
 echo ""
 
 echo "--- iban --validate_only ---"
-let (ibanValOut, ibanValRc) = run(Viking & " iban -c " & ibanConf & " --new_iban DE89370400440532013000 --validate_only")
+let (ibanValOut, ibanValRc) = run(Viking & " iban --test -c " & ibanConf & " --new_iban DE89370400440532013000 --validate_only")
 check("iban validate_only exits 0", ibanValRc == 0, ibanValOut)
 echo ""
 
@@ -1051,7 +1172,7 @@ echo ""
 # =================================================================
 
 let abholConf = projectRoot / "tests" / "tmp_abhol_viking.conf"
-writeFile(abholConf, """[personal]
+writeConf(abholConf, """[personal]
 firstname = Hans
 lastname = Maier
 """)

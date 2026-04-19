@@ -1,0 +1,6 @@
+amount	rate	date	id	description
+5000	19	2025-03-01	G-001	Trade fair sales
+2500	19	2025-06-15	G-002	Wholesale order #14
+-800	19	2025-06-20	G-003	Returned goods
+1800	7	2025-09-08	G-004	Books (reduced rate)
+-1200	19	2025-09-30	G-005	Equipment

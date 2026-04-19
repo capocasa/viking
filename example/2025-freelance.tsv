@@ -1,0 +1,10 @@
+amount	rate	date	id	description
+1200	19	2025-01-15	INV-001	Consulting January
+800	19	2025-02-10	INV-002	Consulting February
+2400	19	2025-04-03	INV-003	Project alpha kickoff
+500	7	2025-05-12	INV-004	Workshop materials (reduced rate)
+1500	19	2025-07-22	INV-005	Q3 retainer
+-200	19	2025-08-01	CR-001	Refund / credit note
+3000	19	2025-10-18	INV-006	Project beta delivery
+-400	19	2025-11-30	EXP-001	Conference travel
+-150	19	2025-12-05	EXP-002	Office supplies

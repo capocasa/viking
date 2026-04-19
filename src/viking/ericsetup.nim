@@ -44,11 +44,7 @@ const
   # ELSTER developer portal (for manual download instructions)
   ElsterDevUrl* = "https://www.elster.de/elsterweb/entwickler/infoseite/eric"
 
-  # Test certificate
-  TestCertUrl* = "https://download.elster.de/download/schnittstellen/Test_Zertifikate.zip"
-  TestCertPin* = "123456"
-
-  # App name for cache directory
+  # App name for data directory
   AppName = "viking"
 
 type
@@ -70,20 +66,15 @@ type
 # ===========================================================================
 
 proc getAppDataDir*(): string =
-  ## Get the data directory. Honors VIKING_DATA_DIR env var,
-  ## falls back to OS-appropriate data dir (~/.local/share/viking on Linux,
-  ## ~/Library/Application Support/viking on macOS, %APPDATA%/viking on Windows)
-  result = getEnv("VIKING_DATA_DIR")
-  if result == "":
-    result = appdirs.getDataDir().string / AppName
+  ## Default data directory for viking: platform-specific user data dir.
+  ## (~/.local/share/viking on Linux, ~/Library/Application Support/viking on
+  ## macOS, %APPDATA%/viking on Windows.) Callers with a --data-dir value
+  ## should use that directly instead.
+  result = appdirs.getDataDir().string / AppName
 
-proc getEricDataDir*(): string =
-  ## Get the ERiC-specific data directory
-  getAppDataDir() / "eric"
-
-proc getCertDataDir*(): string =
-  ## Get the certificate data directory
-  getAppDataDir() / "certificates"
+proc getEricDataDir*(dataDir: string = ""): string =
+  ## ERiC install directory under the given data dir (or the default one).
+  (if dataDir != "": dataDir else: getAppDataDir()) / "eric"
 
 # ===========================================================================
 # Platform detection
@@ -209,7 +200,8 @@ proc checkEricInstallation*(basePath: string): EricInstallation =
 # ===========================================================================
 
 proc extractArchive*(archivePath: string, destPath: string): bool =
-  ## Extract JAR/ZIP archive using zippy (pure Nim, cross-platform)
+  ## Selectively extract the ERiC jar: keep the current-platform tree only.
+  ## Drops docs/, samples/, include/, other platforms, and anything else.
   if not fileExists(archivePath):
     stderr.writeLine &"Error: File not found: {archivePath}"
     return false
@@ -217,7 +209,19 @@ proc extractArchive*(archivePath: string, destPath: string): bool =
     if dirExists(destPath):
       removeDir(destPath)
     createDir(destPath.parentDir)
-    ziparchives.extractAll(archivePath, destPath)
+    createDir(destPath)
+    let reader = openZipArchive(archivePath)
+    defer: reader.close()
+    let platform = PlatformDirPrefix
+    for entry in reader.walkFiles:
+      # Entries look like "ERiC-43.4.6.0/Linux-x86_64/lib/libericapi.so".
+      # Keep entries under <root>/<Platform>-* (the current platform's tree).
+      let parts = entry.split('/')
+      if parts.len < 3: continue
+      if not parts[1].startsWith(platform): continue
+      let outPath = destPath / entry
+      createDir(outPath.parentDir)
+      writeFile(outPath, reader.extractFile(entry))
     return true
   except ZippyError as e:
     stderr.writeLine &"Error extracting archive: {e.msg}"
@@ -239,16 +243,15 @@ proc findExtractedEricDir*(basePath: string): string =
         return path
   return basePath
 
-proc setupEric*(archivePath: string, installDir: string = ""): EricInstallation =
-  ## Extract and set up ERiC from an archive file (JAR/ZIP/tar.gz)
-  let targetDir = if installDir == "": getEricDataDir() else: installDir
-
-  if not extractArchive(archivePath, targetDir):
+proc setupEric*(archivePath: string, installDir: string): EricInstallation =
+  ## Extract and set up ERiC from an archive file into installDir (the
+  ## `<data-dir>/eric` directory).
+  if not extractArchive(archivePath, installDir):
     result.valid = false
     result.missingFiles = @["Failed to extract archive"]
     return
 
-  let ericDir = findExtractedEricDir(targetDir)
+  let ericDir = findExtractedEricDir(installDir)
   result = checkEricInstallation(ericDir)
 
   if result.valid:
@@ -289,111 +292,18 @@ proc downloadFile*(url: string, destPath: string): bool =
     stderr.writeLine &"Error downloading {url}: {getCurrentExceptionMsg()}"
     return false
 
-proc extractZip*(zipPath: string, destPath: string, specificFile: string = ""): bool =
-  ## Extract a ZIP file, optionally extracting only a specific file
-  if not fileExists(zipPath):
-    stderr.writeLine &"Error: ZIP file not found: {zipPath}"
-    return false
-  createDir(destPath)
-  try:
-    if specificFile == "":
-      ziparchives.extractAll(zipPath, destPath)
-    else:
-      let reader = openZipArchive(zipPath)
-      defer: reader.close()
-      let target = specificFile.extractFilename
-      for path in reader.walkFiles:
-        if path.extractFilename == target:
-          writeFile(destPath / target, reader.extractFile(path))
-          break
-    return true
-  except ZippyError as e:
-    stderr.writeLine &"Error extracting ZIP: {e.msg}"
-    return false
-
-# ===========================================================================
-# ZIP inspection
-# ===========================================================================
-
-proc findPfxInZip*(zipPath: string): seq[string] =
-  ## List .pfx certificate files inside a ZIP archive
-  result = @[]
-  try:
-    let reader = openZipArchive(zipPath)
-    defer: reader.close()
-    for path in reader.walkFiles:
-      if path.toLowerAscii.endsWith(".pfx"):
-        result.add(path)
-  except ZippyError:
-    discard
-
-# ===========================================================================
-# Certificate download
-# ===========================================================================
-
-proc downloadTestCertificates*(): tuple[certPath: string, pin: string, success: bool] =
-  ## Download ELSTER test certificates
-  let cacheDir = getCertDataDir()
-  createDir(cacheDir)
-
-  let zipPath = cacheDir / "Test_Zertifikate.zip"
-
-  # Check if we already have .pfx files - prefer org cert for UStVA
-  var existing: seq[string] = @[]
-  for kind, path in walkDir(cacheDir):
-    if kind == pcFile and path.toLowerAscii.endsWith(".pfx"):
-      existing.add(path)
-  if existing.len > 0:
-    # Prefer softorg cert (needed for UStVA submission)
-    var best = existing[0]
-    for path in existing:
-      if "softorg" in path.extractFilename.toLowerAscii:
-        best = path
-    return (best, TestCertPin, true)
-
-  # Download
-  if not downloadFile(TestCertUrl, zipPath):
-    return ("", "", false)
-
-  # Find .pfx files in the ZIP (don't hardcode names)
-  let pfxFiles = findPfxInZip(zipPath)
-  if pfxFiles.len == 0:
-    stderr.writeLine "Error: No .pfx files found in certificate archive"
-    removeFile(zipPath)
-    return ("", "", false)
-
-  for pfx in pfxFiles:
-    discard extractZip(zipPath, cacheDir, pfx)
-
-  removeFile(zipPath)
-
-  # Return best cert - prefer softorg (organizational cert for UStVA)
-  var allCerts: seq[string] = @[]
-  for kind, path in walkDir(cacheDir):
-    if kind == pcFile and path.toLowerAscii.endsWith(".pfx"):
-      allCerts.add(path)
-  if allCerts.len > 0:
-    var best = allCerts[0]
-    for path in allCerts:
-      if "softorg" in path.extractFilename.toLowerAscii:
-        best = path
-    return (best, TestCertPin, true)
-
-  stderr.writeLine "Error: Certificate file not found after extraction"
-  return ("", "", false)
-
 # ===========================================================================
 # Existing installation lookup
 # ===========================================================================
 
-proc findExistingEric*(): EricInstallation =
-  ## Look for existing ERiC installation in data directory
-  let cacheDir = getEricDataDir()
-  if not dirExists(cacheDir):
+proc findExistingEric*(ericDir: string): EricInstallation =
+  ## Look for an existing ERiC installation in the given ericDir
+  ## (typically `<data-dir>/eric`).
+  if not dirExists(ericDir):
     result.valid = false
     return
 
-  for kind, path in walkDir(cacheDir):
+  for kind, path in walkDir(ericDir):
     if kind == pcDir:
       let installation = checkEricInstallation(path)
       if installation.valid:
@@ -407,83 +317,17 @@ proc findExistingEric*(): EricInstallation =
 
   result.valid = false
 
-# ===========================================================================
-# .env management
-# ===========================================================================
-
-proc generateEnvConfig*(installation: EricInstallation, certPath: string = "", certPin: string = ""): string =
-  ## Generate .env configuration for the ERiC installation
-  let logPath = getTempDir() / "eric_logs"
-  result = &"""
-# ERiC Library Configuration (auto-generated by viking fetch)
-VIKING_ERIC_LIB_PATH={installation.libPath / EricApiLib}
-VIKING_ERIC_PLUGIN_PATH={installation.pluginPath}
-VIKING_ERIC_LOG_PATH={logPath}
-"""
-
-  if certPath != "":
-    result.add(&"\n# Test Certificate (from ELSTER)\nVIKING_CERT_PATH={certPath}\n")
-  else:
-    result.add("\n# Certificate Configuration\nVIKING_CERT_PATH=/path/to/certificate.pfx\n")
-
-  if certPin != "":
-    result.add(&"VIKING_CERT_PIN={certPin}\n")
-  else:
-    result.add("VIKING_CERT_PIN=your-certificate-pin\n")
-
-  result.add("\n# Personal data goes in viking.conf (see 'viking init')\n")
-
-proc updateEnvFile*(installation: EricInstallation, certPath: string = "", certPin: string = "", envPath: string = ".env") =
-  ## Update or create .env file with ERiC configuration
-  var content = ""
-  var existingLines: seq[string] = @[]
-
-  if fileExists(envPath):
-    content = readFile(envPath)
-    existingLines = content.splitLines()
-
-    var foundLib, foundPlugin, foundLog, foundCert, foundPin = false
-
-    for i, line in existingLines:
-      if line.startsWith("VIKING_ERIC_LIB_PATH="):
-        existingLines[i] = &"VIKING_ERIC_LIB_PATH={installation.libPath / EricApiLib}"
-        foundLib = true
-      elif line.startsWith("VIKING_ERIC_PLUGIN_PATH="):
-        existingLines[i] = &"VIKING_ERIC_PLUGIN_PATH={installation.pluginPath}"
-        foundPlugin = true
-      elif line.startsWith("VIKING_ERIC_LOG_PATH="):
-        foundLog = true
-      elif line.startsWith("VIKING_CERT_PATH=") and certPath != "":
-        existingLines[i] = &"VIKING_CERT_PATH={certPath}"
-        foundCert = true
-      elif line.startsWith("VIKING_CERT_PIN=") and certPin != "":
-        existingLines[i] = &"VIKING_CERT_PIN={certPin}"
-        foundPin = true
-
-    if not foundLib:
-      existingLines.add(&"VIKING_ERIC_LIB_PATH={installation.libPath / EricApiLib}")
-    if not foundPlugin:
-      existingLines.add(&"VIKING_ERIC_PLUGIN_PATH={installation.pluginPath}")
-    if not foundLog:
-      existingLines.add("VIKING_ERIC_LOG_PATH=" & getTempDir() / "eric_logs")
-    if not foundCert and certPath != "":
-      existingLines.add(&"VIKING_CERT_PATH={certPath}")
-    if not foundPin and certPin != "":
-      existingLines.add(&"VIKING_CERT_PIN={certPin}")
-
-    content = existingLines.join("\n")
-  else:
-    content = generateEnvConfig(installation, certPath, certPin)
-
-  writeFile(envPath, content)
+proc findExistingEricIn*(ericDir: string): EricInstallation {.inline.} =
+  ## Alias for use by config.nim.
+  findExistingEric(ericDir)
 
 # ===========================================================================
 # Status and instructions
 # ===========================================================================
 
-proc printDownloadInstructions*() =
+proc printDownloadInstructions*(dataDir: string) =
   ## Print instructions for manual ERiC download
-  let dataDir = getEricDataDir()
+  let ericDir = getEricDataDir(dataDir)
   stderr.writeLine &"""
 ================================================================================
                         ERiC Library Download Instructions
@@ -504,10 +348,12 @@ Option 2 - Direct URL (if you know the version):
 -------------------------------------------------
   {ElsterDownloadBase}/eric_43/ERiC-43.3.2.0-{getEricPlatform()}.jar
 
-The fetch command will:
-- Extract the archive to: {dataDir}
-- Download test certificates automatically
-- Update your .env file with the correct paths
+The fetch command will extract only the current platform's files to:
+  {ericDir}
+
+For sandbox testing, also download ELSTER's test certificates from:
+  https://download.elster.de/download/schnittstellen/Test_Zertifikate.zip
+(PIN for all test certs: 123456)
 
 ================================================================================
 """
@@ -610,17 +456,17 @@ proc listAvailableEuerYears*(installation: EricInstallation): seq[int] =
 # Auto-download orchestrator
 # ===========================================================================
 
-proc fetchEric*(): tuple[installation: EricInstallation, success: bool] =
-  ## Auto-download ERiC from download.elster.de
-  let dataDir = getEricDataDir()
-  createDir(dataDir)
+proc fetchEric*(dataDir: string): tuple[installation: EricInstallation, success: bool] =
+  ## Auto-download ERiC from download.elster.de into `<dataDir>/eric`.
+  let ericDir = getEricDataDir(dataDir)
+  createDir(ericDir)
 
   let downloads = discoverEricDownloads()
 
   if downloads.len == 0:
     stderr.writeLine "Could not discover ERiC version automatically."
     stderr.writeLine "Please download manually and use: viking fetch --file=<path>"
-    printDownloadInstructions()
+    printDownloadInstructions(dataDir)
     return (EricInstallation(valid: false), false)
 
   let latest = downloads[^1]
@@ -629,5 +475,5 @@ proc fetchEric*(): tuple[installation: EricInstallation, success: bool] =
   if not downloadFile(latest.url, archivePath):
     return (EricInstallation(valid: false), false)
 
-  let installation = setupEric(archivePath)
+  let installation = setupEric(archivePath, ericDir)
   return (installation, installation.valid)

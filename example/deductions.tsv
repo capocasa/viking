@@ -1,0 +1,13 @@
+code	amount	description
+vor316	5400	Krankenversicherung privat
+vor319	720	Pflegeversicherung privat
+vor328	120	Zusatzbeitrag KV privat
+vor300	3000	Rentenversicherung
+vor502	350	Haftpflichtversicherung
+sa140	500	Kirchensteuer gezahlt
+sa141	50	Kirchensteuer erstattet
+sa131	200	Spenden
+agb187	750	Krankheitskosten
+max174	2400	Betreuungskosten Max
+lisa174	3600	Betreuungskosten Lisa
+lisa176	1500	Schulgeld Lisa

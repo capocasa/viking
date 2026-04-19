@@ -1,8 +1,11 @@
 ## Alphanumeric (German-word) aliases for numeric ELSTER codes.
-## Covers income, rechtsform, besteuerungsart, religion,
-## kindschaftsverhaeltnis and UStVA period. Numerics still work
-## (with or without leading zeros); resolve() returns the canonical
-## numeric the schema expects, or raises ValueError listing the words.
+##
+## Each ELSTER code field — `income`, `rechtsform`, `besteuerungsart`,
+## `religion`, `kindschaftsverhaeltnis`, and the UStVA `--period` flag —
+## has a `CodeMap` listing the human-readable words alongside their canonical
+## numerics. `resolve` accepts either form (numerics with or without
+## leading zeros) and returns the schema-shaped numeric, or raises
+## `ValueError` with the full list of valid words on failure.
 
 import std/[strutils]
 
@@ -25,6 +28,9 @@ func numericMatches(canonical, typed: string): bool =
   except ValueError: return false
 
 func listing*(m: CodeMap): string =
+  ## Human-readable list of valid words for use in error messages.
+  ## Numeric-only entries are omitted; falls back to "(numeric)" when the
+  ## map has no word forms at all (e.g. obscure religion codes).
   var words: seq[string]
   for e in m.entries:
     if e.word.len > 0: words.add(e.word)
