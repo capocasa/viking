@@ -78,11 +78,16 @@ The `download` command queries the ELSTER Postfach, downloads documents from the
 ```ini
 [Hans Maier]
 steuernr = 1234567890123
+idnr     = 04452397687
 strasse  = Musterstr.
 nr       = 1
 plz      = 10115
 ort      = Berlin
 iban     = DE89370400440532013000
+
+[Greta Maier]            ; later person-named section + idnr → spouse
+idnr         = 04452397688
+geburtsdatum = 12.07.1956
 
 [freiberuf]              ; reserved → Anlage S
 versteuerung = ist
@@ -100,7 +105,7 @@ geburtsdatum  = 15.03.2019
 idnr          = 02293417683
 ```
 
-Rules: `[auth]`, `[freiberuf]` and `[gewerbe]` are the only reserved section names; `ehepartner = ja` flags a spouse, `verhaeltnis` a kid, `guenstigerpruefung`/`pauschbetrag` Anlage KAP. A trailing legal-form in the section name (GmbH, UG, KG, OHG, GbR, PartG, eK, eG, KGaA, SE, "GmbH & Co. KG", …) picks the Rechtsform; otherwise it's an Einzelgewerbe. See `viking init` for a full template and `docs.rst` for the slow tour.
+Rules: `[auth]`, `[freiberuf]` and `[gewerbe]` are the only reserved section names; `verhaeltnis` flags a kid, `guenstigerpruefung`/`pauschbetrag` Anlage KAP. The first person-named section is you; any later person-named section with an `idnr` is your co-filing spouse (Zusammenveranlagung). A trailing legal-form in the section name (GmbH, UG, KG, OHG, GbR, PartG, eK, eG, KGaA, SE, "GmbH & Co. KG", …) picks the Rechtsform; otherwise it's an Einzelgewerbe. See `viking init` for a full template and `docs.rst` for the slow tour.
 
 The conf is loaded from:
 

@@ -940,10 +940,9 @@ religion     = keine
 beruf        = ""
 krankenkasse = privat
 
-; Spouse (optional, for Zusammenveranlagung). Marker: `ehepartner = ja`.
-; Section name = spouse's full name.
+; Spouse (optional, for Zusammenveranlagung). Any later person-named
+; section with an `idnr` is the co-filing spouse. Section name = full name.
 ; [Vorname Nachname]
-; ehepartner   = ja
 ; geburtsdatum = ""
 ; idnr         = ""
 ; religion     = keine

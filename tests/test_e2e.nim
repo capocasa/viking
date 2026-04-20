@@ -863,7 +863,6 @@ removeFile(estKindAndPConf)
 let estKindBConf = projectRoot / "tests" / "tmp_viking_kind_b.conf"
 writeConf(estKindBConf, personalBlock & """
 [Greta Maier]
-ehepartner = ja
 geburtsdatum = 12.07.1956
 idnr = 04452397688
 

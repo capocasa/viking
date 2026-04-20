@@ -5,7 +5,6 @@
 ## * first non-reserved section (or one whose name matches an already-set
 ##   personal name) → `Personal` (the taxpayer); section name = Vornamen
 ##   Nachname (last word = Nachname, rest = Vornamen).
-## * has `ehepartner` key            → `Spouse`; section name = full name
 ## * `[auth]`                        → signing material (reserved)
 ## * `[freiberuf]`                   → Anlage S source (rechtsform freiberuf)
 ## * `[gewerbe]`                     → Anlage G Einzelgewerbe
@@ -14,6 +13,8 @@
 ## * section name ends with a Rechtsform suffix (GmbH, UG, KG, OHG, GbR,
 ##   PartG, eK, eG, KGaA, SE, GmbH & Co. KG, …) → Anlage G with that
 ##   Rechtsform. No suffix → Einzelgewerbe.
+## * any remaining section with an `idnr` key → `Spouse` (triggers
+##   Zusammenveranlagung); section name = spouse's full name.
 ##
 ## `loadVikingConf` merges the global and CWD confs (or honours an explicit
 ## `--conf` path); `validateForX` returns a `seq[string]` of human-readable
@@ -149,7 +150,6 @@ proc applySpouse(s: var Spouse, key, val: string) =
   of "religion":                        s.religion = religionMap.resolve(val)
   of "beruf", "profession":             s.profession = val
   of "krankenkasse", "kv_art", "kvart": s.kvArt = val
-  of "ehepartner":                      discard  # marker only
   else: discard
 
 proc applyKid(k: var Kid, key, val: string) =
@@ -256,8 +256,6 @@ proc classify(sec: RawSection, conf: VikingConf): SectionKind =
   of "freiberuf": return sFreelance
   of "gewerbe":   return sGewerbe
   else: discard
-  if "ehepartner" in sec.keys:
-    return sSpouse
   if "verhaeltnis" in sec.keys or "kindschaftsverhaeltnis" in sec.keys:
     return sKid
   if "guenstigerpruefung" in sec.keys or
@@ -271,6 +269,11 @@ proc classify(sec: RawSection, conf: VikingConf): SectionKind =
   let fullName = (conf.personal.firstname & " " & conf.personal.lastname).strip
   if fullName.toLowerAscii == sec.name:
     return sPersonal
+  # A later person-named section with an IdNr is the co-filing spouse
+  # (Zusammenveranlagung). An IdNr is only issued to natural persons, so
+  # companies/sources never carry one.
+  if "idnr" in sec.keys:
+    return sSpouse
   sCompany  # fallback: Einzelgewerbe named after owner
 
 proc applyPersonalSection(conf: var VikingConf, sec: RawSection) =

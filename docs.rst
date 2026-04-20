@@ -24,12 +24,13 @@ The configuration model was reworked. Highlights:
   (`[Hans Maier]`). Only `[auth]`, `[freiberuf]`, `[gewerbe]` are reserved.
   Everything else falls out from the shape of the section:
 
-  - `ehepartner = ja`              → spouse (section name = full name)
   - `verhaeltnis = ...`            → kid (section name = full name)
   - `guenstigerpruefung`/`pauschbetrag` → Anlage KAP source
   - section name ends with a legal-form suffix (GmbH, UG, KG, OHG, GbR,
     PartG, eK, eG, KGaA, SE, "GmbH & Co. KG", …) → Anlage G with that
     Rechtsform
+  - any later person-named section with an `idnr` → spouse
+    (triggers Zusammenveranlagung; section name = full name)
   - anything else → Einzelgewerbe (Anlage G with rechtsform einzel)
 
 - German-word aliases for every numeric ELSTER code you used to look up:
@@ -202,12 +203,13 @@ Spouse and kids
 ###############
 
 Add a spouse section for joint filing (Zusammenveranlagung). Name it
-with the spouse's full name; the marker is `ehepartner = ja`:
+with the spouse's full name. The marker is simply the presence of an
+`idnr` on a later person-named section — IdNrs are only issued to
+natural persons, so there's no ambiguity with companies:
 
 .. code-block:: ini
 
     [Greta Maier]
-    ehepartner   = ja
     geburtsdatum = 12.07.1956
     idnr         = 04452397688
     religion     = ev
@@ -356,7 +358,6 @@ default that just picks up `viking.pfx` + `viking.pin`:
     krankenkasse = privat
 
     [Greta Maier]
-    ehepartner   = ja
     geburtsdatum = 12.07.1956
     idnr         = 04452397688
     religion     = ev
