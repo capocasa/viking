@@ -139,7 +139,7 @@ proc handleEricError(rc: int, response, serverResponse: string, ericLogPath: str
   if serverResponse.len > 0:
     log serverResponse
 
-template initEric(cfg: Config, dryRun: bool, xml: string) =
+template initEric(cfg: Config, xml: string) =
   if not loadEricLib(cfg.ericLibPath):
     err &"Error: Failed to load ERiC library from {cfg.ericLibPath}"
     return 1
@@ -151,8 +151,7 @@ template initEric(cfg: Config, dryRun: bool, xml: string) =
       err &"Error: ERiC initialization failed with code {ericInitRc}: {ericHoleFehlerText(ericInitRc)}"
       return 1
   defer: discard ericBeende()
-  if dryRun:
-    echo xml
+  log xml
 
 template initBuffersAndCert(certPath, certPin: string, dryRun: bool, outputPdf: string) =
   let responseBuf {.inject.} = ericRueckgabepufferErzeugen()
@@ -289,7 +288,7 @@ proc ustva(
     if not authOk: return 1
     certPath = cp; certPin = pn
 
-  initEric(cfg, dryRun, xml)
+  initEric(cfg, xml)
   initBuffersAndCert(certPath, certPin, dryRun, outputPdf)
 
   submitAndCheck(xml, &"UStVA_{year}")
@@ -357,7 +356,7 @@ proc euer(
     if not authOk: return 1
     certPath = cp; certPin = pn
 
-  initEric(cfg, dryRun, xml)
+  initEric(cfg, xml)
   initBuffersAndCert(certPath, certPin, dryRun, outputPdf)
 
   submitAndCheck(xml, &"EUER_{year}")
@@ -443,7 +442,7 @@ proc est(
     if not authOk: return 1
     certPath = cp; certPin = pn
 
-  initEric(cfg, dryRun, xml)
+  initEric(cfg, xml)
   initBuffersAndCert(certPath, certPin, dryRun, outputPdf)
 
   submitAndCheck(xml, &"ESt_{year}")
@@ -507,7 +506,7 @@ proc ust(
     if not authOk: return 1
     certPath = cp; certPin = pn
 
-  initEric(cfg, dryRun, xml)
+  initEric(cfg, xml)
   initBuffersAndCert(certPath, certPin, dryRun, outputPdf)
 
   submitAndCheck(xml, &"USt_{year}")
@@ -821,7 +820,7 @@ proc iban(
     if not authOk: return 1
     certPath = cp; certPin = pn
 
-  initEric(cfg, dryRun, xml)
+  initEric(cfg, xml)
   initBuffersAndCert(certPath, certPin, dryRun, outputPdf)
 
   submitAndCheck(xml, "AenderungBankverbindung_20")
@@ -892,7 +891,7 @@ proc message(
     if not authOk: return 1
     certPath = cp; certPin = pn
 
-  initEric(cfg, dryRun, xml)
+  initEric(cfg, xml)
   initBuffersAndCert(certPath, certPin, dryRun, outputPdf)
 
   submitAndCheck(xml, "SonstigeNachrichten_21")
@@ -969,8 +968,8 @@ deductions   = deductions.tsv  ; TSV with vor/sa/agb/per-kid codes for ESt (opti
 ; familienkasse       = ""
 ; kindergeld          = 0
 
-; Signing material. Required for live submissions (not for --dry-run or
-; --validate-only). `cert` is the .pfx (required). Set exactly one of:
+; Signing material. Required for live submissions (not for --dry-run).
+; `cert` is the .pfx (required). Set exactly one of:
 ; * `pin`    — path to a plaintext PIN file, OR the PIN text itself
 ;              (inline; not recommended if the conf is checked in).
 ; * `pincmd` — shell command that prints the PIN on stdout (runs with
@@ -1066,7 +1065,7 @@ proc initFiles(
 when isMainModule:
   import cligen
   clCfg.version = NimblePkgVersion
-  const dryRunHelp = "Validate via ERiC and print XML; don't actually send"
+  const hide = "CLIGEN-NOHELP"
   const dataDirHelp = "Viking data dir (default: ~/.local/share/viking)"
   dispatchMulti(
     [ustva,
@@ -1075,19 +1074,19 @@ when isMainModule:
         "source": "Source name from viking.conf (optional if only one)",
         "period": "Period: 01-12 (monthly) or 41-44 (quarterly)",
         "conf": "viking.conf file (optional; default search chain)",
-        "dry_run": dryRunHelp,
+        "dry-run": "Validate via ERiC; don't actually send",
         "verbose": "Show full server response XML",
-        "output_pdf": "Write PDF of submitted forms to file",
-        "data_dir": dataDirHelp,
-        "test": "Submit to ELSTER sandbox instead of production",
+        "output-pdf": "Write PDF of submitted forms to file",
+        "data-dir": dataDirHelp,
+        "test": " ",
       },
       short = {
+        "dry-run": '\0',
         "period": 'p',
         "conf": 'c',
-        "dry_run": 'd',
         "verbose": 'v',
-        "output_pdf": 'o',
-        "data_dir": 'D',
+        "output-pdf": 'o',
+        "data-dir": 'D',
       }
     ],
     [euer,
@@ -1095,37 +1094,37 @@ when isMainModule:
       help = {
         "source": "Source name from viking.conf (optional if only one)",
         "conf": "viking.conf file (optional; default search chain)",
-        "dry_run": dryRunHelp,
+        "dry-run": "Validate via ERiC; don't actually send",
         "verbose": "Show full server response XML",
-        "output_pdf": "Write PDF of submitted forms to file",
-        "data_dir": dataDirHelp,
-        "test": "Submit to ELSTER sandbox instead of production",
+        "output-pdf": "Write PDF of submitted forms to file",
+        "data-dir": dataDirHelp,
+        "test": " ",
       },
       short = {
+        "dry-run": '\0',
         "conf": 'c',
-        "dry_run": 'd',
         "verbose": 'v',
-        "output_pdf": 'o',
-        "data_dir": 'D',
+        "output-pdf": 'o',
+        "data-dir": 'D',
       }
     ],
     [est,
       help = {
         "conf": "viking.conf file (optional; default search chain)",
-        "dry_run": dryRunHelp,
+        "dry-run": "Validate via ERiC; don't actually send",
         "verbose": "Show full server response XML",
         "force": "Suppress warnings (e.g. no deductions)",
-        "output_pdf": "Write PDF of submitted forms to file",
-        "data_dir": dataDirHelp,
-        "test": "Submit to ELSTER sandbox instead of production",
+        "output-pdf": "Write PDF of submitted forms to file",
+        "data-dir": dataDirHelp,
+        "test": " ",
       },
       short = {
+        "dry-run": '\0',
         "conf": 'c',
-        "dry_run": 'd',
         "verbose": 'v',
         "force": 'f',
-        "output_pdf": 'o',
-        "data_dir": 'D',
+        "output-pdf": 'o',
+        "data-dir": 'D',
       }
     ],
     [ust,
@@ -1133,105 +1132,105 @@ when isMainModule:
       help = {
         "source": "Source name from viking.conf (optional if only one)",
         "conf": "viking.conf file (optional; default search chain)",
-        "dry_run": dryRunHelp,
+        "dry-run": "Validate via ERiC; don't actually send",
         "verbose": "Show full server response XML",
-        "output_pdf": "Write PDF of submitted forms to file",
-        "data_dir": dataDirHelp,
-        "test": "Submit to ELSTER sandbox instead of production",
+        "output-pdf": "Write PDF of submitted forms to file",
+        "data-dir": dataDirHelp,
+        "test": " ",
       },
       short = {
+        "dry-run": '\0',
         "conf": 'c',
-        "dry_run": 'd',
         "verbose": 'v',
-        "output_pdf": 'o',
-        "data_dir": 'D',
+        "output-pdf": 'o',
+        "data-dir": 'D',
       }
     ],
     [iban,
       help = {
-        "new_iban": "New IBAN for the Finanzamt",
+        "new-iban": "New IBAN for the Finanzamt",
         "conf": "Path to viking.conf (optional; default search chain)",
-        "dry_run": dryRunHelp,
+        "dry-run": "Validate via ERiC; don't actually send",
         "verbose": "Show full server response XML",
-        "output_pdf": "Write PDF of submitted forms to file",
-        "data_dir": dataDirHelp,
-        "test": "Submit to ELSTER sandbox instead of production",
+        "output-pdf": "Write PDF of submitted forms to file",
+        "data-dir": dataDirHelp,
+        "test": " ",
       },
       short = {
-        "new_iban": 'i',
+        "dry-run": '\0',
+        "new-iban": 'i',
         "conf": 'c',
-        "dry_run": 'd',
         "verbose": 'v',
-        "output_pdf": 'o',
-        "data_dir": 'D',
+        "output-pdf": 'o',
+        "data-dir": 'D',
       }
     ],
     [message,
       help = {
         "subject": "Message subject (Betreff, max 99 chars)",
         "text": "Message text (max 15000 chars)",
-        "text_file": "Read message text from file (- for stdin)",
-        "dry_run": dryRunHelp,
+        "text-file": "Read message text from file (- for stdin)",
+        "dry-run": "Validate via ERiC; don't actually send",
         "verbose": "Show full server response XML",
-        "output_pdf": "Write PDF of submitted forms to file",
-        "data_dir": dataDirHelp,
-        "test": "Submit to ELSTER sandbox instead of production",
+        "output-pdf": "Write PDF of submitted forms to file",
+        "data-dir": dataDirHelp,
+        "test": " ",
       },
       short = {
+        "dry-run": '\0',
         "subject": 's',
         "text": 't',
-        "text_file": 'f',
-        "dry_run": 'd',
+        "text-file": 'f',
         "verbose": 'v',
-        "output_pdf": 'o',
-        "data_dir": 'D',
+        "output-pdf": 'o',
+        "data-dir": 'D',
       }
     ],
     [list,
       help = {
         "conf": "viking.conf file (optional; default search chain)",
-        "dry_run": "Show generated XML without sending",
+        "dry-run": "Validate via ERiC; don't actually send",
         "verbose": "Show full server response XML",
-        "data_dir": dataDirHelp,
-        "test": "Query ELSTER sandbox instead of production",
+        "data-dir": dataDirHelp,
+        "test": " ",
       },
       short = {
+        "dry-run": '\0',
         "conf": 'c',
-        "dry_run": 'd',
         "verbose": 'v',
-        "data_dir": 'D',
+        "data-dir": 'D',
       }
     ],
     [download,
       help = {
         "files": "Filenames to download (from 'viking list')",
         "conf": "viking.conf file (optional; default search chain)",
-        "output_dir": "Output directory for downloaded files (default: current dir)",
+        "output-dir": "Output directory for downloaded files (default: current dir)",
         "force": "Overwrite existing files",
-        "dry_run": "Show generated XML without sending",
+        "dry-run": "Validate via ERiC; don't actually send",
         "verbose": "Show full server response and confirmation XML",
-        "data_dir": dataDirHelp,
-        "test": "Query ELSTER sandbox instead of production",
+        "data-dir": dataDirHelp,
+        "test": " ",
       },
       short = {
+        "dry-run": '\0',
         "conf": 'c',
-        "output_dir": 'o',
+        "output-dir": 'o',
         "force": 'f',
-        "dry_run": 'd',
         "verbose": 'v',
-        "data_dir": 'D',
+        "data-dir": 'D',
       }
     ],
     [fetch,
       help = {
         "file": "Path to local ERiC archive (JAR/ZIP/tar.gz)",
         "check": "Check existing ERiC installation in cache",
-        "data_dir": dataDirHelp,
+        "data-dir": dataDirHelp,
       },
       short = {
         "file": 'f',
         "check": 'c',
-        "data_dir": 'D',
+        "data-dir": 'D',
       }
     ],
     [initFiles, cmdName = "init",

@@ -110,8 +110,9 @@ A few per-project invariants, just to be clear:
 - There is no ``-y/--year`` flag. There is no ``$year`` interpolation.
 - ``viking ustva`` submits the UStVA. Amounts come from
   ``source.euer=``; there is no ``--amount*`` flag.
-- ``--dry-run`` validates via ERiC and prints the XML; it does not
-  send. There is no separate ``--validate-only``.
+- ``--dry-run`` validates via ERiC but does not send. Pair with
+  ``-v/--verbose`` to also see the generated XML and ERiC response
+  on stdout. There is no separate ``--validate-only``.
 
 .. code-block:: sh
 
@@ -468,8 +469,24 @@ short-flag conventions:
 ``-c <file>``     viking.conf override
 ``-p <period>``   01..12 monthly, 41..44 quarterly, or word
 ``-o <file>``     output PDF / output dir for ``download``
-``-d``            ``--dry-run`` (validate via ERiC, print XML, don't send)
 ``-D <dir>``      ``--data-dir``
-``-v``            verbose (full server XML)
+``-v``            verbose (log XML + full server response to stdout)
 ``-f``            force / suppress warnings
 ================  =================================================
+
+``--dry-run`` has no short — it's deliberate, spelling it out
+prevents accidents. Validates via ERiC and stops before send; pair
+with ``-v`` to see the generated XML.
+
+Dev flags
+=========
+
+A couple of flags exist for development/CI and stay off the ``-h``
+listing:
+
+``--test``
+  Submit to the ELSTER **sandbox** (Testmerker 700000004, receiver
+  9198) instead of production. Uses the same cert/PIN. Every e2e
+  test harness in this repo passes ``--test``; you want it too
+  unless you're actually filing.
+
