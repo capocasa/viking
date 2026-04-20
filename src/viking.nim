@@ -2,7 +2,7 @@
 ##
 ## CLI entry point. One subcommand per Steuerart:
 ##
-## * `submit`   — UStVA (Umsatzsteuervoranmeldung)
+## * `ustva`    — UStVA (Umsatzsteuervoranmeldung)
 ## * `euer`     — EÜR (Einnahmenüberschussrechnung)
 ## * `est`      — ESt (Einkommensteuererklärung), aggregates every source
 ## * `ust`      — annual USt (Umsatzsteuererklärung)
@@ -17,24 +17,12 @@
 ## `vikingconf <vikingconf.html>`_ for the data model and `docs.rst`
 ## for the user guide.
 
-import std/[strutils, strformat, times, options, os, tables]
-import cligen, cligen/argcvt
+import std/[strutils, strformat, options, os, tables]
+import cligen
 import viking/[config, ericffi, ottoffi, ustva_xml, euer_xml, est_xml, ust_xml, ericsetup, invoices, abholung_xml, nachricht_xml, bankverbindung_xml]
 import viking/[vikingconf, deductions, kap, log, abholung, codes]
 
 const NimblePkgVersion {.strdefine.} = "dev"
-
-# Custom cligen converters for Option[float]
-proc argParse(dst: var Option[float], dfl: Option[float], a: var ArgcvtParams): bool =
-  var f: float
-  if argParse(f, 0.0, a):
-    dst = some(f)
-    result = true
-  else:
-    result = false
-
-proc argHelp(dfl: Option[float], a: var ArgcvtParams): seq[string] =
-  @[a.parNm, "float", if dfl.isSome: $dfl.get else: ""]
 
 proc loadConf(conf: string, validate: proc(conf: VikingConf): seq[string]): tuple[ok: bool, conf: VikingConf] =
   var vikingConf: VikingConf
@@ -119,24 +107,15 @@ proc resolveSigningAuth(vc: VikingConf): tuple[ok: bool, certPath, certPin: stri
   ## Resolve cert path + pin for actual signing. Returns (false, ...) on error.
   let certPath = vc.resolveCertPath()
   if not fileExists(certPath):
-    err &"Error: cert not found: {certPath} (set [auth] cert= or place <conf-basename>.pfx next to viking.conf)"
-    return (false, "", "")
-  var pinPath: string
-  try:
-    pinPath = vc.resolvePinPath()
-  except CatchableError as e:
-    err &"Error: {e.msg}"
+    err &"Error: cert not found: {certPath} (check [auth].cert in viking.conf)"
     return (false, "", "")
   var pin: string
   try:
-    pin = readPin(pinPath)
+    pin = vc.resolvePin()
   except CatchableError as e:
-    err &"Error reading pin from {pinPath}: {e.msg}"
+    err &"Error: {e.msg}"
     return (false, "", "")
   (true, certPath, pin)
-
-proc defaultTsvPath(year: int, source: string): string =
-  &"{year}-{source}.tsv"
 
 proc handleEricError(rc: int, response, serverResponse: string, ericLogPath: string) =
   err &"Error: ERiC code {rc}: {ericHoleFehlerText(rc)}"
@@ -174,9 +153,8 @@ template initEric(cfg: Config, dryRun: bool, xml: string) =
   defer: discard ericBeende()
   if dryRun:
     echo xml
-    return 0
 
-template initBuffersAndCert(certPath, certPin: string, validateOnly: bool, outputPdf: string) =
+template initBuffersAndCert(certPath, certPin: string, dryRun: bool, outputPdf: string) =
   let responseBuf {.inject.} = ericRueckgabepufferErzeugen()
   let serverBuf {.inject.} = ericRueckgabepufferErzeugen()
   if responseBuf == nil or serverBuf == nil:
@@ -186,14 +164,14 @@ template initBuffersAndCert(certPath, certPin: string, validateOnly: bool, outpu
     discard ericRueckgabepufferFreigabe(responseBuf)
     discard ericRueckgabepufferFreigabe(serverBuf)
   var flags {.inject.}: uint32 = ERIC_VALIDIERE
-  if not validateOnly:
+  if not dryRun:
     flags = flags or ERIC_SENDE
   var druckParam: EricDruckParameterT
   var druckParamPtr {.inject.}: ptr EricDruckParameterT = nil
   if outputPdf != "":
     flags = flags or ERIC_DRUCKE
     druckParam.version = 4
-    druckParam.vorschau = if validateOnly: 1 else: 0
+    druckParam.vorschau = if dryRun: 1 else: 0
     druckParam.ersteSeite = 1
     druckParam.duplexDruck = 0
     druckParam.pdfName = outputPdf.cstring
@@ -202,7 +180,7 @@ template initBuffersAndCert(certPath, certPin: string, validateOnly: bool, outpu
   var cryptParam: EricVerschluesselungsParameterT
   var cryptParamPtr {.inject.}: ptr EricVerschluesselungsParameterT = nil
   var certHandle: EricZertifikatHandle = 0
-  if not validateOnly:
+  if not dryRun:
     block:
       let (ericCertRc {.inject.}, ericCertHandle {.inject.}) = ericGetHandleToCertificate(certPath)
       if ericCertRc != 0:
@@ -229,16 +207,10 @@ template submitAndCheck(xml: string, datenartVersion: string) =
     handleEricError(rc, response, serverResponse, cfg.ericLogPath)
     return 1
 
-proc submit(
+proc ustva(
   source: seq[string] = @[],
-  amount19: Option[float] = none(float),
-  amount7: Option[float] = none(float),
-  amount0: Option[float] = none(float),
-  invoice_file: string = "",
   period: string = "",
-  year: int = 0,
   conf: string = "",
-  validate_only: bool = false,
   dry_run: bool = false,
   verbose: bool = false,
   output_pdf: string = "",
@@ -248,13 +220,8 @@ proc submit(
   ## Submit a UStVA (Umsatzsteuervoranmeldung) for a source.
   ##
   ## Source positional arg selects the income source from viking.conf;
-  ## omit if exactly one EÜR source is defined. If no amounts given and
-  ## no -i provided, auto-loads <year>-<source>.tsv.
-
-  let actualYear = if year == 0: now().year else: year
-  log.verbose = verbose
-  initLog(actualYear)
-  defer: closeLog()
+  ## omit if exactly one EÜR source is defined. Amounts come from
+  ## the source's `euer=` TSV; tax year comes from `personal.year`.
 
   if period == "":
     err "Error: --period is required; " & periodMap.listing
@@ -271,32 +238,27 @@ proc submit(
     {skGewerbe, skFreelance}, validateForUstva)
   if not confOk: return 1
 
-  let hasAmounts = amount19.isSome or amount7.isSome or amount0.isSome
-  let explicitFile = invoiceFile != ""
-  if hasAmounts and explicitFile:
-    err "Error: --invoice-file and --amount19/--amount7/--amount0 are mutually exclusive"
+  let year = vikingConf.personal.year
+  log.verbose = verbose
+  initLog(year)
+  defer: closeLog()
+
+  var amount19, amount7, amount0: Option[float]
+  let tsvPath = resolveEuerPath(vikingConf, src)
+  if tsvPath == "":
+    err &"Warning: source [{src.name}] has no euer= set; submitting zeros"
+    amount19 = some(0.0)
+  elif not fileExists(tsvPath):
+    err &"Error: invoice TSV not found: {tsvPath}"
     return 1
-
-  var finalAmount19 = amount19
-  var finalAmount7 = amount7
-  var finalAmount0 = amount0
-
-  var tsvPath = invoiceFile
-  if not hasAmounts and not explicitFile:
-    tsvPath = defaultTsvPath(actualYear, src.name)
-    if not fileExists(tsvPath):
-      err &"Error: no amounts given and {tsvPath} not found"
-      return 1
-
-  if tsvPath != "":
-    let (agg, totalParsed, ok) = loadAndAggregateInvoices(tsvPath, actualYear, normalizedPeriod)
-    if not ok:
-      return 1
-    finalAmount19 = agg.amount19
-    finalAmount7 = agg.amount7
-    finalAmount0 = agg.amount0
-    if finalAmount19.isNone and finalAmount7.isNone and finalAmount0.isNone:
-      finalAmount19 = some(0.0)
+  else:
+    let (agg, _, ok) = loadAndAggregateInvoices(tsvPath, year, normalizedPeriod)
+    if not ok: return 1
+    amount19 = agg.amount19
+    amount7 = agg.amount7
+    amount0 = agg.amount0
+    if amount19.isNone and amount7.isNone and amount0.isNone:
+      amount19 = some(0.0)
 
   let (techOk, cfg) = loadTechConfig(dataDir, test)
   if not techOk: return 1
@@ -308,11 +270,11 @@ proc submit(
 
   let xml = generateUstva(
     steuernummer = stnr,
-    jahr = actualYear,
+    jahr = year,
     zeitraum = normalizedPeriod,
-    kz81 = finalAmount19,
-    kz86 = finalAmount7,
-    kz45 = finalAmount0,
+    kz81 = amount19,
+    kz86 = amount7,
+    kz45 = amount0,
     name = fullName,
     strasse = fullStreet,
     plz = p.zip,
@@ -322,22 +284,20 @@ proc submit(
   )
 
   var certPath, certPin: string
-  if not validateOnly and not dryRun:
+  if not dryRun:
     let (authOk, cp, pn) = resolveSigningAuth(vikingConf)
     if not authOk: return 1
     certPath = cp; certPin = pn
 
   initEric(cfg, dryRun, xml)
-  initBuffersAndCert(certPath, certPin, validateOnly, outputPdf)
+  initBuffersAndCert(certPath, certPin, dryRun, outputPdf)
 
-  submitAndCheck(xml, &"UStVA_{actualYear}")
+  submitAndCheck(xml, &"UStVA_{year}")
   return 0
 
 proc euer(
   source: seq[string] = @[],
-  year: int = 0,
   conf: string = "",
-  validate_only: bool = false,
   dry_run: bool = false,
   verbose: bool = false,
   output_pdf: string = "",
@@ -346,25 +306,30 @@ proc euer(
 ): int =
   ## Submit an EÜR for a source.
   ##
-  ## Auto-loads <year>-<source>.tsv. Positive = income, negative = expenses.
-
-  let actualYear = if year == 0: now().year else: year
-  log.verbose = verbose
-  initLog(actualYear)
-  defer: closeLog()
+  ## Loads the source's `euer=` TSV. Positive = income,
+  ## negative = expenses. Tax year comes from `personal.year`.
 
   let srcName = if source.len > 0: source[0] else: ""
   let (confOk, vikingConf, src) = loadConfForSource(conf, srcName,
     {skGewerbe, skFreelance}, validateForEuer)
   if not confOk: return 1
 
-  let tsvPath = defaultTsvPath(actualYear, src.name)
-  if not fileExists(tsvPath):
-    err &"Error: {tsvPath} not found"
-    return 1
+  let year = vikingConf.personal.year
+  log.verbose = verbose
+  initLog(year)
+  defer: closeLog()
 
-  let (agg, ok) = loadAndAggregateForEuer(tsvPath)
-  if not ok: return 1
+  let tsvPath = resolveEuerPath(vikingConf, src)
+  var agg: EuerAggregation
+  if tsvPath == "":
+    err &"Warning: source [{src.name}] has no euer= set; submitting zeros"
+  elif not fileExists(tsvPath):
+    err &"Error: invoice TSV not found: {tsvPath}"
+    return 1
+  else:
+    let (a, ok) = loadAndAggregateForEuer(tsvPath)
+    if not ok: return 1
+    agg = a
 
   let (techOk, cfg) = loadTechConfig(dataDir, test)
   if not techOk: return 1
@@ -378,7 +343,7 @@ proc euer(
     else: "3"
 
   let xml = generateEuer(EuerInput(
-    steuernummer: vikingConf.effectiveTaxnumber(src), jahr: actualYear,
+    steuernummer: vikingConf.effectiveTaxnumber(src), jahr: year,
     incomeNet: agg.incomeNet, incomeVat: agg.incomeVat,
     expenseNet: agg.expenseNet, expenseVorsteuer: agg.expenseVorsteuer,
     rechtsform: src.rechtsform, einkunftsart: einkunftsart,
@@ -387,22 +352,19 @@ proc euer(
   ))
 
   var certPath, certPin: string
-  if not validateOnly and not dryRun:
+  if not dryRun:
     let (authOk, cp, pn) = resolveSigningAuth(vikingConf)
     if not authOk: return 1
     certPath = cp; certPin = pn
 
   initEric(cfg, dryRun, xml)
-  initBuffersAndCert(certPath, certPin, validateOnly, outputPdf)
+  initBuffersAndCert(certPath, certPin, dryRun, outputPdf)
 
-  submitAndCheck(xml, &"EUER_{actualYear}")
+  submitAndCheck(xml, &"EUER_{year}")
   return 0
 
 proc est(
-  year: int = 0,
   conf: string = "",
-  deductions: string = "",
-  validate_only: bool = false,
   dry_run: bool = false,
   verbose: bool = false,
   force: bool = false,
@@ -413,28 +375,36 @@ proc est(
   ## Submit an ESt (Einkommensteuererklarung / income tax return).
   ##
   ## Aggregates all sources in viking.conf:
-  ## - income=2/3: loads <year>-<source>.tsv, computes profit, adds to Anlage G/S
-  ## - income=kap: reads inline values, adds to Anlage KAP
-
-  let actualYear = if year == 0: now().year else: year
-  log.verbose = verbose
-  initLog(actualYear)
-  defer: closeLog()
+  ## - Anlage G/S: loads each source's `euer=` TSV,
+  ##   computes profit, adds to Anlage G/S
+  ## - Anlage KAP: reads inline values
+  ##
+  ## Deductions come from `personal.deductions`. Tax year from
+  ## `personal.year`.
 
   let (confOk, vikingConf) = loadConf(conf, validateForEst)
   if not confOk: return 1
+
+  let year = vikingConf.personal.year
+  log.verbose = verbose
+  initLog(year)
+  defer: closeLog()
 
   var gewerbeProfits: seq[ProfitEntry] = @[]
   var freelanceProfits: seq[ProfitEntry] = @[]
 
   for src in vikingConf.euerSources:
-    let tsvPath = defaultTsvPath(actualYear, src.name)
-    if not fileExists(tsvPath):
-      err &"Error: source [{src.name}] requires {tsvPath} (not found)"
+    let tsvPath = resolveEuerPath(vikingConf, src)
+    var profit = 0.0
+    if tsvPath == "":
+      err &"Warning: source [{src.name}] has no euer= set; counting 0 profit"
+    elif not fileExists(tsvPath):
+      err &"Error: source [{src.name}] invoice TSV not found: {tsvPath}"
       return 1
-    let (agg, ok) = loadAndAggregateForEuer(tsvPath)
-    if not ok: return 1
-    let profit = (agg.incomeNet + agg.incomeVat) - (agg.expenseNet + agg.expenseVorsteuer)
+    else:
+      let (agg, ok) = loadAndAggregateForEuer(tsvPath)
+      if not ok: return 1
+      profit = (agg.incomeNet + agg.incomeVat) - (agg.expenseNet + agg.expenseVorsteuer)
     let entry = ProfitEntry(label: src.name, profit: profit)
     case src.kind
     of skGewerbe: gewerbeProfits.add(entry)
@@ -444,45 +414,44 @@ proc est(
   let kapTotals = aggregateKap(vikingConf.sources)
 
   var ded: DeductionsByForm
-  if deductions != "":
-    if not fileExists(deductions):
-      err &"Error: Deductions file not found: {deductions}"
+  let dedPath = resolveDeductionsPath(vikingConf)
+  if dedPath != "":
+    if not fileExists(dedPath):
+      err &"Error: Deductions file not found: {dedPath}"
       return 1
     try:
-      ded = loadDeductions(deductions, vikingConf.kidFirstnames)
+      ded = loadDeductions(dedPath, vikingConf.kidFirstnames)
     except ValueError as e:
       err &"Error parsing deductions: {e.msg}"
       return 1
   elif not force:
-    err "Warning: no deductions file provided. Use --force to suppress, or pass --deductions <file>"
+    err "Warning: no deductions set. Either add `deductions = …` to the taxpayer section of viking.conf, or use --force to suppress."
 
   let (techOk, cfg) = loadTechConfig(dataDir, test)
   if not techOk: return 1
 
   let xml = generateEst(EstInput(
-    conf: vikingConf, year: actualYear,
+    conf: vikingConf, year: year,
     gewerbeProfits: gewerbeProfits, freelanceProfits: freelanceProfits,
     kapTotals: kapTotals, deductions: ded,
     test: cfg.test, produktVersion: NimblePkgVersion,
   ))
 
   var certPath, certPin: string
-  if not validateOnly and not dryRun:
+  if not dryRun:
     let (authOk, cp, pn) = resolveSigningAuth(vikingConf)
     if not authOk: return 1
     certPath = cp; certPin = pn
 
   initEric(cfg, dryRun, xml)
-  initBuffersAndCert(certPath, certPin, validateOnly, outputPdf)
+  initBuffersAndCert(certPath, certPin, dryRun, outputPdf)
 
-  submitAndCheck(xml, &"ESt_{actualYear}")
+  submitAndCheck(xml, &"ESt_{year}")
   return 0
 
 proc ust(
   source: seq[string] = @[],
-  year: int = 0,
   conf: string = "",
-  validate_only: bool = false,
   dry_run: bool = false,
   verbose: bool = false,
   output_pdf: string = "",
@@ -491,25 +460,30 @@ proc ust(
 ): int =
   ## Submit an annual VAT return (Umsatzsteuererklaerung) for a source.
   ##
-  ## Auto-loads <year>-<source>.tsv. Vorauszahlungen from source section.
-
-  let actualYear = if year == 0: now().year else: year
-  log.verbose = verbose
-  initLog(actualYear)
-  defer: closeLog()
+  ## Loads the source's `euer=` TSV. Vorauszahlungen from source section.
+  ## Tax year comes from `personal.year`.
 
   let srcName = if source.len > 0: source[0] else: ""
   let (confOk, vikingConf, src) = loadConfForSource(conf, srcName,
     {skGewerbe, skFreelance}, validateForUst)
   if not confOk: return 1
 
-  let tsvPath = defaultTsvPath(actualYear, src.name)
-  if not fileExists(tsvPath):
-    err &"Error: {tsvPath} not found"
-    return 1
+  let year = vikingConf.personal.year
+  log.verbose = verbose
+  initLog(year)
+  defer: closeLog()
 
-  let (agg, ok) = loadAndAggregateForUst(tsvPath)
-  if not ok: return 1
+  let tsvPath = resolveEuerPath(vikingConf, src)
+  var agg: UstAggregation
+  if tsvPath == "":
+    err &"Warning: source [{src.name}] has no euer= set; submitting zeros"
+  elif not fileExists(tsvPath):
+    err &"Error: invoice TSV not found: {tsvPath}"
+    return 1
+  else:
+    let (a, ok) = loadAndAggregateForUst(tsvPath)
+    if not ok: return 1
+    agg = a
 
   let (techOk, cfg) = loadTechConfig(dataDir, test)
   if not techOk: return 1
@@ -517,7 +491,7 @@ proc ust(
   let p = vikingConf.personal
   let fullName = p.firstname & " " & p.lastname
   let xml = generateUst(UstInput(
-    steuernummer: vikingConf.effectiveTaxnumber(src), jahr: actualYear,
+    steuernummer: vikingConf.effectiveTaxnumber(src), jahr: year,
     income19: agg.income19, income7: agg.income7, income0: agg.income0,
     has19: agg.has19, has7: agg.has7, has0: agg.has0,
     vorsteuer: agg.vorsteuer, vorauszahlungen: src.vorauszahlungen,
@@ -528,15 +502,15 @@ proc ust(
   ))
 
   var certPath, certPin: string
-  if not validateOnly and not dryRun:
+  if not dryRun:
     let (authOk, cp, pn) = resolveSigningAuth(vikingConf)
     if not authOk: return 1
     certPath = cp; certPin = pn
 
   initEric(cfg, dryRun, xml)
-  initBuffersAndCert(certPath, certPin, validateOnly, outputPdf)
+  initBuffersAndCert(certPath, certPin, dryRun, outputPdf)
 
-  submitAndCheck(xml, &"USt_{actualYear}")
+  submitAndCheck(xml, &"USt_{year}")
   return 0
 
 proc fetch(file: string = "", check: bool = false, data_dir: string = ""): int =
@@ -812,7 +786,6 @@ proc download(
 proc iban(
   new_iban: string = "",
   conf: string = "",
-  validate_only: bool = false,
   dry_run: bool = false,
   verbose: bool = false,
   output_pdf: string = "",
@@ -843,13 +816,13 @@ proc iban(
   )
 
   var certPath, certPin: string
-  if not validateOnly and not dryRun:
+  if not dryRun:
     let (authOk, cp, pn) = resolveSigningAuth(vikingConf)
     if not authOk: return 1
     certPath = cp; certPin = pn
 
   initEric(cfg, dryRun, xml)
-  initBuffersAndCert(certPath, certPin, validateOnly, outputPdf)
+  initBuffersAndCert(certPath, certPin, dryRun, outputPdf)
 
   submitAndCheck(xml, "AenderungBankverbindung_20")
   return 0
@@ -859,7 +832,6 @@ proc message(
   text: string = "",
   text_file: string = "",
   conf: string = "",
-  validate_only: bool = false,
   dry_run: bool = false,
   verbose: bool = false,
   output_pdf: string = "",
@@ -915,19 +887,21 @@ proc message(
   ))
 
   var certPath, certPin: string
-  if not validateOnly and not dryRun:
+  if not dryRun:
     let (authOk, cp, pn) = resolveSigningAuth(vikingConf)
     if not authOk: return 1
     certPath = cp; certPin = pn
 
   initEric(cfg, dryRun, xml)
-  initBuffersAndCert(certPath, certPin, validateOnly, outputPdf)
+  initBuffersAndCert(certPath, certPin, dryRun, outputPdf)
 
   submitAndCheck(xml, "SonstigeNachrichten_21")
   return 0
 
 const initConfTemplate = """; First section = taxpayer. Section name = "Vornamen Nachname".
+; `year` is required — copy this directory per tax year.
 [Vorname Nachname]
+year         = 2025
 geburtsdatum = ""
 idnr         = ""
 steuernr     = ""
@@ -939,6 +913,7 @@ iban         = ""
 religion     = keine
 beruf        = ""
 krankenkasse = privat
+deductions   = deductions.tsv  ; TSV with vor/sa/agb/per-kid codes for ESt (optional)
 
 ; Spouse (optional, for Zusammenveranlagung). Any later person-named
 ; section with an `idnr` is the co-filing spouse. Section name = full name.
@@ -951,21 +926,30 @@ krankenkasse = privat
 ; (Einzelgewerbe). Otherwise the section name IS a handle; rechtsform
 ; is inferred from a legal-form suffix (GmbH, UG, AG, KG, OHG, GbR,
 ; PartG, eK, eG, KGaA, SE, "GmbH & Co. KG", …). No suffix = Einzelgewerbe.
-; Section name also picks the TSV: <year>-<section>.tsv.
+; Company sections (with a legal-form suffix) are accepted but only
+; submit EÜR today — full double-entry bookkeeping is future work.
+; Each EÜR source declares its income/cost TSV via `euer=` (EÜR =
+; Einnahmen-Überschuss-Rechnung). Optional — sources without `euer=`
+; submit zeros with a warning. Copy this conf (and its TSVs) into a
+; per-year directory so each year's data stays isolated.
 
 ; [freiberuf]
 ; versteuerung    = ist      ; ist or soll
 ; vorauszahlungen = 0
+; euer            = freiberuf.tsv
 
 ; [gewerbe]
 ; versteuerung    = ist
 ; vorauszahlungen = 0
+; euer            = gewerbe.tsv
 
 ; [Musterfirma GmbH]          ; rechtsform inferred: gmbh
 ; versteuerung    = soll
 ; vorauszahlungen = 0
+; euer            = musterfirma.tsv
 
-; Anlage KAP. Marker: guenstigerpruefung or pauschbetrag.
+; Anlage KAP. Marker: guenstigerpruefung or pauschbetrag. No TSV —
+; values are inline.
 ; [ibkr]
 ; guenstigerpruefung = 1
 ; pauschbetrag       = 1000
@@ -984,6 +968,20 @@ krankenkasse = privat
 ; personb-name        = ""
 ; familienkasse       = ""
 ; kindergeld          = 0
+
+; Signing material. Required for live submissions (not for --dry-run or
+; --validate-only). `cert` is the .pfx (required). Set exactly one of:
+; * `pin`    — path to a plaintext PIN file, OR the PIN text itself
+;              (inline; not recommended if the conf is checked in).
+; * `pincmd` — shell command that prints the PIN on stdout (runs with
+;              this conf's dir as cwd). Any shell snippet works:
+;              `./viking.pin.sh`, `pass show elster/pin`, `cat pin.txt`,
+;              `security find-generic-password -s elster -w`, ...
+; Relative paths resolve against this conf's dir.
+[auth]
+; cert   = viking.pfx
+; pin    = viking.pin
+; pincmd = pass show elster/pin
 """
 
 const initDeductionsTemplate =
@@ -1014,7 +1012,7 @@ proc initFiles(
   ## Create skeleton viking.conf and deductions.tsv
   ##
   ## With --global, seeds ~/.config/viking/viking.conf.
-  ## Otherwise writes viking.conf, deductions.tsv, <year>-example.tsv to dir.
+  ## Otherwise writes viking.conf, deductions.tsv, example.tsv to dir.
 
   if global:
     let gpath = globalConfPath()
@@ -1030,8 +1028,7 @@ proc initFiles(
 
   let confPath = dir / "viking.conf"
   let deductionsPath = dir / "deductions.tsv"
-  let year = now().year
-  let euerPath = dir / &"{year}-example.tsv"
+  let euerPath = dir / "example.tsv"
 
   if not dirExists(dir):
     stderr.writeLine &"Error: directory '{dir}' does not exist"
@@ -1069,125 +1066,104 @@ proc initFiles(
 when isMainModule:
   import cligen
   clCfg.version = NimblePkgVersion
+  const dryRunHelp = "Validate via ERiC and print XML; don't actually send"
+  const dataDirHelp = "Viking data dir (default: ~/.local/share/viking)"
   dispatchMulti(
-    [submit,
+    [ustva,
       positional = "source",
       help = {
         "source": "Source name from viking.conf (optional if only one)",
-        "amount19": "Net amount at 19% VAT rate (Kz81)",
-        "amount7": "Net amount at 7% VAT rate (Kz86)",
-        "amount0": "Non-taxable amount at 0% (Kz45)",
-        "invoice_file": "CSV/TSV invoice file (overrides auto-discovery)",
         "period": "Period: 01-12 (monthly) or 41-44 (quarterly)",
-        "year": "Tax year (default: current year)",
         "conf": "viking.conf file (optional; default search chain)",
-        "validate_only": "Only validate, don't send",
-        "dry_run": "Show generated XML without processing",
+        "dry_run": dryRunHelp,
         "verbose": "Show full server response XML",
         "output_pdf": "Write PDF of submitted forms to file",
-        "data_dir": "Viking data dir (default: ~/.local/share/viking)",
+        "data_dir": dataDirHelp,
         "test": "Submit to ELSTER sandbox instead of production",
       },
       short = {
-        "amount19": '1',
-        "amount7": '7',
-        "amount0": '0',
-        "invoice_file": 'i',
         "period": 'p',
-        "year": 'y',
         "conf": 'c',
-        "validate_only": 'n',
         "dry_run": 'd',
         "verbose": 'v',
         "output_pdf": 'o',
+        "data_dir": 'D',
       }
     ],
     [euer,
       positional = "source",
       help = {
         "source": "Source name from viking.conf (optional if only one)",
-        "year": "Tax year (default: current year)",
         "conf": "viking.conf file (optional; default search chain)",
-        "validate_only": "Only validate, don't send",
-        "dry_run": "Show generated XML without processing",
+        "dry_run": dryRunHelp,
         "verbose": "Show full server response XML",
         "output_pdf": "Write PDF of submitted forms to file",
-        "data_dir": "Viking data dir (default: ~/.local/share/viking)",
+        "data_dir": dataDirHelp,
         "test": "Submit to ELSTER sandbox instead of production",
       },
       short = {
-        "year": 'y',
         "conf": 'c',
-        "validate_only": 'n',
         "dry_run": 'd',
         "verbose": 'v',
         "output_pdf": 'o',
+        "data_dir": 'D',
       }
     ],
     [est,
       help = {
-        "year": "Tax year (default: current year)",
         "conf": "viking.conf file (optional; default search chain)",
-        "deductions": "Deductions TSV with compound codes (optional)",
-        "validate_only": "Only validate, don't send",
-        "dry_run": "Show generated XML without processing",
+        "dry_run": dryRunHelp,
         "verbose": "Show full server response XML",
         "force": "Suppress warnings (e.g. no deductions)",
         "output_pdf": "Write PDF of submitted forms to file",
-        "data_dir": "Viking data dir (default: ~/.local/share/viking)",
+        "data_dir": dataDirHelp,
         "test": "Submit to ELSTER sandbox instead of production",
       },
       short = {
-        "year": 'y',
         "conf": 'c',
-        "deductions": 'D',
-        "validate_only": 'n',
         "dry_run": 'd',
         "verbose": 'v',
         "force": 'f',
         "output_pdf": 'o',
+        "data_dir": 'D',
       }
     ],
     [ust,
       positional = "source",
       help = {
         "source": "Source name from viking.conf (optional if only one)",
-        "year": "Tax year (default: current year)",
         "conf": "viking.conf file (optional; default search chain)",
-        "validate_only": "Only validate, don't send",
-        "dry_run": "Show generated XML without processing",
+        "dry_run": dryRunHelp,
         "verbose": "Show full server response XML",
         "output_pdf": "Write PDF of submitted forms to file",
-        "data_dir": "Viking data dir (default: ~/.local/share/viking)",
+        "data_dir": dataDirHelp,
         "test": "Submit to ELSTER sandbox instead of production",
       },
       short = {
-        "year": 'y',
         "conf": 'c',
-        "validate_only": 'n',
         "dry_run": 'd',
         "verbose": 'v',
         "output_pdf": 'o',
+        "data_dir": 'D',
       }
     ],
     [iban,
       help = {
         "new_iban": "New IBAN for the Finanzamt",
         "conf": "Path to viking.conf (optional; default search chain)",
-        "validate_only": "Only validate, don't send",
-        "dry_run": "Show generated XML without processing",
+        "dry_run": dryRunHelp,
         "verbose": "Show full server response XML",
         "output_pdf": "Write PDF of submitted forms to file",
-        "data_dir": "Viking data dir (default: ~/.local/share/viking)",
+        "data_dir": dataDirHelp,
         "test": "Submit to ELSTER sandbox instead of production",
       },
       short = {
         "new_iban": 'i',
         "conf": 'c',
-        "validate_only": 'n',
         "dry_run": 'd',
         "verbose": 'v',
         "output_pdf": 'o',
+        "data_dir": 'D',
       }
     ],
     [message,
@@ -1195,21 +1171,20 @@ when isMainModule:
         "subject": "Message subject (Betreff, max 99 chars)",
         "text": "Message text (max 15000 chars)",
         "text_file": "Read message text from file (- for stdin)",
-        "validate_only": "Only validate, don't send",
-        "dry_run": "Show generated XML without processing",
+        "dry_run": dryRunHelp,
         "verbose": "Show full server response XML",
         "output_pdf": "Write PDF of submitted forms to file",
-        "data_dir": "Viking data dir (default: ~/.local/share/viking)",
+        "data_dir": dataDirHelp,
         "test": "Submit to ELSTER sandbox instead of production",
       },
       short = {
         "subject": 's',
         "text": 't',
         "text_file": 'f',
-        "validate_only": 'n',
         "dry_run": 'd',
         "verbose": 'v',
         "output_pdf": 'o',
+        "data_dir": 'D',
       }
     ],
     [list,
@@ -1217,13 +1192,14 @@ when isMainModule:
         "conf": "viking.conf file (optional; default search chain)",
         "dry_run": "Show generated XML without sending",
         "verbose": "Show full server response XML",
-        "data_dir": "Viking data dir (default: ~/.local/share/viking)",
+        "data_dir": dataDirHelp,
         "test": "Query ELSTER sandbox instead of production",
       },
       short = {
         "conf": 'c',
         "dry_run": 'd',
         "verbose": 'v',
+        "data_dir": 'D',
       }
     ],
     [download,
@@ -1234,7 +1210,7 @@ when isMainModule:
         "force": "Overwrite existing files",
         "dry_run": "Show generated XML without sending",
         "verbose": "Show full server response and confirmation XML",
-        "data_dir": "Viking data dir (default: ~/.local/share/viking)",
+        "data_dir": dataDirHelp,
         "test": "Query ELSTER sandbox instead of production",
       },
       short = {
@@ -1243,17 +1219,19 @@ when isMainModule:
         "force": 'f',
         "dry_run": 'd',
         "verbose": 'v',
+        "data_dir": 'D',
       }
     ],
     [fetch,
       help = {
         "file": "Path to local ERiC archive (JAR/ZIP/tar.gz)",
         "check": "Check existing ERiC installation in cache",
-        "data_dir": "Viking data dir (default: ~/.local/share/viking)",
+        "data_dir": dataDirHelp,
       },
       short = {
         "file": 'f',
         "check": 'c',
+        "data_dir": 'D',
       }
     ],
     [initFiles, cmdName = "init",

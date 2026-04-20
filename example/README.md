@@ -2,8 +2,12 @@
 
 A complete viking project that exercises every config feature: multi-source
 income, alphanumeric aliases, spouse, kids, KAP, deductions, and the `[auth]`
-defaults. Wired up against the public ELSTER sandbox so you can dry-run or
+wiring. Wired up against the public ELSTER sandbox so you can dry-run or
 even submit (with `--test`) end-to-end.
+
+One directory per tax year — copy this whole directory to `2025/`, `2026/`,
+etc. and edit the TSVs in place. Viking does no year substitution in
+paths; the year flag (`--year`) only picks the ERiC schema.
 
 ## Files
 
@@ -12,8 +16,8 @@ even submit (with `--test`) end-to-end.
 | `viking.conf`         | All section types in one place, all aliases used           |
 | `viking.pin`          | Plain-text PIN (`123456`, the public test PIN)             |
 | `viking.pin.sh`       | Alternative: a script that prints the PIN to stdout        |
-| `2025-freiberuf.tsv`  | Auto-loaded for `freiberuf` source                         |
-| `2025-gewerbe.tsv`  | Auto-loaded for `gewerbe` source                         |
+| `freelance.tsv`       | TSV wired up via `[freiberuf].euer=`                       |
+| `gewerbe.tsv`         | TSV wired up via `[gewerbe].euer=`                         |
 | `deductions.tsv`      | All deduction code groups (vor / sa / agb / per-kid)       |
 
 ## Setup
@@ -25,14 +29,15 @@ wget https://download.elster.de/download/schnittstellen/Test_Zertifikate.zip
 unzip Test_Zertifikate.zip
 ```
 
-Drop or symlink one of the `.pfx` files into this directory as `viking.pfx`:
+Drop or symlink one of the `.pfx` files into this directory as `viking.pfx`
+(the path `[auth].cert` in `viking.conf` points at):
 
 ```sh
 ln -s "$PWD/test-softorg-pse.pfx" viking.pfx
 ```
 
-That matches viking's default convention (`<conf-basename>.pfx` next to the
-conf). The PIN for all test certs is `123456`, already in `viking.pin`.
+The PIN for all test certs is `123456`, already in `viking.pin` (which is
+what `[auth].pin` points at).
 
 ## Try it
 
@@ -42,31 +47,30 @@ All commands are safe — `--test` hits the ELSTER sandbox and adds a
 ```sh
 cd example
 
-# UStVA (quarterly VAT advance), default source picked from conf
-viking submit --test --period q1 --amount19 1000 --dry-run
+# UStVA (quarterly VAT advance) — amounts come from freelance.tsv
+viking ustva freiberuf --test --period q1 --dry-run
 
-# Word aliases everywhere — all of these are equivalent:
-viking submit --test --period q1  --amount19 1000 --dry-run
-viking submit --test --period 41  --amount19 1000 --dry-run
-viking submit --test --period mar --amount19 100  --dry-run     # -> 03
-viking submit --test --period 3   --amount19 100  --dry-run     # -> 03
+# Period aliases — all of these are equivalent:
+viking ustva freiberuf --test --period q1  --dry-run
+viking ustva freiberuf --test --period 41  --dry-run
+viking ustva freiberuf --test --period mar --dry-run     # -> 03
+viking ustva freiberuf --test --period 3   --dry-run     # -> 03
 
-# Multiple sources -> name the one you want
-viking submit  freiberuf --test --period q1 --amount19 0 --dry-run
-viking submit  gewerbe --test --period q1 --amount19 0 --dry-run
-viking euer    freiberuf --test --year 2025 --dry-run            # auto-loads 2025-freiberuf.tsv
-viking euer    gewerbe --test --year 2025 --dry-run
-viking ust     gewerbe --test --year 2025 --dry-run            # vorauszahlungen=100 picked up
+# Each source declares its own TSV via `euer=` in the conf
+viking euer    freiberuf --test --dry-run
+viking euer    gewerbe   --test --dry-run
+viking ust     gewerbe   --test --dry-run            # vorauszahlungen=100
 
 # ESt aggregates every source: Anlage S (freiberuf) + Anlage G (gewerbe)
 # + Anlage KAP (ibkr inline values) + Anlage Kind for max & lisa.
-viking est --test --year 2025 --deductions deductions.tsv --dry-run
+# personal.deductions = deductions.tsv is picked up automatically.
+viking est --test --dry-run
 ```
 
-To actually submit to the sandbox (no `--dry-run`):
+To actually submit to the sandbox (drop `--dry-run`):
 
 ```sh
-viking submit --test --period q1 --amount19 0
+viking ustva freiberuf --test --period q1
 ```
 
 You'll get a real round-trip to ELSTER's test endpoint. Drop `--test` once
@@ -74,17 +78,22 @@ your real cert is in place and you mean it.
 
 ## Picking the PIN format
 
-The `[auth]` block in `viking.conf` is commented out because the defaults
-already pick up `viking.pin`. To use the script form instead:
+By default, `[auth]` points `pin = viking.pin` at the bundled plaintext
+file. Three other variants are commented in the same block:
 
 ```ini
 [auth]
-pincmd = viking.pin.sh
+cert   = viking.pfx
+; pin    = viking.pin           ; default: plaintext PIN file
+; pin    = 123456               ; inline PIN (ok for the public sandbox)
+; pincmd = ./viking.pin.sh      ; run the bundled script
+; pincmd = pass show elster/pin ; or wrap any secret manager
 ```
 
-Anything that prints the PIN to stdout works — `pass`, 1Password CLI, macOS
-Keychain (`security find-generic-password ...`), libsecret (`secret-tool
-lookup ...`), gpg, age. See `viking.pin.sh` for examples.
+`pincmd` is a shell command; it runs with this directory as cwd, so any
+one-liner works — `pass`, 1Password CLI, macOS Keychain (`security
+find-generic-password ...`), libsecret (`secret-tool lookup ...`), gpg,
+age, `cat`, etc. See `viking.pin.sh` for a script-form example.
 
 ## Multi-conf chain
 

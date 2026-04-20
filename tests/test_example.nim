@@ -1,8 +1,8 @@
 ## End-to-end smoke test for the example/ project.
 ## Copies example/ to tests/tmp_example/, wires up the public ELSTER test
-## cert via [auth], and runs every submission command. High-level: each
-## subcommand should produce reasonable XML and (where applicable) pass
-## ELSTER schema validation in --test mode.
+## cert via [auth], and runs every subcommand. Data comes from TSVs
+## referenced by source.euer= in viking.conf; the tax year comes from
+## personal.year.
 
 import std/[osproc, os, strutils]
 import viking/ericsetup
@@ -32,9 +32,14 @@ proc run(cmd: string): tuple[output: string, code: int] =
   (output.strip, code)
 
 func validateOk(out_text: string, rc: int): bool =
-  ## True on clean exit OR only the HerstellerID-blocked status that's
-  ## expected in CI when using the demo HID.
+  ## True on clean exit OR only the HerstellerID-blocked status expected
+  ## in CI when using the demo HID.
   rc == 0 or out_text.contains("610301202")
+
+func structuralOk(outText: string, rc: int): bool =
+  ## Allow plausibility failures (610001002) for structural inspection —
+  ## demo data (fake IDNRs etc.) often fails ELSTER's plausi checks.
+  rc == 0 or outText.contains("610301202") or outText.contains("610001002")
 
 echo "=== example/ project E2E tests ==="
 echo ""
@@ -50,205 +55,197 @@ if fcRc != 0:
   echo "Run: viking fetch"
   quit(1)
 
-# Isolate from user's global conf
 let testXdgHome = projectRoot / "tests" / "tmp_xdg_example"
 createDir(testXdgHome)
 putEnv("XDG_CONFIG_HOME", testXdgHome)
 
-# Stage a working copy of example/ that we can mutate
 let tmp = projectRoot / "tests" / "tmp_example"
 removeDir(tmp)
 copyDir(projectRoot / "example", tmp)
 
-# Wire up the public ELSTER test cert via [auth]
 let testCertPath = getAppDataDir() / "certificates" / "test-softorg-pse.pfx"
 let testCertAvailable = fileExists(testCertPath)
 let confPath = tmp / "viking.conf"
-let baseConf = readFile(confPath)
+let rawConf = readFile(confPath)
+let authIdx = rawConf.find("[auth]")
+let baseConf = if authIdx >= 0: rawConf[0 ..< authIdx] else: rawConf
 let authBlock = "\n[auth]\ncert = " & testCertPath &
                 "\npin = " & (tmp / "viking.pin") & "\n"
 writeFile(confPath, baseConf & authBlock)
 
 proc inEx(args: string): tuple[output: string, code: int] =
-  ## Run a viking subcommand from inside the example dir.
   run("cd " & tmp & " && " & projectRoot / Viking & " " & args)
 
 # -----------------------------------------------------------------
-# Conf parses with the full feature kit (words, KAP, kids, spouse)
+# Conf parses
 # -----------------------------------------------------------------
-echo "--- conf parses with all features ---"
-let (h, hRc) = inEx("submit freiberuf --test --period q1 --amount19 0 --dry-run")
-check("conf with words/spouse/kids/KAP parses", hRc == 0, h)
+echo "--- conf parses ---"
+let (h, hRc) = inEx("ustva freiberuf --test --period q1 --dry-run")
+check("conf parses", hRc == 0, h)
 check("personal taxnumber in XML", h.contains("<Steuernummer>9198011310010</Steuernummer>"))
 echo ""
 
 # -----------------------------------------------------------------
-# Multi-source: ambiguous without name; explicit picks the right one
+# Multi-source dispatch
 # -----------------------------------------------------------------
 echo "--- multi-source dispatch ---"
-let (amb, ambRc) = inEx("submit --test --period q1 --amount19 0 --dry-run")
+let (amb, ambRc) = inEx("ustva --test --period q1 --dry-run")
 check("ambiguous source rejected", ambRc != 0)
-check("error lists every source", amb.contains("freiberuf") and
-                                   amb.contains("gewerbe"))
+check("error lists sources", amb.contains("freiberuf") and amb.contains("gewerbe"))
 
-let (gw, _) = inEx("submit gewerbe --test --period q1 --amount19 0 --dry-run")
-check("gewerbe -> inherits personal taxnumber",
+let (gw, _) = inEx("ustva gewerbe --test --period q1 --dry-run")
+check("gewerbe inherits personal taxnumber",
       gw.contains("<Steuernummer>9198011310010</Steuernummer>"))
 echo ""
 
 # -----------------------------------------------------------------
-# Period aliases (word, padded numeric, unpadded numeric)
+# Period aliases
 # -----------------------------------------------------------------
-echo "--- period word/number aliases ---"
-let (pMar, _) = inEx("submit freiberuf --test --period mar --amount19 100 --dry-run")
+echo "--- period aliases ---"
+let (pMar, _) = inEx("ustva freiberuf --test --period mar --dry-run")
 check("period mar -> 03", pMar.contains("<Zeitraum>03</Zeitraum>"))
-let (pQ1,  _) = inEx("submit freiberuf --test --period q1  --amount19 100 --dry-run")
+let (pQ1, _) = inEx("ustva freiberuf --test --period q1 --dry-run")
 check("period q1 -> 41", pQ1.contains("<Zeitraum>41</Zeitraum>"))
-let (p3,   _) = inEx("submit freiberuf --test --period 3   --amount19 100 --dry-run")
+let (p3, _) = inEx("ustva freiberuf --test --period 3 --dry-run")
 check("period 3 -> 03 (padded)", p3.contains("<Zeitraum>03</Zeitraum>"))
 echo ""
 
 # -----------------------------------------------------------------
-# Auto-loaded <year>-<source>.tsv with date-based period filter
+# TSV load + period filter
 # -----------------------------------------------------------------
-echo "--- TSV auto-discovery + period filter ---"
-let (uQ1, uQ1Rc) = inEx("submit freiberuf --test --period q1 --year 2025 --dry-run")
-check("Q1 freiberuf from TSV ok", uQ1Rc == 0, uQ1)
-check("Jan+Feb invoices summed (1200+800)", uQ1.contains("<Kz81>2000</Kz81>"))
+echo "--- TSV load + period filter ---"
+let (uQ1, uQ1Rc) = inEx("ustva freiberuf --test --period q1 --dry-run")
+check("Q1 ok", uQ1Rc == 0, uQ1)
+check("Q1 Jan+Feb summed (1200+800)", uQ1.contains("<Kz81>2000</Kz81>"))
 
-let (uQ2, _) = inEx("submit freiberuf --test --period q2 --year 2025 --dry-run")
-check("Q2 (Apr+May) sums 19% rates", uQ2.contains("<Kz81>2400</Kz81>"))
-check("Q2 picks up 7% from May", uQ2.contains("<Kz86>500</Kz86>"))
+let (uQ2, _) = inEx("ustva freiberuf --test --period q2 --dry-run")
+check("Q2 19% (Apr+May)", uQ2.contains("<Kz81>2400</Kz81>"))
+check("Q2 7% (May)", uQ2.contains("<Kz86>500</Kz86>"))
 echo ""
 
 # -----------------------------------------------------------------
-# EÜR per source — rechtsform aliases get translated correctly
+# EÜR per source — rechtsform translation
 # -----------------------------------------------------------------
 echo "--- EÜR per source ---"
-let (eF, eFRc) = inEx("euer freiberuf --test --year 2025 --dry-run")
+let (eF, eFRc) = inEx("euer freiberuf --test --dry-run")
 check("euer freiberuf ok", eFRc == 0, eF)
-check("rechtsform=freiberuf -> 140", eF.contains("<E6000602>140</E6000602>"))
+check("rechtsform freiberuf -> 140", eF.contains("<E6000602>140</E6000602>"))
 
-let (eM, eMRc) = inEx("euer gewerbe --test --year 2025 --dry-run")
+let (eM, eMRc) = inEx("euer gewerbe --test --dry-run")
 check("euer gewerbe ok", eMRc == 0, eM)
-check("rechtsform=einzel -> 120", eM.contains("<E6000602>120</E6000602>"))
+check("rechtsform einzel -> 120", eM.contains("<E6000602>120</E6000602>"))
 echo ""
 
 # -----------------------------------------------------------------
-# Annual USt with conf-side vorauszahlungen
+# Annual USt + vorauszahlungen
 # -----------------------------------------------------------------
-echo "--- annual USt + vorauszahlungen ---"
-let (u, uRc) = inEx("ust gewerbe --test --year 2025 --dry-run")
+echo "--- USt + vorauszahlungen ---"
+let (u, uRc) = inEx("ust gewerbe --test --dry-run")
 check("ust dry-run ok", uRc == 0, u)
-check("vorauszahlungen=100 carried into XML",
-      u.contains("<E3011301>100,00</E3011301>"))
-check("besteuerungsart=soll -> 1",
-      u.contains("<E3002203>1</E3002203>"))
+check("vorauszahlungen=100", u.contains("<E3011301>100,00</E3011301>"))
+check("besteuerungsart soll -> 1", u.contains("<E3002203>1</E3002203>"))
 echo ""
 
 # -----------------------------------------------------------------
-# ESt: aggregate G + S + KAP + 2 kids in one return
+# ESt: full aggregation
 # -----------------------------------------------------------------
-echo "--- ESt aggregation across all sources ---"
-let (e, eRc) = inEx("est --test --year 2025 --deductions deductions.tsv --dry-run")
-check("est dry-run ok", eRc == 0, e)
-check("Anlage G emitted (gewerbe)",  e.contains("<G>"))
-check("Anlage S emitted (freiberuf)",  e.contains("<S>"))
-check("Anlage KAP emitted (ibkr)",     e.contains("<KAP>"))
-check("two Anlage Kind blocks",        e.count("<Kind>") == 2)
-check("KAP guenstigerpruefung set",    e.contains("<E1900401>1</E1900401>"))
-check("religion rk -> 03",             e.contains("<E0100402>03</E0100402>"))
-check("Sonderausgaben Spenden",        e.contains("<E0108105>"))
-check("AgB Krankheitskosten",          e.contains("<E0161304>"))
-check("Anlage Kind Betreuungskosten",  e.contains("<E0506105>"))
-check("Anlage Kind Schulgeld",         e.contains("<E0505607>"))
-check("Vorsorge KV privat",            e.contains("<E2003104>"))
-check("Testmerker present (--test)",   e.contains("<Testmerker>700000004</Testmerker>"))
+echo "--- ESt aggregation ---"
+let (e, eRc) = inEx("est --test --dry-run")
+check("est dry-run ok", structuralOk(e, eRc), e)
+check("Anlage G (gewerbe)", e.contains("<G>"))
+check("Anlage S (freiberuf)", e.contains("<S>"))
+check("Anlage KAP (ibkr)", e.contains("<KAP>"))
+check("two Anlage Kind", e.count("<Kind>") == 2)
+check("KAP guenstigerpruefung", e.contains("<E1900401>1</E1900401>"))
+check("religion rk -> 03", e.contains("<E0100402>03</E0100402>"))
+check("Sonderausgaben Spenden", e.contains("<E0108105>"))
+check("AgB Krankheitskosten", e.contains("<E0161304>"))
+check("Anlage Kind Betreuungskosten", e.contains("<E0506105>"))
+check("Anlage Kind Schulgeld", e.contains("<E0505607>"))
+check("Vorsorge KV privat", e.contains("<E2003104>"))
+check("Testmerker", e.contains("<Testmerker>700000004</Testmerker>"))
 echo ""
 
 # -----------------------------------------------------------------
-# Postfach commands: dry-run renders the request XML
+# Postfach list / download
 # -----------------------------------------------------------------
-echo "--- Postfach (list/download) dry-run ---"
+echo "--- Postfach list/download ---"
 let (l, lRc) = inEx("list --dry-run")
 check("list dry-run ok", lRc == 0, l)
-check("PostfachAnfrage XML emitted", l.contains("<PostfachAnfrage "))
-check("DatenLieferant from conf",
-      l.contains("<DatenLieferant>Hans Maier</DatenLieferant>"))
+check("PostfachAnfrage", l.contains("<PostfachAnfrage "))
+check("DatenLieferant", l.contains("<DatenLieferant>Hans Maier</DatenLieferant>"))
 
 let (d, dRc) = inEx("download --dry-run")
 check("download dry-run ok", dRc == 0, d)
-check("download dry-run also emits PostfachAnfrage",
-      d.contains("<PostfachAnfrage "))
+check("download PostfachAnfrage", d.contains("<PostfachAnfrage "))
 echo ""
 
 # -----------------------------------------------------------------
-# IBAN change + free-text message commands
+# IBAN / message
 # -----------------------------------------------------------------
-echo "--- iban + message dry-runs ---"
+echo "--- iban + message ---"
 let (ib, ibRc) = inEx("iban --test --new-iban DE89370400440532013000 --dry-run")
 check("iban dry-run ok", ibRc == 0, ib)
-check("AenderungBankverbindung XML",
-      ib.contains("<IBAN>DE89370400440532013000</IBAN>"))
+check("iban IBAN", ib.contains("<IBAN>DE89370400440532013000</IBAN>"))
 
 let (msg, msgRc) = inEx("message --test --subject \"Hallo\" --text \"Test\" --dry-run")
 check("message dry-run ok", msgRc == 0, msg)
-check("Nachricht XML with Betreff", msg.contains("<Betreff>Hallo</Betreff>"))
+check("message Betreff", msg.contains("<Betreff>Hallo</Betreff>"))
 echo ""
 
 # -----------------------------------------------------------------
-# Real ELSTER schema validation against the sandbox
+# ELSTER validation (--test + dry-run runs ERiC validate)
 # -----------------------------------------------------------------
 if testCertAvailable:
-  echo "--- ELSTER validation (--test --validate-only) ---"
+  echo "--- ELSTER validation ---"
+  let (vU, vURc) = inEx("ustva freiberuf --test --period q1 --dry-run")
+  check("UStVA validates", validateOk(vU, vURc), vU)
+  check("UStVA no schema errors", not vU.contains("610301200"))
 
-  let (vU, vURc) = inEx("submit freiberuf --test --period q1 --amount19 0 --validate-only")
-  check("UStVA validates",       validateOk(vU, vURc), vU)
-  check("UStVA no schema errors", not vU.contains("610301200"), vU)
+  let (vE, vERc) = inEx("euer freiberuf --test --dry-run")
+  check("EÜR validates", validateOk(vE, vERc), vE)
+  check("EÜR no schema errors", not vE.contains("610301200"))
 
-  let (vE, vERc) = inEx("euer freiberuf --test --year 2025 --validate-only")
-  check("EÜR validates",         validateOk(vE, vERc), vE)
-  check("EÜR no schema errors",   not vE.contains("610301200"), vE)
+  let (vUst, vUstRc) = inEx("ust gewerbe --test --dry-run")
+  check("USt validates", validateOk(vUst, vUstRc), vUst)
+  check("USt no schema errors", not vUst.contains("610301200"))
 
-  let (vUst, vUstRc) = inEx("ust gewerbe --test --year 2025 --validate-only")
-  check("USt validates",         validateOk(vUst, vUstRc), vUst)
-  check("USt no schema errors",   not vUst.contains("610301200"), vUst)
-
-  # ESt with the demo kid IDNRs and partial Anlage Kind data won't pass
-  # ELSTER's plausibility checks (those need real IDNRs + dienstleister
-  # details viking doesn't model). The XML schema itself is fine.
-  # --verbose dumps the response puffer to stdout so we can assert on
-  # specific plausibility rules.
-  let (vEst, _) = inEx("est --test --year 2025 --deductions deductions.tsv --validate-only --verbose")
-  check("ESt no schema errors",   not vEst.contains("610301200"), vEst)
-  # Regression: plausi 100500048 requires info about the other parent
-  # (K_Verh_and_P) on Einzelveranlagung. Example conf ships with
-  # parent_b_name, so rule must not fire.
-  check("ESt Anlage Kind: rule 100500048 not triggered (parent_b_name emits K_Verh_and_P)",
-        not vEst.contains("Regel_Kind_2020_100500048"), vEst)
-  check("ESt Anlage Kind: rule 100500001 not triggered (E0501103/03/06 emitted together)",
-        not vEst.contains("Kind_Kindschaftsverhaeltnis_100500001"), vEst)
-  # Known open: rule 5075 currently fires because the example ships with
-  # [spouse] -> K_Verh_B is emitted, but Vlg_Art wiring is not done yet,
-  # so ERiC treats the return as Einzel. Tracked in state.md TODO.
+  let (vEst, _) = inEx("est --test --dry-run --verbose")
+  check("ESt no schema errors", not vEst.contains("610301200"))
+  check("ESt Kind 100500048 not triggered",
+        not vEst.contains("Regel_Kind_2020_100500048"))
+  check("ESt Kind 100500001 not triggered",
+        not vEst.contains("Kind_Kindschaftsverhaeltnis_100500001"))
   echo ""
 
   # ---------------------------------------------------------------
-  # Swap pin -> pincmd: the script form must work the same way
+  # pincmd shell command (copyDir drops the exec bit — reinstate it)
   # ---------------------------------------------------------------
-  echo "--- pincmd (script) auth ---"
+  echo "--- pincmd shell command ---"
+  let pinShPath = tmp / "viking.pin.sh"
+  setFilePermissions(pinShPath,
+    getFilePermissions(pinShPath) + {fpUserExec, fpGroupExec, fpOthersExec})
   writeFile(confPath, baseConf &
     "\n[auth]\ncert = " & testCertPath &
-    "\npincmd = " & (tmp / "viking.pin.sh") & "\n")
-  let (pc, pcRc) = inEx("submit freiberuf --test --period q1 --amount19 0 --validate-only")
-  check("pincmd script PIN accepted", validateOk(pc, pcRc), pc)
+    "\npincmd = ./viking.pin.sh\n")
+  let (pc, pcRc) = inEx("ustva freiberuf --test --period q1 --dry-run")
+  check("pincmd shell command accepted", validateOk(pc, pcRc), pc)
+  echo ""
+
+  # ---------------------------------------------------------------
+  # Inline pin (value is the PIN itself, not a file path)
+  # ---------------------------------------------------------------
+  echo "--- inline pin ---"
+  writeFile(confPath, baseConf &
+    "\n[auth]\ncert = " & testCertPath & "\npin = 123456\n")
+  let (ip, ipRc) = inEx("ustva freiberuf --test --period q1 --dry-run")
+  check("inline pin accepted", validateOk(ip, ipRc), ip)
   echo ""
 else:
   echo "  SKIP: ELSTER validation tests (test cert not at " & testCertPath & ")"
   echo "  Install with: wget https://download.elster.de/download/schnittstellen/Test_Zertifikate.zip"
   echo ""
 
-# Cleanup
 removeDir(tmp)
 removeDir(testXdgHome)
 

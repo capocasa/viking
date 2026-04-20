@@ -36,9 +36,11 @@ The configuration model was reworked. Highlights:
 - German-word aliases for every numeric ELSTER code you used to look up:
   `freiberuf` instead of `3`, `einzel` instead of `120`, `q1` instead of
   `41`, `rk` instead of `03`. Numerics still work.
-- A new `[auth]` section with sensible defaults — drop `viking.pfx` +
-  `viking.pin` next to the conf and you're done. Wire up `pass`,
-  Keychain or libsecret with a one-line script.
+- Explicit external-file wiring: the cert, PIN source, deductions
+  TSV, and every invoice TSV are declared in the conf. No filesystem
+  scanning, no basename-derived defaults — you always see which file
+  feeds which return. Wire `pass`, Keychain or libsecret with a
+  one-line `pincmd` shell command.
 - Multi-source per conf: declare `[freiberuf]`, `[gewerbe]`,
   `[Musterfirma GmbH]` and `[ibkr]` (KAP) side-by-side; commands pick by
   section name.
@@ -59,10 +61,10 @@ Build the binary, fetch the ERiC runtime, and seed an empty conf.
     ./viking fetch              # downloads ERiC, ~50 MB once
     ./viking init               # writes viking.conf + deductions.tsv
 
-Drop your ELSTER signing certificate next to the conf as `viking.pfx`,
-write the PIN into `viking.pin`, and you're ready to submit. For
-sandbox testing you don't need a real cert — see *Test certificates*
-below.
+Point the `[auth]` section at your ELSTER signing cert (`cert=`) and
+a PIN source (`pin=` for a plaintext PIN file, or `pincmd=` for a
+script that prints the PIN). See *Auth (signing)* below. For sandbox
+testing you don't need a real cert — see *Test certificates* below.
 
 A single source
 ###############
@@ -72,6 +74,7 @@ The simplest viable conf: one person, one freelance income source.
 .. code-block:: ini
 
     [Hans Maier]
+    year     = 2025
     steuernr = 9198011310010
     strasse  = Musterstr.
     nr       = 1
@@ -81,19 +84,34 @@ The simplest viable conf: one person, one freelance income source.
 
     [freiberuf]
     versteuerung = ist
+    euer   = freelance.tsv
 
 That's enough for a UStVA:
 
 .. code-block:: sh
 
-    viking submit --period q1 --amount19 1000
+    viking ustva --period q1
 
 `freiberuf` is the only source, so you don't need to name it. Quarterly
 period `q1` is the same as `41`; either works.
 
-For an annual EÜR or USt you need amounts. Drop a TSV named
-`<year>-<source>.tsv` next to the conf and viking finds it
-automatically:
+For an annual EÜR or USt you need amounts. The `euer=` key points
+at the invoice TSV. Paths resolve relative to the conf dir; no
+year interpolation — copy the whole project directory per tax year
+(e.g. `2025/`, `2026/`) so each year's data stays pinned.
+`euer=` is optional: sources without it submit zeros with a warning,
+which is occasionally useful (you filed this source to the tax office
+already, or the tax office wants a nil return).
+
+A few per-project invariants, just to be clear:
+
+- ``year`` lives in the conf (required, first section), not on the
+  CLI. Copy the conf dir per year.
+- There is no ``-y/--year`` flag. There is no ``$year`` interpolation.
+- ``viking ustva`` submits the UStVA. Amounts come from
+  ``source.euer=``; there is no ``--amount*`` flag.
+- ``--dry-run`` validates via ERiC and prints the XML; it does not
+  send. There is no separate ``--validate-only``.
 
 .. code-block:: sh
 
@@ -133,17 +151,17 @@ the handle:
 
 .. code-block:: sh
 
-    viking submit freiberuf          --period q1 --amount19 1000
-    viking submit "Musterfirma GmbH" --period q1 --amount19 5000
-    viking euer   mygewerbe          --year 2025
-    viking ust    "Musterfirma GmbH" --year 2025      # picks up vorauszahlungen=100
+    viking ustva freiberuf          --period q1
+    viking ustva "Musterfirma GmbH" --period q1
+    viking euer  mygewerbe
+    viking ust   "Musterfirma GmbH"      # picks up vorauszahlungen=100
 
 `viking est` is special — it scans every source and emits Anlage G for
 each Gewerbe and Anlage S for each `[freiberuf]`, all in one return:
 
 .. code-block:: sh
 
-    viking est --year 2025 --deductions deductions.tsv
+    viking est
 
 Word aliases
 ############
@@ -163,10 +181,10 @@ The CLI gets the same treatment for `--period`:
 
 .. code-block:: sh
 
-    viking submit --period q1   ...    # quarterly Q1
-    viking submit --period mar  ...    # March (also accepts "may", "oct", "dec")
-    viking submit --period 3    ...    # unpadded numeric, becomes "03"
-    viking submit --period 41   ...    # original numeric
+    viking ustva --period q1   ...    # quarterly Q1
+    viking ustva --period mar  ...    # March (also accepts "may", "oct", "dec")
+    viking ustva --period 3    ...    # unpadded numeric, becomes "03"
+    viking ustva --period 41   ...    # original numeric
 
 A bad value gets rejected with the full list of valid words:
 
@@ -253,49 +271,60 @@ Then in `deductions.tsv`, prefix the per-kid codes with the firstname:
     lisa174     3600    Betreuungskosten Lisa
     lisa176     1500    Schulgeld Lisa
 
+Wire the TSV into the taxpayer section so `viking est` picks it up
+automatically:
+
+.. code-block:: ini
+
+    [Hans Maier]
+    ...
+    deductions = deductions.tsv
+
+Leaving the key unset prints a warning on ``viking est``; use
+``--force`` to silence it when you know there really are no
+deductions to claim.
+
 `viking est` emits one `<Kind>` block per kid section.
 
-Authentication
+Auth (signing)
 ##############
 
-Defaults first: with no `[auth]` section, viking looks next to your conf
-for `<basename>.pfx` and a `<basename>.pin*` file. So `viking.conf`
-pairs with `viking.pfx` + `viking.pin`. `client-foo.conf` pairs with
-`client-foo.pfx` + `client-foo.pin`. No config required.
-
-Override anything you want with `[auth]`:
+Every submission is signed with a PFX cert + PIN. Both are declared
+explicitly in `[auth]` — no basename-derived defaults, no filesystem
+scanning. Paths are absolute or relative to the conf's directory.
 
 .. code-block:: ini
 
     [auth]
-    cert   = /elsewhere/softorg.pfx     ; absolute paths stay as-is
-    pin    = secret/the.pin             ; relative -> resolved against conf dir
-    ; pincmd = scripts/get-pin.sh       ; alternative: any script printing PIN
+    cert   = viking.pfx                 ; .pfx signing cert (required)
+    pin    = viking.pin                 ; plaintext PIN file
+    ; pin    = 123456                   ; or inline (sandbox only)
+    ; pincmd = ./viking.pin.sh          ; or shell command that prints the PIN
+    ; pincmd = pass show elster/pin
 
-The pin file is dispatched by extension. Pick one:
+Set exactly one of ``pin`` or ``pincmd``:
 
-==========================  ==========================================
-File                        How viking reads it
-==========================  ==========================================
-``viking.pin``              plain text — pin is the file contents
-``viking.pin.sh``           run via ``sh``, stdout is the pin
-``viking.pin.ps1``          run via ``powershell``, stdout is the pin
-``viking.pin.cmd|.bat``     run via ``cmd /c``, stdout is the pin
-``viking.pin.exe``          run directly, stdout is the pin
-==========================  ==========================================
+* ``pin`` — if the value resolves to an existing file, viking reads
+  the file (treating its contents as the plaintext PIN). Otherwise
+  viking treats the value as the PIN itself (inline). Inline is fine
+  for the public sandbox PIN (``123456``), not recommended if the
+  conf is checked into version control.
+* ``pincmd`` — any shell command. Runs with the conf's directory as
+  cwd; stdout is the PIN. ``./viking.pin.sh``, ``cat viking.pin``,
+  ``pass show elster/pin``, ``security find-generic-password -s elster
+  -w``, ``secret-tool lookup app elster``, ``gpg --decrypt …``,
+  ``age --decrypt -i key.age …`` — anything that prints the PIN on
+  stdout works.
 
-For secret-manager integration, write a tiny script that prints the
-PIN. Anything works that talks to stdout:
+For a repeatable script form, drop the command into a file:
 
 .. code-block:: sh
 
     #!/bin/sh
     exec pass show elster/main
-    # exec security find-generic-password -s elster -w        # macOS Keychain
-    # exec secret-tool lookup app elster                      # libsecret
-    # exec gpg --decrypt ~/.elster.gpg
 
-Save as `viking.pin.sh`, set executable, done.
+Save as `viking.pin.sh`, set executable, then point
+``pincmd = ./viking.pin.sh`` at it.
 
 The conf chain
 ##############
@@ -323,12 +352,12 @@ For sandbox work, ELSTER ships a pack of test certs:
     unzip Test_Zertifikate.zip
 
 Pick one (`softorg-pse.pfx` for business, `softpers-pse.pfx` for
-personal), drop it next to your conf as `viking.pfx`, write `123456`
-into `viking.pin`, and submit with `--test`:
+personal), put it next to your conf as `viking.pfx`, write `123456`
+into `viking.pin`, point `[auth]` at both, and submit with `--test`:
 
 .. code-block:: sh
 
-    viking submit --test --period q1 --amount19 0
+    viking ustva --test --period q1 --dry-run
 
 `--test` does two things: routes to the ELSTER sandbox endpoint, and
 adds a `<Testmerker>` to the XML so the production schema check
@@ -339,12 +368,13 @@ Putting it all together
 #######################
 
 A single conf with the full kit — every section type, all aliases,
-spouse and two kids, three income sources including KAP, and an [auth]
-default that just picks up `viking.pfx` + `viking.pin`:
+spouse and two kids, three income sources including KAP, and an
+explicit `[auth]` pointing at `viking.pfx` + `viking.pin`:
 
 .. code-block:: ini
 
     [Hans Maier]
+    year         = 2025
     geburtsdatum = 05.05.1955
     idnr         = 04452397687
     steuernr     = 9198011310010
@@ -356,6 +386,7 @@ default that just picks up `viking.pfx` + `viking.pin`:
     religion     = rk
     beruf        = Software-Entwickler
     krankenkasse = privat
+    deductions   = deductions.tsv
 
     [Greta Maier]
     geburtsdatum = 12.07.1956
@@ -365,11 +396,13 @@ default that just picks up `viking.pfx` + `viking.pin`:
 
     [freiberuf]
     versteuerung = ist
+    euer   = freelance.tsv
 
     [mygewerbe]
     steuernr        = 9198011310020
     versteuerung    = soll
     vorauszahlungen = 100
+    euer      = mygewerbe.tsv
 
     [ibkr]
     guenstigerpruefung = 1
@@ -393,6 +426,10 @@ default that just picks up `viking.pfx` + `viking.pin`:
     personb-verhaeltnis = leiblich
     familienkasse       = Berlin
     kindergeld          = 2400
+
+    [auth]
+    cert = viking.pfx
+    pin  = viking.pin
 
 This is `example/viking.conf` in the repo, with TSVs and a deductions
 file alongside it. Copy the directory and you have a working sandbox
@@ -429,13 +466,10 @@ short-flag conventions:
 
 ================  =================================================
 ``-c <file>``     viking.conf override
-``-y <year>``     tax year (defaults to current)
 ``-p <period>``   01..12 monthly, 41..44 quarterly, or word
-``-i <file>``     invoice TSV/CSV (overrides ``<year>-<source>.tsv``)
-``-D <file>``     deductions TSV
 ``-o <file>``     output PDF / output dir for ``download``
-``-n``            ``--validate-only``
-``-d``            ``--dry-run``
+``-d``            ``--dry-run`` (validate via ERiC, print XML, don't send)
+``-D <dir>``      ``--data-dir``
 ``-v``            verbose (full server XML)
 ``-f``            force / suppress warnings
 ================  =================================================

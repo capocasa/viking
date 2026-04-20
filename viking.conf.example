@@ -1,6 +1,8 @@
 ; First section is the taxpayer. Section name = "Vornamen Nachname"
-; (last word = Nachname, rest = Vornamen).
+; (last word = Nachname, rest = Vornamen). `year` is required — copy
+; this directory per tax year for clean data.
 [Hans Maier]
+year         = 2025
 geburtsdatum = 01.01.1980
 idnr         = 12345678901
 steuernr     = 1234567890123
@@ -12,23 +14,30 @@ iban         = DE89370400440532013000
 religion     = keine          ; keine, rk, ev, altkath, ev_ref, ... or numeric
 beruf        = Software-Entwickler
 ; krankenkasse = privat       ; privat (default) or gesetzlich
+; deductions = deductions.tsv ; ESt deductions TSV (optional)
 
 ; Income sources. Reserved names: freiberuf (Anlage S), gewerbe
 ; (Einzelgewerbe). Otherwise rechtsform is inferred from a legal-form
 ; suffix in the section name (GmbH, UG, KG, OHG, GbR, PartG, eK, eG,
 ; KGaA, SE, "GmbH & Co. KG", …). No suffix → Einzelgewerbe.
+; Each EÜR source points at its TSV via `euer=` (optional; zeros +
+; warning if unset). Paths are plain — copy the whole conf dir per
+; tax year so each year's data stays pinned.
 ; Anlage KAP marker: `guenstigerpruefung` or `pauschbetrag`.
 
 [freiberuf]
 versteuerung    = ist         ; ist (Ist-Versteuerung) or soll
 vorauszahlungen = 0
+; euer          = freelance.tsv
 
 ; [gewerbe]
 ; versteuerung    = ist
 ; vorauszahlungen = 0
+; euer            = gewerbe.tsv
 
 ; [Musterfirma GmbH]          ; rechtsform inferred from suffix: GmbH
 ; versteuerung    = soll
+; euer            = musterfirma.tsv
 
 ; [ibkr]
 ; guenstigerpruefung  = 1
@@ -44,3 +53,12 @@ vorauszahlungen = 0
 ; personb-verhaeltnis = leiblich
 ; personb-name        = Anna Mustermann
 ; familienkasse       = Berlin
+
+; Signing material (required for live submissions).
+; `cert` = .pfx. `pin` = plaintext PIN file path OR the PIN itself
+; (inline, not recommended). `pincmd` = shell command that prints the
+; PIN on stdout (runs in this conf's dir).
+; [auth]
+; cert   = viking.pfx
+; pin    = viking.pin
+; pincmd = pass show elster/pin

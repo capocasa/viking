@@ -18,8 +18,27 @@
 ##
 ## `loadVikingConf` merges the global and CWD confs (or honours an explicit
 ## `--conf` path); `validateForX` returns a `seq[string]` of human-readable
-## errors per command. `resolveCertPath` / `resolvePinPath` / `readPin`
-## locate signing material per the rules described in the user docs.
+## errors per command.
+##
+## All external-file wiring is explicit — there is no filesystem magic:
+##
+## * `resolveCertPath` reads `[auth].cert` (path to the .pfx; required).
+## * `resolvePin`      resolves exactly one of `[auth].pin` or `[auth].pincmd`.
+##   `pin=` is either a path to a plaintext PIN file or the PIN text
+##   itself (dispatched via `fileExists` — if the resolved path exists,
+##   read; else treat the value as the inline PIN). `pincmd=` is a shell
+##   command executed with `confDir` as cwd; stdout is the PIN.
+## * `resolveEuerPath` reads `source.euer` (TSV path for EÜR income +
+##   cost data). Optional — unset sources submit zeros with a
+##   warning. Presence of the key also marks the source as using
+##   Einnahmen-Überschuss accounting (a different key will mark full
+##   double-entry once that lands). Paths are plain — users copy the
+##   conf per tax year rather than relying on year interpolation.
+## * `resolveDeductionsPath` reads `personal.deductions` (TSV path;
+##   optional). ESt warns when both the conf key and `--deductions` are
+##   absent unless `--force` is passed.
+##
+## Relative paths in all these resolve against the conf's own directory.
 
 import std/[parsecfg, streams, strutils, os, osproc, tables]
 import viking/codes
@@ -29,6 +48,13 @@ type
     firstname*, lastname*, birthdate*, idnr*, taxnumber*: string
     street*, housenumber*, zip*, city*, iban*: string
     religion*, profession*, kvArt*: string
+    year*: int                       ## tax year the conf describes.
+                                     ## Required — there's no CLI
+                                     ## override; copy the conf dir
+                                     ## per year.
+    deductions*: string              ## optional TSV path for ESt deductions
+                                     ## (vor/sa/agb/per-kid codes). Relative
+                                     ## to confDir.
 
   Spouse* = object
     present*: bool
@@ -59,6 +85,10 @@ type
     rechtsform*: string
     besteuerungsart*: string
     vorauszahlungen*: float    ## EÜR sources only
+    euer*: string              ## EÜR data TSV path (income and costs).
+                               ## Optional — unset sources submit
+                               ## zeros with a warning. Relative paths
+                               ## resolve against the conf dir.
     ## KAP-only:
     gains*, tax*, soli*, kirchensteuer*, sparerPauschbetrag*: float
     guenstigerpruefung*: bool
@@ -135,6 +165,10 @@ proc applyPersonal(p: var Personal, key, val: string) =
   of "religion":                        p.religion = religionMap.resolve(val)
   of "beruf", "profession":             p.profession = val
   of "krankenkasse", "kv_art", "kvart": p.kvArt = val
+  of "deductions":                      p.deductions = val
+  of "year", "jahr":
+    try: p.year = parseInt(val.strip)
+    except ValueError: discard
   else: discard
 
 proc applySpouse(s: var Spouse, key, val: string) =
@@ -183,6 +217,7 @@ proc applySource(s: var Source, key, val: string) =
   of "versteuerung", "besteuerungsart":
     s.besteuerungsart = besteuerungsartMap.resolve(val)
   of "owner": s.owner = val.toLowerAscii
+  of "euer": s.euer = val
   of "vorauszahlungen":
     try: s.vorauszahlungen = parseFloat(val)
     except ValueError: discard
@@ -390,81 +425,64 @@ proc loadVikingConf*(explicit: string = ""): VikingConf =
 
 ## ---- Auth resolution ----
 
-const PinExtensions* = [".pin", ".pin.sh", ".pin.ps1", ".pin.cmd", ".pin.bat", ".pin.exe"]
-
 proc resolveRelative(conf: VikingConf, path: string): string =
   ## Absolute paths stay as-is; relative paths resolve against the conf dir.
   if path.isAbsolute: path
   else: conf.confDir / path
 
 proc resolveCertPath*(conf: VikingConf): string =
-  ## Cert path: [auth].cert, else <confBase>.pfx next to the conf.
-  let raw = if conf.auth.cert != "": conf.auth.cert
-            else: conf.confBase & ".pfx"
-  conf.resolveRelative(raw)
+  ## Cert path from `[auth].cert`. Required — no implicit discovery.
+  if conf.auth.cert == "":
+    raise newException(ValueError,
+      "[auth].cert not set in viking.conf (path to the .pfx signing cert)")
+  conf.resolveRelative(conf.auth.cert)
 
-proc resolvePinPath*(conf: VikingConf): string =
-  ## Explicit pin/pincmd win. Otherwise scan <confBase>.pin{,.sh,.ps1,.cmd,.bat,.exe}
-  ## next to the conf. Exactly one must exist; zero or >1 is an error.
+proc resolvePin*(conf: VikingConf): string =
+  ## Resolve the PIN from `[auth]`. Exactly one of `pin=` or `pincmd=`
+  ## must be set.
+  ##
+  ## * `pin=` — if the resolved path exists as a file, read it and
+  ##   return its contents (plaintext PIN file). Otherwise treat the
+  ##   value as the PIN itself (inline; not recommended for real
+  ##   submissions since the conf may be checked in).
+  ## * `pincmd=` — executed as a shell command with `confDir` as cwd;
+  ##   stdout is the PIN. Any shell snippet works (`pass show …`,
+  ##   `./viking.pin.sh`, `cat viking.pin`, `security find-generic-
+  ##   password -s elster -w`, …).
   if conf.auth.pin != "" and conf.auth.pincmd != "":
-    raise newException(ValueError,
-      "[auth]: set pin or pincmd, not both")
+    raise newException(ValueError, "[auth]: set pin or pincmd, not both")
   if conf.auth.pin != "":
-    return conf.resolveRelative(conf.auth.pin)
+    let resolved = conf.resolveRelative(conf.auth.pin)
+    if fileExists(resolved):
+      return readFile(resolved).strip
+    return conf.auth.pin.strip
   if conf.auth.pincmd != "":
-    return conf.resolveRelative(conf.auth.pincmd)
-  var found: seq[string]
-  for ext in PinExtensions:
-    let p = conf.confDir / (conf.confBase & ext)
-    if fileExists(p):
-      found.add(p)
-  if found.len == 0:
-    raise newException(IOError,
-      "no pin file found next to " & (conf.confDir / conf.confBase) &
-      "; expected one of " & PinExtensions.join(", ") &
-      ", or set [auth] pin=/pincmd= in viking.conf")
-  if found.len > 1:
-    raise newException(ValueError,
-      "multiple pin files found: " & found.join(", ") &
-      "; set [auth] pin= or pincmd= explicitly")
-  found[0]
+    let cwd = if conf.confDir != "": conf.confDir else: getCurrentDir()
+    let (output, rc) = execCmdEx(conf.auth.pincmd, workingDir = cwd)
+    if rc != 0:
+      raise newException(IOError,
+        "[auth].pincmd failed (exit " & $rc & "): " & output)
+    return output.strip
+  raise newException(ValueError,
+    "[auth]: set pin= (plaintext PIN file path, or the PIN itself) " &
+    "or pincmd= (shell command that prints the PIN on stdout)")
 
-proc readPin*(path: string): string =
-  ## Read the pin by dispatching on file extension. Plain `.pin` is read;
-  ## `.pin.sh`/`.ps1`/`.cmd`/`.bat`/`.exe` are executed, stdout is the pin.
-  let name = path.toLowerAscii
-  type Mode = enum mPlain, mSh, mPs1, mCmdBat, mExe
-  let mode =
-    if name.endsWith(".pin.sh"): mSh
-    elif name.endsWith(".pin.ps1"): mPs1
-    elif name.endsWith(".pin.cmd") or name.endsWith(".pin.bat"): mCmdBat
-    elif name.endsWith(".pin.exe"): mExe
-    elif name.endsWith(".pin"): mPlain
-    else:
-      raise newException(ValueError, "unsupported pin file extension: " & path)
-  case mode
-  of mPlain:
-    result = readFile(path).strip
-  of mSh:
-    let (output, rc) = execCmdEx("sh " & path.quoteShell)
-    if rc != 0:
-      raise newException(IOError, "pin command failed (exit " & $rc & "): " & output)
-    result = output.strip
-  of mPs1:
-    let (output, rc) = execCmdEx("powershell -NoProfile -File " & path.quoteShell)
-    if rc != 0:
-      raise newException(IOError, "pin command failed (exit " & $rc & "): " & output)
-    result = output.strip
-  of mCmdBat:
-    let (output, rc) = execCmdEx("cmd /c " & path.quoteShell)
-    if rc != 0:
-      raise newException(IOError, "pin command failed (exit " & $rc & "): " & output)
-    result = output.strip
-  of mExe:
-    let (output, rc) = execCmdEx(path.quoteShell)
-    if rc != 0:
-      raise newException(IOError, "pin command failed (exit " & $rc & "): " & output)
-    result = output.strip
+## ---- EÜR TSV resolution ----
+
+proc resolveEuerPath*(conf: VikingConf, src: Source): string =
+  ## EÜR TSV path (income + costs) from the source's `euer=` key.
+  ## Returns "" when unset — callers warn and submit zeros. The path
+  ## is a plain relative or absolute file reference; users copy the
+  ## conf per tax year to swap data sets cleanly.
+  if src.euer == "": return ""
+  conf.resolveRelative(src.euer)
+
+proc resolveDeductionsPath*(conf: VikingConf): string =
+  ## Deductions TSV path from the taxpayer section's `deductions=` key.
+  ## Optional — callers fall back to the `--deductions` CLI flag (or
+  ## warn with `--force` semantics) when unset.
+  if conf.personal.deductions == "": return ""
+  conf.resolveRelative(conf.personal.deductions)
 
 ## ---- Accessors ----
 
@@ -507,6 +525,8 @@ func kidFirstnames*(conf: VikingConf): seq[string] =
 func isNotEmpty(x: string): bool = x.strip.len > 0
 
 proc checkPersonal(p: Personal, required: openArray[string]): seq[string] =
+  if p.year == 0:
+    result.add("personal.year not set in viking.conf (required: the tax year, e.g. `year = 2025`)")
   for f in required:
     let v = case f
       of "firstname": p.firstname

@@ -13,42 +13,31 @@ nimble build
 ./viking fetch   # downloads and extracts the ERiC library
 ```
 
-Then drop your ELSTER signing certificate (`.pfx`) next to your `viking.conf`, and put the PIN in a matching `.pin` file:
-
-```
-viking.conf
-viking.pfx
-viking.pin        # contains the PIN (plain text)
-```
-
-Naming is by convention: `viking.conf` → `viking.pfx` + `viking.pin`. Different conf basename? Same rule: `uncle.conf` → `uncle.pfx` + `uncle.pin`. Override in viking.conf:
+Wire your ELSTER signing certificate (`.pfx`) and PIN explicitly via `[auth]`:
 
 ```ini
 [auth]
-cert = /elsewhere/softorg.pfx
-pin = /elsewhere/softorg.pin
-# or:
-# pincmd = /elsewhere/softorg.pin.sh
+cert = viking.pfx              ; path to the .pfx (relative to this conf's dir)
+pin  = viking.pin              ; plaintext PIN file (or the PIN itself, inline)
+; pincmd = pass show elster/pin ; or: any shell command that prints the PIN on stdout
 ```
+
+Exactly one of `pin=` or `pincmd=` is required. `pin=` takes either a path to a file containing the PIN or the PIN text itself (inline is fine for the public sandbox PIN, not recommended for checked-in real confs). `pincmd=` is any shell command — runs with the conf's directory as cwd.
 
 ## Usage
 
 ```sh
-# Submit VAT return (Q1 2026, 1000 EUR at 19%)
-viking submit --period 41 --amount19 1000
-
-# Both rates
-viking submit --period 01 --amount19 5000 --amount7 2000
+# UStVA (quarterly VAT advance) — amounts come from the source's euer= TSV
+viking ustva freiberuf --period 41
 
 # EÜR (profit/loss statement) for a named source
-# loads 2025-freiberuf.tsv alongside viking.conf
-viking euer freiberuf --year 2025
+viking euer freiberuf
 
-# ESt (income tax return) — aggregates all sources
-viking est --year 2025
+# ESt (income tax return) — aggregates every source
+viking est
 
 # USt (annual VAT return) for a named source
-viking ust freiberuf --year 2025
+viking ust freiberuf
 
 # Retrieve documents from Finanzamt (Steuerbescheide etc.)
 viking list                              # show available documents
@@ -56,18 +45,17 @@ viking download                          # download all
 viking download Steuerbescheid_2024.pdf  # download specific file(s)
 viking download -o ./bescheide           # save to specific directory
 
-# Validate without sending
-viking submit --period 41 --amount19 1000 --validate-only
-
-# Dry run (show generated XML)
-viking submit --period 41 --amount19 1000 --dry-run
+# Dry run: validate via ERiC and print XML, don't send
+viking ustva freiberuf --period 41 --dry-run
 
 # Sandbox submission (uses ELSTER test endpoint; XML gets a Testmerker)
-viking submit --test --period 41 --amount19 1000
+viking ustva --test freiberuf --period 41
 
 # Use a different conf
-viking submit --conf ./client-foo/viking.conf --period 41 --amount19 1000
+viking ustva --conf ./client-foo/viking.conf freiberuf --period 41
 ```
+
+The tax year comes from `personal.year` in `viking.conf`, not the CLI — copy the conf dir per year.
 
 The `download` command queries the ELSTER Postfach, downloads documents from the OTTER server via `libotto`, and sends the mandatory confirmation (PostfachBestaetigung). Existing files are skipped unless `--force` is given.
 
@@ -77,13 +65,15 @@ The `download` command queries the ELSTER Postfach, downloads documents from the
 
 ```ini
 [Hans Maier]
-steuernr = 1234567890123
-idnr     = 04452397687
-strasse  = Musterstr.
-nr       = 1
-plz      = 10115
-ort      = Berlin
-iban     = DE89370400440532013000
+year       = 2025             ; required — copy this dir per tax year
+steuernr   = 1234567890123
+idnr       = 04452397687
+strasse    = Musterstr.
+nr         = 1
+plz        = 10115
+ort        = Berlin
+iban       = DE89370400440532013000
+deductions = deductions.tsv   ; optional: ESt deductions TSV
 
 [Greta Maier]            ; later person-named section + idnr → spouse
 idnr         = 04452397688
@@ -91,9 +81,11 @@ geburtsdatum = 12.07.1956
 
 [freiberuf]              ; reserved → Anlage S
 versteuerung = ist
+euer   = freelance.tsv
 
-[Musterfirma GmbH]       ; suffix → Anlage G, rechtsform=gmbh
+[Musterfirma GmbH]       ; suffix → Anlage G, rechtsform=gmbh (EÜR only for now)
 versteuerung = soll
+euer   = musterfirma.tsv
 
 [ibkr]                   ; marker → Anlage KAP
 guenstigerpruefung = 1
@@ -103,9 +95,13 @@ pauschbetrag       = 1000
 verhaeltnis   = leiblich
 geburtsdatum  = 15.03.2019
 idnr          = 02293417683
+
+[auth]                   ; signing material (required for live submit)
+cert = viking.pfx
+pin  = viking.pin        ; or inline, or `pincmd = pass show elster/pin`
 ```
 
-Rules: `[auth]`, `[freiberuf]` and `[gewerbe]` are the only reserved section names; `verhaeltnis` flags a kid, `guenstigerpruefung`/`pauschbetrag` Anlage KAP. The first person-named section is you; any later person-named section with an `idnr` is your co-filing spouse (Zusammenveranlagung). A trailing legal-form in the section name (GmbH, UG, KG, OHG, GbR, PartG, eK, eG, KGaA, SE, "GmbH & Co. KG", …) picks the Rechtsform; otherwise it's an Einzelgewerbe. See `viking init` for a full template and `docs.rst` for the slow tour.
+Rules: `[auth]`, `[freiberuf]` and `[gewerbe]` are the only reserved section names; `verhaeltnis` flags a kid, `guenstigerpruefung`/`pauschbetrag` Anlage KAP. The first person-named section is you (required: `year = YYYY`); any later person-named section with an `idnr` is your co-filing spouse (Zusammenveranlagung). A trailing legal-form in the section name (GmbH, UG, KG, OHG, GbR, PartG, eK, eG, KGaA, SE, "GmbH & Co. KG", …) picks the Rechtsform; otherwise it's an Einzelgewerbe. Company sections are accepted today but only EÜR is wired — full double-entry bookkeeping (Bilanz / E-Bilanz) is future work. External files are wired explicitly: EÜR sources declare their income/cost TSV via `euer=` (optional — zeros + warning if unset); the taxpayer declares the ESt `deductions=` TSV; `[auth]` points at the `.pfx` (`cert=`) and either a PIN source (`pin=` file or inline) or a shell command (`pincmd=`). No filesystem scanning, no year interpolation, nothing implicit — copy the conf dir per year for clean data. See `viking init` for a full template and `docs.rst` for the slow tour.
 
 The conf is loaded from:
 
@@ -113,28 +109,25 @@ The conf is loaded from:
 2. `./viking.conf` (per-directory overrides)
 3. `--conf <path>` (explicit — replaces the chain)
 
-`[auth]` section is optional; the default is `<conf-basename>.pfx` + `<conf-basename>.pin` next to the conf.
+The `[auth]` section is required for live submissions — point `cert=` at the `.pfx` and set exactly one of `pin=` or `pincmd=`.
 
-### Pin file formats
+### pin / pincmd
 
-Picked by file extension. Exactly one of these must exist for the default to resolve:
+* `pin=` — if the value resolves to an existing file, viking reads it (plaintext PIN file). Otherwise it treats the value as the PIN itself (inline). Inline is fine for the public sandbox PIN (`123456`) but don't check it in for real confs.
+* `pincmd=` — any shell command, runs with the conf's directory as cwd. Stdout is the PIN.
 
-| File | How viking reads it |
-|------|---------------------|
-| `viking.pin` | plain text — pin is the file contents |
-| `viking.pin.sh` | run via `sh`, stdout is the pin |
-| `viking.pin.ps1` | run via `powershell`, stdout is the pin |
-| `viking.pin.cmd` / `.bat` | run via `cmd /c`, stdout is the pin |
-| `viking.pin.exe` | run directly, stdout is the pin |
-
-For secret-manager integration, make a script that prints the pin:
-
-```sh
-#!/bin/sh
-exec pass show elster/main
+```ini
+[auth]
+cert = viking.pfx
+; pin    = viking.pin                ; path to plaintext PIN file
+; pin    = 123456                    ; or inline (sandbox only)
+; pincmd = ./viking.pin.sh           ; or a local script
+; pincmd = pass show elster/pin      ; or a secret manager
+; pincmd = security find-generic-password -s elster -w      ; macOS Keychain
+; pincmd = secret-tool lookup app elster                    ; libsecret
 ```
 
-Save as `viking.pin.sh`. Works with pass, 1Password CLI, macOS Keychain (`security find-generic-password ...`), libsecret (`secret-tool lookup ...`), gpg, age, or anything else that prints to stdout.
+Any shell snippet that prints the PIN on stdout works — `pass`, 1Password CLI, macOS Keychain, libsecret, gpg, age, `cat`, whatever.
 
 ### Viking data directory
 
