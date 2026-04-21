@@ -2,8 +2,9 @@ name: Release
 
 on:
   push:
-    tags:
-      - '[0-9]+.[0-9]+.[0-9]+'
+    branches: [main]
+    tags: ['[0-9]+.[0-9]+.[0-9]+']
+  pull_request:
   workflow_dispatch:
 
 jobs:
@@ -43,14 +44,14 @@ jobs:
           echo '--path:"src"' >> nimble.paths
 
       - name: Build
-        run: nimble build -y -d:release -d:NimblePkgVersion=${{ github.ref_name }}
+        run: nimble build -y -d:release -d:NimblePkgVersion=${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
 
       - name: Build x86_64 and create universal binary (macOS)
         if: runner.os == 'macOS'
         run: |
           mv viking viking-arm64
           rm -rf ~/.cache/nim/viking_r
-          nim c -d:release -d:NimblePkgVersion=${{ github.ref_name }} --passC:"-arch x86_64" --passL:"-arch x86_64" --cpu:amd64 -o:viking-x86_64 src/viking.nim
+          nim c -d:release -d:NimblePkgVersion=${{ github.ref_type == 'tag' && github.ref_name || 'dev' }} --passC:"-arch x86_64" --passL:"-arch x86_64" --cpu:amd64 -o:viking-x86_64 src/viking.nim
           lipo -create viking-arm64 viking-x86_64 -output viking
           file viking
 
@@ -90,6 +91,7 @@ jobs:
 
   release:
     needs: build
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
       contents: write
