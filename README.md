@@ -28,16 +28,16 @@ Exactly one of `pin=` or `pincmd=` is required. `pin=` takes either a path to a 
 
 ```sh
 # UStVA (quarterly VAT advance) — amounts come from the source's euer= TSV
-viking ustva freiberuf --period 41
+viking ustva -s freiberuf --period 41
 
 # EÜR (profit/loss statement) for a named source
-viking euer freiberuf
+viking euer -s freiberuf
 
 # ESt (income tax return) — aggregates every source
 viking est
 
 # USt (annual VAT return) for a named source
-viking ust freiberuf
+viking ust -s freiberuf
 
 # Retrieve documents from Finanzamt (Steuerbescheide etc.)
 viking list                              # show available documents
@@ -46,13 +46,13 @@ viking download Steuerbescheid_2024.pdf  # download specific file(s)
 viking download -o ./bescheide           # save to specific directory
 
 # Dry run: validate via ERiC and print XML, don't send
-viking ustva freiberuf --period 41 --dry-run
+viking ustva -s freiberuf --period 41 --dry-run
 
 # Sandbox submission (uses ELSTER test endpoint; XML gets a Testmerker)
-viking ustva --test freiberuf --period 41
+viking ustva --test -s freiberuf --period 41
 
 # Use a different conf
-viking ustva --conf ./client-foo/viking.conf freiberuf --period 41
+viking ustva --conf ./client-foo/viking.conf -s freiberuf --period 41
 ```
 
 The tax year comes from `personal.year` in `viking.conf`, not the CLI — copy the conf dir per year.

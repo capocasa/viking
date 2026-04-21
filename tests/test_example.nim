@@ -80,7 +80,7 @@ proc inEx(args: string): tuple[output: string, code: int] =
 # Conf parses
 # -----------------------------------------------------------------
 echo "--- conf parses ---"
-let (h, hRc) = inEx("ustva freiberuf --test --period q1 --dry-run -v")
+let (h, hRc) = inEx("ustva -s freiberuf --test --period q1 --dry-run -v")
 check("conf parses", hRc == 0, h)
 check("personal taxnumber in XML", h.contains("<Steuernummer>9198011310010</Steuernummer>"))
 echo ""
@@ -93,7 +93,7 @@ let (amb, ambRc) = inEx("ustva --test --period q1 --dry-run -v")
 check("ambiguous source rejected", ambRc != 0)
 check("error lists sources", amb.contains("freiberuf") and amb.contains("gewerbe"))
 
-let (gw, _) = inEx("ustva gewerbe --test --period q1 --dry-run -v")
+let (gw, _) = inEx("ustva -s gewerbe --test --period q1 --dry-run -v")
 check("gewerbe inherits personal taxnumber",
       gw.contains("<Steuernummer>9198011310010</Steuernummer>"))
 echo ""
@@ -102,11 +102,11 @@ echo ""
 # Period aliases
 # -----------------------------------------------------------------
 echo "--- period aliases ---"
-let (pMar, _) = inEx("ustva freiberuf --test --period mar --dry-run -v")
+let (pMar, _) = inEx("ustva -s freiberuf --test --period mar --dry-run -v")
 check("period mar -> 03", pMar.contains("<Zeitraum>03</Zeitraum>"))
-let (pQ1, _) = inEx("ustva freiberuf --test --period q1 --dry-run -v")
+let (pQ1, _) = inEx("ustva -s freiberuf --test --period q1 --dry-run -v")
 check("period q1 -> 41", pQ1.contains("<Zeitraum>41</Zeitraum>"))
-let (p3, _) = inEx("ustva freiberuf --test --period 3 --dry-run -v")
+let (p3, _) = inEx("ustva -s freiberuf --test --period 3 --dry-run -v")
 check("period 3 -> 03 (padded)", p3.contains("<Zeitraum>03</Zeitraum>"))
 echo ""
 
@@ -114,11 +114,11 @@ echo ""
 # TSV load + period filter
 # -----------------------------------------------------------------
 echo "--- TSV load + period filter ---"
-let (uQ1, uQ1Rc) = inEx("ustva freiberuf --test --period q1 --dry-run -v")
+let (uQ1, uQ1Rc) = inEx("ustva -s freiberuf --test --period q1 --dry-run -v")
 check("Q1 ok", uQ1Rc == 0, uQ1)
 check("Q1 Jan+Feb summed (1200+800)", uQ1.contains("<Kz81>2000</Kz81>"))
 
-let (uQ2, _) = inEx("ustva freiberuf --test --period q2 --dry-run -v")
+let (uQ2, _) = inEx("ustva -s freiberuf --test --period q2 --dry-run -v")
 check("Q2 19% (Apr+May)", uQ2.contains("<Kz81>2400</Kz81>"))
 check("Q2 7% (May)", uQ2.contains("<Kz86>500</Kz86>"))
 echo ""
@@ -127,11 +127,11 @@ echo ""
 # EÜR per source — rechtsform translation
 # -----------------------------------------------------------------
 echo "--- EÜR per source ---"
-let (eF, eFRc) = inEx("euer freiberuf --test --dry-run -v")
+let (eF, eFRc) = inEx("euer -s freiberuf --test --dry-run -v")
 check("euer freiberuf ok", eFRc == 0, eF)
 check("rechtsform freiberuf -> 140", eF.contains("<E6000602>140</E6000602>"))
 
-let (eM, eMRc) = inEx("euer gewerbe --test --dry-run -v")
+let (eM, eMRc) = inEx("euer -s gewerbe --test --dry-run -v")
 check("euer gewerbe ok", eMRc == 0, eM)
 check("rechtsform einzel -> 120", eM.contains("<E6000602>120</E6000602>"))
 echo ""
@@ -140,7 +140,7 @@ echo ""
 # Annual USt + vorauszahlungen
 # -----------------------------------------------------------------
 echo "--- USt + vorauszahlungen ---"
-let (u, uRc) = inEx("ust gewerbe --test --dry-run -v")
+let (u, uRc) = inEx("ust -s gewerbe --test --dry-run -v")
 check("ust dry-run ok", uRc == 0, u)
 check("vorauszahlungen=100", u.contains("<E3011301>100,00</E3011301>"))
 check("besteuerungsart soll -> 1", u.contains("<E3002203>1</E3002203>"))
@@ -202,15 +202,15 @@ echo ""
 # -----------------------------------------------------------------
 if testCertAvailable:
   echo "--- ELSTER validation ---"
-  let (vU, vURc) = inEx("ustva freiberuf --test --period q1 --dry-run -v")
+  let (vU, vURc) = inEx("ustva -s freiberuf --test --period q1 --dry-run -v")
   check("UStVA validates", validateOk(vU, vURc), vU)
   check("UStVA no schema errors", not vU.contains("610301200"))
 
-  let (vE, vERc) = inEx("euer freiberuf --test --dry-run -v")
+  let (vE, vERc) = inEx("euer -s freiberuf --test --dry-run -v")
   check("EÜR validates", validateOk(vE, vERc), vE)
   check("EÜR no schema errors", not vE.contains("610301200"))
 
-  let (vUst, vUstRc) = inEx("ust gewerbe --test --dry-run -v")
+  let (vUst, vUstRc) = inEx("ust -s gewerbe --test --dry-run -v")
   check("USt validates", validateOk(vUst, vUstRc), vUst)
   check("USt no schema errors", not vUst.contains("610301200"))
 
@@ -232,7 +232,7 @@ if testCertAvailable:
   writeFile(confPath, baseConf &
     "\n[auth]\ncert = " & testCertPath &
     "\npincmd = ./viking.pin.sh\n")
-  let (pc, pcRc) = inEx("ustva freiberuf --test --period q1 --dry-run -v")
+  let (pc, pcRc) = inEx("ustva -s freiberuf --test --period q1 --dry-run -v")
   check("pincmd shell command accepted", validateOk(pc, pcRc), pc)
   echo ""
 
@@ -242,7 +242,7 @@ if testCertAvailable:
   echo "--- inline pin ---"
   writeFile(confPath, baseConf &
     "\n[auth]\ncert = " & testCertPath & "\npin = 123456\n")
-  let (ip, ipRc) = inEx("ustva freiberuf --test --period q1 --dry-run -v")
+  let (ip, ipRc) = inEx("ustva -s freiberuf --test --period q1 --dry-run -v")
   check("inline pin accepted", validateOk(ip, ipRc), ip)
   echo ""
 else:

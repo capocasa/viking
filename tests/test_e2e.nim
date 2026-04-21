@@ -256,10 +256,10 @@ writeFile(testDir / "freelance.tsv", "1000,19\n")
 let (wordOut, wordRc) = runIn(testDir, "ustva -c " & wordConf & " --period jan --dry-run -v")
 check("word conf exits 0", wordRc == 0, wordOut)
 check("word conf Zeitraum 01", wordOut.contains("<Zeitraum>01</Zeitraum>"))
-let (wEuerOut, wEuerRc) = runIn(testDir, "euer freelance -c " & wordConf & " --dry-run -v")
+let (wEuerOut, wEuerRc) = runIn(testDir, "euer -s freelance -c " & wordConf & " --dry-run -v")
 check("euer word conf exits 0", wEuerRc == 0, wEuerOut)
 check("rechtsform einzel -> 120", wEuerOut.contains("<E6000602>120</E6000602>"))
-let (wUstOut, _) = runIn(testDir, "ust freelance -c " & wordConf & " --dry-run -v")
+let (wUstOut, _) = runIn(testDir, "ust -s freelance -c " & wordConf & " --dry-run -v")
 check("besteuerungsart ist -> 2", wUstOut.contains("<E3002203>2</E3002203>"))
 let (wEstOut, _) = runIn(testDir, "est -c " & wordConf & " --force --dry-run -v")
 check("religion rk -> 03", wEstOut.contains("<E0100402>03</E0100402>"))
@@ -298,14 +298,14 @@ let (ambigOut, ambigRc) = runIn(testDir, "ustva -c " & multiConf & " --period 41
 check("multi-source without name rejected", ambigRc != 0)
 check("multi-source error lists names", ambigOut.contains("freiberuf") and ambigOut.contains("mygewerbe"))
 
-let (gOut, gRc) = runIn(testDir, "ustva mygewerbe -c " & multiConf & " --period 41 --dry-run -v")
+let (gOut, gRc) = runIn(testDir, "ustva -s mygewerbe -c " & multiConf & " --period 41 --dry-run -v")
 check("explicit source ok", structuralOk(gOut, gRc), gOut)
 check("source taxnumber override", gOut.contains("<Steuernummer>9198011310020</Steuernummer>"))
 
-let (fOut, _) = runIn(testDir, "ustva freiberuf -c " & multiConf & " --period 41 --dry-run -v")
+let (fOut, _) = runIn(testDir, "ustva -s freiberuf -c " & multiConf & " --period 41 --dry-run -v")
 check("other source uses personal taxnumber", fOut.contains("<Steuernummer>9198011310010</Steuernummer>"))
 
-let (uOut, uRc) = runIn(testDir, "ustva bogus -c " & multiConf & " --period 41 --dry-run -v")
+let (uOut, uRc) = runIn(testDir, "ustva -s bogus -c " & multiConf & " --period 41 --dry-run -v")
 check("unknown source rejected", uRc != 0)
 check("unknown source error", uOut.contains("not found"))
 removeFile(testDir / "freiberuf.tsv")
@@ -326,7 +326,7 @@ let inlinePinConf = testDir / "tmp_inline_pin.conf"
 writeFile(inlinePinConf, personalBlock() &
   "[freiberuf]\nversteuerung = 2\neuer = freiberuf.tsv\n\n" &
   "[auth]\ncert = " & testCertPath & "\npin = 123456\n")
-let (inPinOut, inPinRc) = runIn(testDir, "ustva freiberuf --test -c " & inlinePinConf & " --period 41")
+let (inPinOut, inPinRc) = runIn(testDir, "ustva -s freiberuf --test -c " & inlinePinConf & " --period 41")
 check("inline pin accepted",
       inPinRc == 0 or inPinOut.contains("610301202"), inPinOut)
 check("inline pin: no pin-read error", not inPinOut.contains("Error reading"))
@@ -339,7 +339,7 @@ writeFile(pinFile, "123456\n")
 writeFile(pincmdConf, personalBlock() &
   "[freiberuf]\nversteuerung = 2\neuer = freiberuf.tsv\n\n" &
   "[auth]\ncert = " & testCertPath & "\npincmd = cat " & pinFile & "\n")
-let (pcOut, pcRc) = runIn(testDir, "ustva freiberuf --test -c " & pincmdConf & " --period 41")
+let (pcOut, pcRc) = runIn(testDir, "ustva -s freiberuf --test -c " & pincmdConf & " --period 41")
 check("pincmd shell accepted", pcRc == 0 or pcOut.contains("610301202"), pcOut)
 removeFile(pincmdConf)
 removeFile(pinFile)
@@ -349,7 +349,7 @@ let noAuthConf = testDir / "tmp_no_auth.conf"
 writeFile(noAuthConf, personalBlock() &
   "[freiberuf]\nversteuerung = 2\neuer = freiberuf.tsv\n\n" &
   "[auth]\ncert = " & testCertPath & "\n")
-let (noAuthOut, noAuthRc) = runIn(testDir, "ustva freiberuf --test -c " & noAuthConf & " --period 41")
+let (noAuthOut, noAuthRc) = runIn(testDir, "ustva -s freiberuf --test -c " & noAuthConf & " --period 41")
 check("missing pin+pincmd rejected", noAuthRc != 0)
 check("missing pin+pincmd error", noAuthOut.contains("pin") and noAuthOut.contains("pincmd"))
 removeFile(noAuthConf)
@@ -370,7 +370,7 @@ let euerTsv = testDir / "freelance.tsv"
 
 echo "--- euer --dry-run -v ---"
 writeFile(euerTsv, "1000,19\n500,7\n")
-let (eDryOut, eDryRc) = runIn(testDir, "euer freelance -c " & euerConf & " --dry-run -v")
+let (eDryOut, eDryRc) = runIn(testDir, "euer -s freelance -c " & euerConf & " --dry-run -v")
 check("euer dry-run exits 0", eDryRc == 0, eDryOut)
 check("euer has EUER element", eDryOut.contains("<EUER>"))
 check("euer Verfahren ElsterErklaerung", eDryOut.contains("<Verfahren>ElsterErklaerung</Verfahren>"))
@@ -379,7 +379,7 @@ echo ""
 
 echo "--- euer: income/expense split ---"
 writeFile(euerTsv, "1000,19\n-300,19\n")
-let (splitOut, splitRc) = runIn(testDir, "euer freelance -c " & euerConf & " --dry-run -v")
+let (splitOut, splitRc) = runIn(testDir, "euer -s freelance -c " & euerConf & " --dry-run -v")
 check("split exits 0", splitRc == 0, splitOut)
 check("income net 1000", splitOut.contains("<E6000401>1000,00</E6000401>"))
 check("income VAT 190", splitOut.contains("<E6000601>190,00</E6000601>"))
@@ -389,7 +389,7 @@ echo ""
 
 echo "--- euer: missing tsv ---"
 removeFile(euerTsv)
-let (missOut, missRc) = runIn(testDir, "euer freelance -c " & euerConf & " --dry-run -v")
+let (missOut, missRc) = runIn(testDir, "euer -s freelance -c " & euerConf & " --dry-run -v")
 check("missing tsv rejected", missRc != 0)
 check("missing tsv error", missOut.contains("not found") or missOut.contains("freelance.tsv"))
 echo ""
@@ -400,16 +400,16 @@ writeConf(noEuerConf, personalBlock() & """
 [freelance]
 versteuerung = 2
 """)
-let (noEOut, noERc) = runIn(testDir, "euer freelance -c " & noEuerConf & " --dry-run -v")
+let (noEOut, noERc) = runIn(testDir, "euer -s freelance -c " & noEuerConf & " --dry-run -v")
 check("euer unset exits 0", noERc == 0, noEOut)
 check("euer unset warns", noEOut.contains("Warning") and noEOut.contains("euer="))
 check("euer unset zeros", noEOut.contains("<E6000401>0,00</E6000401>"))
 
-let (noUstOut, noUstRc) = runIn(testDir, "ust freelance -c " & noEuerConf & " --dry-run -v")
+let (noUstOut, noUstRc) = runIn(testDir, "ust -s freelance -c " & noEuerConf & " --dry-run -v")
 check("ust unset ok", structuralOk(noUstOut, noUstRc), noUstOut)
 check("ust unset warns", noUstOut.contains("Warning"))
 
-let (noUvOut, noUvRc) = runIn(testDir, "ustva freelance -c " & noEuerConf & " --period 41 --dry-run -v")
+let (noUvOut, noUvRc) = runIn(testDir, "ustva -s freelance -c " & noEuerConf & " --period 41 --dry-run -v")
 check("ustva unset exits 0", noUvRc == 0, noUvOut)
 check("ustva unset warns", noUvOut.contains("Warning"))
 check("ustva unset Kz81 0", noUvOut.contains("<Kz81>0</Kz81>"))
@@ -437,7 +437,7 @@ for year in euerYears:
 versteuerung = 2
 euer = freelance.tsv
 """)
-  let (yOut, yRc) = runIn(testDir, "euer freelance -c " & yearConf & " --dry-run -v")
+  let (yOut, yRc) = runIn(testDir, "euer -s freelance -c " & yearConf & " --dry-run -v")
   check("euer " & $year & " schema valid", not yOut.contains("610301200"), yOut)
   check("euer " & $year & " validates",
         yRc == 0 or yOut.contains("610301202"), yOut)
@@ -682,10 +682,10 @@ euer = freelance.tsv
 """)
 writeFile(testDir / "freelance.tsv", "1000,19\n-300,19\n")
 for (cmd, args) in [
-    ("ustva", "ustva freelance --test -c " & pdfConf & " --period 41"),
-    ("euer", "euer freelance --test -c " & pdfConf),
+    ("ustva", "ustva -s freelance --test -c " & pdfConf & " --period 41"),
+    ("euer", "euer -s freelance --test -c " & pdfConf),
     ("est", "est --test -c " & pdfConf & " --force"),
-    ("ust", "ust freelance --test -c " & pdfConf)]:
+    ("ust", "ust -s freelance --test -c " & pdfConf)]:
   let pdfPath = testDir / ("tmp_" & cmd & ".pdf")
   removeFile(pdfPath)
   let (pOut, pRc) = runIn(testDir, args & " --dry-run --output-pdf=" & pdfPath)
@@ -772,7 +772,7 @@ let ustTsv = testDir / "freelance.tsv"
 
 echo "--- ust --dry-run -v ---"
 writeFile(ustTsv, "1000,19\n500,7\n-200,19\n")
-let (uDryOut, uDryRc) = runIn(testDir, "ust freelance --test -c " & ustConf & " --dry-run -v")
+let (uDryOut, uDryRc) = runIn(testDir, "ust -s freelance --test -c " & ustConf & " --dry-run -v")
 check("ust dry-run exits 0", uDryRc == 0, uDryOut)
 check("ust has USt2A", uDryOut.contains("<USt2A>"))
 check("ust Ums_allg 19%", uDryOut.contains("<E3003303>1000</E3003303>"))
@@ -781,7 +781,7 @@ echo ""
 
 echo "--- ust income/expense split ---"
 writeFile(ustTsv, "1000,19\n-300,19\n")
-let (uspOut, uspRc) = runIn(testDir, "ust freelance -c " & ustConf & " --dry-run -v")
+let (uspOut, uspRc) = runIn(testDir, "ust -s freelance -c " & ustConf & " --dry-run -v")
 check("ust split exits 0", uspRc == 0, uspOut)
 check("ust Ums_allg base 1000", uspOut.contains("<E3003303>1000</E3003303>"))
 check("ust Vorsteuer sum 57", uspOut.contains("<E3006901>57,00</E3006901>"))
@@ -797,7 +797,7 @@ euer = freelance.tsv
 vorauszahlungen = 100
 """)
 writeFile(ustTsv, "1000,19\n")
-let (vzOut, vzRc) = runIn(testDir, "ust freelance -c " & ustVzConf & " --dry-run -v")
+let (vzOut, vzRc) = runIn(testDir, "ust -s freelance -c " & ustVzConf & " --dry-run -v")
 check("ust vz ok", structuralOk(vzOut, vzRc), vzOut)
 check("ust vz E3011301", vzOut.contains("<E3011301>100,00</E3011301>"))
 check("ust vz E3011401", vzOut.contains("<E3011401>90,00</E3011401>"))
@@ -826,7 +826,7 @@ for year in ustYears:
 versteuerung = 2
 euer = freelance.tsv
 """)
-  let (yOut, yRc) = runIn(testDir, "ust freelance -c " & yConf & " --dry-run -v")
+  let (yOut, yRc) = runIn(testDir, "ust -s freelance -c " & yConf & " --dry-run -v")
   check("ust " & $year & " schema valid", not yOut.contains("610301200"), yOut)
   check("ust " & $year & " validates",
         yRc == 0 or yOut.contains("610301202"), yOut)

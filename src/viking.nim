@@ -228,7 +228,7 @@ template submitAndCheck(xml: string, datenartVersion: string) =
     return 1
 
 proc ustva(
-  source: seq[string] = @[],
+  source: string = "",
   period: string = "",
   conf: string = "",
   dry_run: bool = false,
@@ -239,9 +239,9 @@ proc ustva(
 ): int =
   ## Submit a UStVA (Umsatzsteuervoranmeldung) for a source.
   ##
-  ## Source positional arg selects the income source from viking.conf;
-  ## omit if exactly one EÜR source is defined. Amounts come from
-  ## the source's `euer=` TSV; tax year comes from `personal.year`.
+  ## --source selects the income source from viking.conf; omit if
+  ## exactly one EÜR source is defined. Amounts come from the source's
+  ## `euer=` TSV; tax year comes from `personal.year`.
 
   if period == "":
     err "Error: --period is required; " & periodMap.listing
@@ -253,8 +253,7 @@ proc ustva(
     err &"Error: Invalid period '{period}'; " & periodMap.listing
     return 1
 
-  let srcName = if source.len > 0: source[0] else: ""
-  let (confOk, vikingConf, src) = loadConfForSource(conf, srcName,
+  let (confOk, vikingConf, src) = loadConfForSource(conf, source,
     {skGewerbe, skFreelance}, validateForUstva)
   if not confOk: return 1
 
@@ -316,7 +315,7 @@ proc ustva(
   return 0
 
 proc euer(
-  source: seq[string] = @[],
+  source: string = "",
   conf: string = "",
   dry_run: bool = false,
   verbose: bool = false,
@@ -326,11 +325,11 @@ proc euer(
 ): int =
   ## Submit an EÜR for a source.
   ##
-  ## Loads the source's `euer=` TSV. Positive = income,
-  ## negative = expenses. Tax year comes from `personal.year`.
+  ## --source selects the income source from viking.conf; omit if
+  ## exactly one EÜR source is defined. Loads the source's `euer=` TSV.
+  ## Positive = income, negative = expenses. Tax year from `personal.year`.
 
-  let srcName = if source.len > 0: source[0] else: ""
-  let (confOk, vikingConf, src) = loadConfForSource(conf, srcName,
+  let (confOk, vikingConf, src) = loadConfForSource(conf, source,
     {skGewerbe, skFreelance}, validateForEuer)
   if not confOk: return 1
 
@@ -470,7 +469,7 @@ proc est(
   return 0
 
 proc ust(
-  source: seq[string] = @[],
+  source: string = "",
   conf: string = "",
   dry_run: bool = false,
   verbose: bool = false,
@@ -480,11 +479,11 @@ proc ust(
 ): int =
   ## Submit an annual VAT return (Umsatzsteuererklaerung) for a source.
   ##
-  ## Loads the source's `euer=` TSV. Vorauszahlungen from source section.
-  ## Tax year comes from `personal.year`.
+  ## --source selects the income source from viking.conf; omit if
+  ## exactly one EÜR source is defined. Loads the source's `euer=` TSV.
+  ## Vorauszahlungen from source section. Tax year from `personal.year`.
 
-  let srcName = if source.len > 0: source[0] else: ""
-  let (confOk, vikingConf, src) = loadConfForSource(conf, srcName,
+  let (confOk, vikingConf, src) = loadConfForSource(conf, source,
     {skGewerbe, skFreelance}, validateForUst)
   if not confOk: return 1
 
@@ -1090,7 +1089,6 @@ when isMainModule:
   const dataDirHelp = "Viking data dir (default: ~/.local/share/viking)"
   dispatchMulti(
     [ustva,
-      positional = "source",
       help = {
         "source": "Source name from viking.conf (optional if only one)",
         "period": "Period: 01-12 (monthly) or 41-44 (quarterly)",
@@ -1103,6 +1101,7 @@ when isMainModule:
       },
       short = {
         "dry-run": '\0',
+        "source": 's',
         "period": 'p',
         "conf": 'c',
         "verbose": 'v',
@@ -1111,7 +1110,6 @@ when isMainModule:
       }
     ],
     [euer,
-      positional = "source",
       help = {
         "source": "Source name from viking.conf (optional if only one)",
         "conf": "viking.conf file (optional; default search chain)",
@@ -1123,6 +1121,7 @@ when isMainModule:
       },
       short = {
         "dry-run": '\0',
+        "source": 's',
         "conf": 'c',
         "verbose": 'v',
         "output-pdf": 'o',
@@ -1149,7 +1148,6 @@ when isMainModule:
       }
     ],
     [ust,
-      positional = "source",
       help = {
         "source": "Source name from viking.conf (optional if only one)",
         "conf": "viking.conf file (optional; default search chain)",
@@ -1161,6 +1159,7 @@ when isMainModule:
       },
       short = {
         "dry-run": '\0',
+        "source": 's',
         "conf": 'c',
         "verbose": 'v',
         "output-pdf": 'o',

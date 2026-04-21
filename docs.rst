@@ -152,10 +152,10 @@ the handle:
 
 .. code-block:: sh
 
-    viking ustva freiberuf          --period q1
-    viking ustva "Musterfirma GmbH" --period q1
-    viking euer  mygewerbe
-    viking ust   "Musterfirma GmbH"      # picks up vorauszahlungen=100
+    viking ustva -s freiberuf            --period q1
+    viking ustva -s "Musterfirma GmbH"   --period q1
+    viking euer  -s mygewerbe
+    viking ust   -s "Musterfirma GmbH"   # picks up vorauszahlungen=100
 
 `viking est` is special — it scans every source and emits Anlage G for
 each Gewerbe and Anlage S for each `[freiberuf]`, all in one return:
@@ -520,4 +520,21 @@ listing:
   9198) instead of production. Uses the same cert/PIN. Every e2e
   test harness in this repo passes ``--test``; you want it too
   unless you're actually filing.
+
+Naming conventions
+==================
+
+The codebase draws a clear line between English program operation
+and German domain terminology:
+
+* **CLI flags** — English, matching universal conventions. ``--dry-run``,
+  ``--verbose``, ``--force``, ``--test`` — the same words you see in git,
+  npm, docker, terraform. Muscle memory wins here.
+* **Config keys** — German fachbegriffe. The conf is a domain document
+  users edit and read: ``versteuerung``, ``rechtsform``, ``vorauszahlungen``,
+  ``verhaeltnis``, ``guenstigerpruefung``. Domain clarity wins here.
+
+This split also explains why ``--dry-run`` stays English even though
+ERiC's internal API uses ``vorschau`` — the flag is ephemeral interface,
+not persistent configuration.
 

@@ -48,18 +48,18 @@ All commands are safe — `--test` hits the ELSTER sandbox and adds a
 cd example
 
 # UStVA (quarterly VAT advance) — amounts come from freelance.tsv
-viking ustva freiberuf --test --period q1 --dry-run
+viking ustva -s freiberuf --test --period q1 --dry-run
 
 # Period aliases — all of these are equivalent:
-viking ustva freiberuf --test --period q1  --dry-run
-viking ustva freiberuf --test --period 41  --dry-run
-viking ustva freiberuf --test --period mar --dry-run     # -> 03
-viking ustva freiberuf --test --period 3   --dry-run     # -> 03
+viking ustva -s freiberuf --test --period q1  --dry-run
+viking ustva -s freiberuf --test --period 41  --dry-run
+viking ustva -s freiberuf --test --period mar --dry-run     # -> 03
+viking ustva -s freiberuf --test --period 3   --dry-run     # -> 03
 
 # Each source declares its own TSV via `euer=` in the conf
-viking euer    freiberuf --test --dry-run
-viking euer    gewerbe   --test --dry-run
-viking ust     gewerbe   --test --dry-run            # vorauszahlungen=100
+viking euer -s freiberuf    --test --dry-run
+viking euer -s gewerbe      --test --dry-run
+viking ust  -s gewerbe      --test --dry-run         # vorauszahlungen=100
 
 # ESt aggregates every source: Anlage S (freiberuf) + Anlage G (gewerbe)
 # + Anlage KAP (ibkr inline values) + Anlage Kind for max & lisa.
@@ -70,7 +70,7 @@ viking est --test --dry-run
 To actually submit to the sandbox (drop `--dry-run`):
 
 ```sh
-viking ustva freiberuf --test --period q1
+viking ustva -s freiberuf --test --period q1
 ```
 
 You'll get a real round-trip to ELSTER's test endpoint. Drop `--test` once
