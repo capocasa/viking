@@ -68,8 +68,11 @@ type
 proc getAppDataDir*(): string =
   ## Default data directory for viking: platform-specific user data dir.
   ## (~/.local/share/viking on Linux, ~/Library/Application Support/viking on
-  ## macOS, %APPDATA%/viking on Windows.) Callers with a --data-dir value
-  ## should use that directly instead.
+  ## macOS, %APPDATA%/viking on Windows.) `VIKING_DATA_DIR` env var overrides
+  ## (used by CI). Callers with a --data-dir value should use that directly.
+  let envDir = getEnv("VIKING_DATA_DIR")
+  if envDir != "":
+    return envDir
   result = appdirs.getDataDir().string / AppName
 
 proc getEricDataDir*(dataDir: string = ""): string =

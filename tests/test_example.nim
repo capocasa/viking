@@ -69,8 +69,8 @@ let confPath = tmp / "viking.conf"
 let rawConf = readFile(confPath)
 let authIdx = rawConf.find("[auth]")
 let baseConf = if authIdx >= 0: rawConf[0 ..< authIdx] else: rawConf
-let authBlock = "\n[auth]\ncert = " & testCertPath &
-                "\npin = " & (tmp / "viking.pin") & "\n"
+let authBlock = "\n[auth]\ncert = r\"" & testCertPath &
+                "\"\npin = r\"" & (tmp / "viking.pin") & "\"\n"
 writeFile(confPath, baseConf & authBlock)
 
 proc inEx(args: string): tuple[output: string, code: int] =
@@ -233,8 +233,8 @@ if testCertAvailable:
   setFilePermissions(pinShPath,
     getFilePermissions(pinShPath) + {fpUserExec, fpGroupExec, fpOthersExec})
   writeFile(confPath, baseConf &
-    "\n[auth]\ncert = " & testCertPath &
-    "\npincmd = ./viking.pin.sh\n")
+    "\n[auth]\ncert = r\"" & testCertPath &
+    "\"\npincmd = ./viking.pin.sh\n")
   let (pc, pcRc) = inEx("ustva -s freiberuf --test --period q1 --dry-run -v")
   check("pincmd shell command accepted", validateOk(pc, pcRc), pc)
   echo ""
@@ -244,7 +244,7 @@ if testCertAvailable:
   # ---------------------------------------------------------------
   echo "--- inline pin ---"
   writeFile(confPath, baseConf &
-    "\n[auth]\ncert = " & testCertPath & "\npin = 123456\n")
+    "\n[auth]\ncert = r\"" & testCertPath & "\"\npin = 123456\n")
   let (ip, ipRc) = inEx("ustva -s freiberuf --test --period q1 --dry-run -v")
   check("inline pin accepted", validateOk(ip, ipRc), ip)
   echo ""

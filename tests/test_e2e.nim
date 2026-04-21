@@ -54,7 +54,9 @@ writeFile(testPinPath, "123456")
 let testDir = projectRoot / "tests"
 
 proc authBlock(): string =
-  "\n[auth]\ncert = " & testCertPath & "\npin = " & testPinPath & "\n"
+  # Raw strings (r"...") handle Windows drive letters which parsecfg otherwise
+  # tokenizes on the ":" separator.
+  "\n[auth]\ncert = r\"" & testCertPath & "\"\npin = r\"" & testPinPath & "\"\n"
 
 proc personalBlock(year: int = 2025): string =
   "[Hans Maier]\n" &
@@ -328,7 +330,7 @@ echo "--- auth: pin inline ---"
 let inlinePinConf = testDir / "tmp_inline_pin.conf"
 writeFile(inlinePinConf, personalBlock() &
   "[freiberuf]\nversteuerung = 2\neuer = freiberuf.tsv\n\n" &
-  "[auth]\ncert = " & testCertPath & "\npin = 123456\n")
+  "[auth]\ncert = r\"" & testCertPath & "\"\npin = 123456\n")
 let (inPinOut, inPinRc) = runIn(testDir, "ustva -s freiberuf --test -c " & inlinePinConf & " --period 41")
 check("inline pin accepted",
       inPinRc == 0 or inPinOut.contains("610301202"), inPinOut)
@@ -341,7 +343,7 @@ let pinFile = testDir / "tmp_pincmd.pin"
 writeFile(pinFile, "123456\n")
 writeFile(pincmdConf, personalBlock() &
   "[freiberuf]\nversteuerung = 2\neuer = freiberuf.tsv\n\n" &
-  "[auth]\ncert = " & testCertPath & "\npincmd = cat " & pinFile & "\n")
+  "[auth]\ncert = r\"" & testCertPath & "\"\npincmd = r\"cat " & pinFile & "\"\n")
 let (pcOut, pcRc) = runIn(testDir, "ustva -s freiberuf --test -c " & pincmdConf & " --period 41")
 check("pincmd shell accepted", pcRc == 0 or pcOut.contains("610301202"), pcOut)
 removeFile(pincmdConf)
@@ -351,7 +353,7 @@ echo "--- auth: missing pin+pincmd ---"
 let noAuthConf = testDir / "tmp_no_auth.conf"
 writeFile(noAuthConf, personalBlock() &
   "[freiberuf]\nversteuerung = 2\neuer = freiberuf.tsv\n\n" &
-  "[auth]\ncert = " & testCertPath & "\n")
+  "[auth]\ncert = r\"" & testCertPath & "\"\n")
 let (noAuthOut, noAuthRc) = runIn(testDir, "ustva -s freiberuf --test -c " & noAuthConf & " --period 41")
 check("missing pin+pincmd rejected", noAuthRc != 0)
 check("missing pin+pincmd error", noAuthOut.contains("pin") and noAuthOut.contains("pincmd"))
