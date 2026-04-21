@@ -117,16 +117,28 @@ proc resolveSigningAuth(vc: VikingConf): tuple[ok: bool, certPath, certPin: stri
     return (false, "", "")
   (true, certPath, pin)
 
+func stripFeldXPath(s: string): string =
+  ## ELSTER error texts often start with "Feld '$/Elster[1]/.../x[1]$': ".
+  ## The XPath is also in <Feldidentifikator>; strip it from the human text.
+  const prefix = "Feld '$"
+  const sep = "$': "
+  if s.startsWith(prefix):
+    let i = s.find(sep, prefix.len)
+    if i >= 0:
+      return s[i + sep.len .. ^1]
+  s
+
 proc handleEricError(rc: int, response, serverResponse: string, ericLogPath: string) =
   let parsed = parseFehlerRegelpruefung(response) & parseServerRueckgabeErrors(serverResponse)
   if parsed.len > 0:
     for e in parsed:
+      let text = stripFeldXPath(e.text)
       if e.code.len > 0:
-        err &"{e.text} ({e.code})"
+        err &"{text}\n\n[{e.code}, {rc}]"
       else:
-        err e.text
+        err &"{text}\n\n[{rc}]"
   else:
-    err &"Error: ERiC code {rc}: {ericHoleFehlerText(rc)}"
+    err &"{ericHoleFehlerText(rc)}\n\n[{rc}]"
   case rc
   of 610301202:
     err "Hint: The HerstellerID is blocked."
