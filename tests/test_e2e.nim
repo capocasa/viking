@@ -650,6 +650,34 @@ for (cmd, args) in [
     let head = readFile(pdfPath)[0 ..< min(4, getFileSize(pdfPath).int)]
     check(cmd & " --output-pdf is a PDF", head == "%PDF")
   removeFile(pdfPath)
+echo "--- --output-pdf failure modes ---"
+## ERiC auto-creates writable parent dirs, so nonexistent-dir isn't a
+## reliable failure. These are: (1) output path is itself a directory,
+## (2) parent dir is unwritable.
+writeFile(testDir / "freelance.tsv", "1000,19\n")
+let estArgs = "est --test -c " & pdfConf & " --force --dry-run"
+
+let dirPath = testDir / "tmp_pdf_isdir"
+createDir(dirPath)
+let (ddOut, ddRc) = runIn(testDir, estArgs & " --output-pdf=" & dirPath)
+check("output path is a directory rejected", ddRc != 0, ddOut)
+check("directory-as-output error surfaces ERiC print code",
+      ddOut.contains("610501"))
+removeDir(dirPath)
+
+when not defined(windows):
+  let roDir = testDir / "tmp_pdf_ro"
+  createDir(roDir)
+  let roPath = roDir / "out.pdf"
+  setFilePermissions(roDir, {fpUserRead, fpUserExec})
+  let (roOut, roRc) = runIn(testDir, estArgs & " --output-pdf=" & roPath)
+  setFilePermissions(roDir, {fpUserRead, fpUserWrite, fpUserExec})
+  check("read-only dir rejected", roRc != 0, roOut)
+  check("read-only dir error surfaces ERiC print code",
+        roOut.contains("610501"))
+  check("read-only dir leaves no PDF", not fileExists(roPath))
+  removeDir(roDir)
+
 removeFile(testDir / "freelance.tsv")
 removeFile(pdfConf)
 echo ""
