@@ -406,8 +406,11 @@ check("euer unset warns", noEOut.contains("Warning") and noEOut.contains("euer="
 check("euer unset zeros", noEOut.contains("<E6000401>0,00</E6000401>"))
 
 let (noUstOut, noUstRc) = runIn(testDir, "ust -s freelance -c " & noEuerConf & " --dry-run -v")
-check("ust unset ok", structuralOk(noUstOut, noUstRc), noUstOut)
-check("ust unset warns", noUstOut.contains("Warning"))
+check("ust unset Nullmeldung exits 0", noUstRc == 0, noUstOut)
+check("ust unset Nullmeldung warns", noUstOut.contains("Nullmeldung"))
+check("ust Nullmeldung zero Ums_allg", noUstOut.contains("<E3003303>0</E3003303>"))
+check("ust Nullmeldung zero Ums_Sum", noUstOut.contains("<E3006001>0,00</E3006001>"))
+check("ust Nullmeldung zero Abschluss", noUstOut.contains("<E3011401>0,00</E3011401>"))
 
 let (noUvOut, noUvRc) = runIn(testDir, "ustva -s freelance -c " & noEuerConf & " --period 41 --dry-run -v")
 check("ustva unset exits 0", noUvRc == 0, noUvOut)
@@ -786,6 +789,19 @@ check("ust split exits 0", uspRc == 0, uspOut)
 check("ust Ums_allg base 1000", uspOut.contains("<E3003303>1000</E3003303>"))
 check("ust Vorsteuer sum 57", uspOut.contains("<E3006901>57,00</E3006901>"))
 check("ust verbleibende 133", uspOut.contains("<E3011101>133,00</E3011101>"))
+echo ""
+
+echo "--- rate=-1 (nicht steuerbar, EUER-only) ---"
+# FA USt-Erstattung is Betriebseinnahme in EÜR (Brutto-Methode, § 4/3 EStG)
+# but not steuerbar for USt — rate=-1 skips it in aggregateForUst.
+writeFile(ustTsv, "1000,19\n200,-1\n")
+let (nstU, nstURc) = runIn(testDir, "ust -s freelance -c " & ustConf & " --dry-run -v")
+check("ust nst exits 0", nstURc == 0, nstU)
+check("ust nst skips rate -1 from Umsaetze", nstU.contains("<E3003303>1000</E3003303>"))
+check("ust nst Ums_Sum ignores rate -1", nstU.contains("<E3006001>190,00</E3006001>"))
+let (nstE, nstERc) = runIn(testDir, "euer -s freelance -c " & ustConf & " --dry-run -v")
+check("euer nst exits 0", nstERc == 0, nstE)
+check("euer nst includes rate -1 as income", nstE.contains("<E6000401>1200,00</E6000401>"))
 echo ""
 
 echo "--- ust vorauszahlungen ---"

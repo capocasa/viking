@@ -68,51 +68,79 @@ proc generateUst*(input: UstInput): string =
   let verbleibendeUst = nachVorsteuer
   let abschluss = roundCents(verbleibendeUst - vorauszahlungenR)
 
-  # Build Umsaetze section
-  var umsaetze = ""
-  if input.has19:
-    umsaetze.add(&"""
+  # Plausibility rules USt_30900/30901 require Ums_Sum/Abz_VoSt_Sum to have
+  # siblings: emit the Sum blocks only when there are underlying entries.
+  let hasUmsaetze = input.has19 or input.has7
+  let hasVorsteuer = totalVorsteuer > 0
+
+  var umsaetzeBlock = ""
+  if hasUmsaetze:
+    var umsaetze = ""
+    if input.has19:
+      umsaetze.add(&"""
             <Ums_allg>
               <E3003303>{roundEuro(income19)}</E3003303>
               <E3003304>{formatEurDE(vat19)}</E3003304>
             </Ums_allg>""")
-  if input.has7:
-    umsaetze.add(&"""
+    if input.has7:
+      umsaetze.add(&"""
             <Ums_erm>
               <E3004401>{roundEuro(income7)}</E3004401>
               <E3004402>{formatEurDE(vat7)}</E3004402>
             </Ums_erm>""")
-  umsaetze.add(&"""
+    umsaetze.add(&"""
             <Ums_Sum>
               <E3006001>{formatEurDE(totalVat)}</E3006001>
             </Ums_Sum>""")
+    umsaetzeBlock = &"""
+            <Umsaetze>
+              <Tabelle>{umsaetze}
+              </Tabelle>
+            </Umsaetze>"""
 
-  # Build Abziehbare Vorsteuer section
   var abzVoSt = ""
-  if totalVorsteuer > 0:
+  if hasVorsteuer:
     abzVoSt = &"""
-          <Abz_VoSt>
-            <Tabelle>
-              <E3006201>{formatEurDE(totalVorsteuer)}</E3006201>
-              <Abz_VoSt_Sum>
-                <E3006901>{formatEurDE(totalVorsteuer)}</E3006901>
-              </Abz_VoSt_Sum>
-            </Tabelle>
-          </Abz_VoSt>"""
-  else:
-    abzVoSt = """
-          <Abz_VoSt>
-            <Tabelle>
-              <Abz_VoSt_Sum>
-                <E3006901>0,00</E3006901>
-              </Abz_VoSt_Sum>
-            </Tabelle>
-          </Abz_VoSt>"""
+            <Abz_VoSt>
+              <Tabelle>
+                <E3006201>{formatEurDE(totalVorsteuer)}</E3006201>
+                <Abz_VoSt_Sum>
+                  <E3006901>{formatEurDE(totalVorsteuer)}</E3006901>
+                </Abz_VoSt_Sum>
+              </Tabelle>
+            </Abz_VoSt>"""
 
-  # Vorsteuer line in Berech_USt (line 109: abziehbare Vorsteuer = E3006901)
-  let vorstLine = if totalVorsteuer > 0:
+  # USt_30150 requires Abz_VoSt_Sum → E3009901 transfer; only emit when present.
+  let vorstLine = if hasVorsteuer:
     &"\n                <E3009901>{formatEurDE(totalVorsteuer)}</E3009901>"
   else: ""
+  let ustLine = if hasUmsaetze:
+    &"\n                <E3009201>{formatEurDE(totalVat)}</E3009201>"
+  else: ""
+  let zwischenLine = if hasUmsaetze:
+    &"\n                <E3009801>{formatEurDE(zwischensumme)}</E3009801>"
+  else: ""
+
+  # Berech_USt chain requires upstream sums; USt_30907 fires if E3010201 is
+  # declared without any 108–110 input. For a pure Nullmeldung omit it; for
+  # Vorsteuer-only file the overhang without E3009201/E3009801.
+  var berechUst = ""
+  if hasUmsaetze or hasVorsteuer:
+    berechUst = &"""
+
+            <Berech_USt>
+              <Tabelle>{ustLine}{zwischenLine}{vorstLine}
+                <E3010201>{formatEurDE(nachVorsteuer)}</E3010201>
+                <E3010601>{formatEurDE(nachVorsteuer)}</E3010601>
+                <Verbl_USt>
+                  <E3011101>{formatEurDE(verbleibendeUst)}</E3011101>
+                  <E3011301>{formatEurDE(vorauszahlungenR)}</E3011301>
+                </Verbl_USt>
+                <Zahl_Erstatt>
+                  <E3011401>{formatEurDE(abschluss)}</E3011401>
+                </Zahl_Erstatt>
+              </Tabelle>
+            </Berech_USt>"""
 
   let xml = &"""<?xml version="1.0" encoding="UTF-8"?>
 <Elster xmlns="http://www.elster.de/elsterxml/schema/v11">
@@ -155,25 +183,7 @@ proc generateUst*(input: UstInput): string =
                 <E3002203>{besteuerungsart}</E3002203>
               </Best_Art>
             </Allg>
-            <Umsaetze>
-              <Tabelle>{umsaetze}
-              </Tabelle>
-            </Umsaetze>{abzVoSt}
-            <Berech_USt>
-              <Tabelle>
-                <E3009201>{formatEurDE(totalVat)}</E3009201>
-                <E3009801>{formatEurDE(zwischensumme)}</E3009801>{vorstLine}
-                <E3010201>{formatEurDE(nachVorsteuer)}</E3010201>
-                <E3010601>{formatEurDE(nachVorsteuer)}</E3010601>
-                <Verbl_USt>
-                  <E3011101>{formatEurDE(verbleibendeUst)}</E3011101>
-                  <E3011301>{formatEurDE(vorauszahlungenR)}</E3011301>
-                </Verbl_USt>
-                <Zahl_Erstatt>
-                  <E3011401>{formatEurDE(abschluss)}</E3011401>
-                </Zahl_Erstatt>
-              </Tabelle>
-            </Berech_USt>
+{umsaetzeBlock}{abzVoSt}{berechUst}
           </USt2A>
           <Vorsatz>
             <Unterfallart>50</Unterfallart>

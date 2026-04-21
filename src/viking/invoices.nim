@@ -118,11 +118,11 @@ func parseInvoices*(input: string): (seq[Invoice], seq[InvoiceError]) =
         rateStr = rateStr[0 ..< rateStr.len - 1].strip
       try:
         inv.rate = parseInt(rateStr)
-        if inv.rate != 0 and inv.rate != 7 and inv.rate != 19:
-          errors.add(InvoiceError(line: lineNum, msg: "invalid rate: " & rateStr & " (must be 0, 7 or 19)"))
+        if inv.rate notin [-1, 0, 7, 19]:
+          errors.add(InvoiceError(line: lineNum, msg: "invalid rate: " & rateStr & " (must be -1, 0, 7 or 19)"))
           continue
       except ValueError:
-        errors.add(InvoiceError(line: lineNum, msg: "invalid rate: " & rateStr & " (must be 0, 7 or 19)"))
+        errors.add(InvoiceError(line: lineNum, msg: "invalid rate: " & rateStr & " (must be -1, 0, 7 or 19)"))
         continue
     else:
       inv.rate = 19
@@ -233,9 +233,10 @@ proc readInvoiceInput*(path: string): string =
 
 func aggregateForEuer*(invoices: seq[Invoice]): EuerAggregation =
   ## Split invoices into income (positive) and expenses (negative) for EÜR.
-  ## Positive amounts = income, negative amounts = expenses.
+  ## Positive amounts = income, negative amounts = expenses. rate = -1 is
+  ## "nicht steuerbar" (EÜR-only): counts toward income/expense with no VAT.
   for inv in invoices:
-    let rate = inv.rate.float / 100.0
+    let rate = if inv.rate < 0: 0.0 else: inv.rate.float / 100.0
     if inv.amount >= 0:
       result.incomeNet += inv.amount
       result.incomeVat += roundCents(inv.amount * rate)
@@ -307,7 +308,10 @@ proc loadAndAggregateForEuer*(path: string): (EuerAggregation, bool) =
 
 func aggregateForUst*(invoices: seq[Invoice]): UstAggregation =
   ## Split invoices into income by rate and expense Vorsteuer for annual USt.
+  ## rate = -1 is "nicht steuerbar" — skipped (EÜR-only; see aggregateForEuer).
   for inv in invoices:
+    if inv.rate < 0:
+      continue
     let rate = inv.rate.float / 100.0
     if inv.amount >= 0:
       case inv.rate

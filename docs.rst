@@ -127,6 +127,13 @@ A few per-project invariants, just to be clear:
 Negative amounts are expenses. Both columns past `amount` and `rate`
 are optional; `date` enables period filtering on `submit --period`.
 
+Rates are ``0``, ``7``, ``19`` (trailing ``%`` is tolerated), or ``-1``
+to mark a row as *nicht steuerbar* — it counts in the EÜR (Brutto-Methode
+requires e.g. USt-Erstattungen from the Finanzamt as Betriebseinnahme;
+§ 4 Abs. 3 EStG) but is skipped for the USt annual return and UStVA.
+
+A source with no ``euer=`` files a USt-Nullmeldung (zero at 19%).
+
 Multiple sources
 ################
 

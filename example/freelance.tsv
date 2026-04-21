@@ -7,4 +7,5 @@ amount	rate	date	id	description
 -200	19	2025-08-01	CR-001	Refund / credit note
 3000	19	2025-10-18	INV-006	Project beta delivery
 -400	19	2025-11-30	EXP-001	Conference travel
+204.37	-1	2025-08-13	UST-ERSTATT-2023	FA USt-Erstattung 2023 (rate=-1: EUER-only, not steuerbar)
 -150	19	2025-12-05	EXP-002	Office supplies

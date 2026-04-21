@@ -495,7 +495,8 @@ proc ust(
   let tsvPath = resolveEuerPath(vikingConf, src)
   var agg: UstAggregation
   if tsvPath == "":
-    err &"Warning: source [{src.name}] has no euer= set; submitting zeros"
+    err &"Warning: source [{src.name}] has no euer= set; filing Nullmeldung"
+    agg.has19 = true
   elif not fileExists(tsvPath):
     err &"Error: invoice TSV not found: {tsvPath}"
     return 1
@@ -503,6 +504,8 @@ proc ust(
     let (a, ok) = loadAndAggregateForUst(tsvPath)
     if not ok: return 1
     agg = a
+    if not (agg.has19 or agg.has7 or agg.has0) and agg.vorsteuer == 0:
+      agg.has19 = true
 
   let (techOk, cfg) = loadTechConfig(dataDir, test)
   if not techOk: return 1
