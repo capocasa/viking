@@ -20,7 +20,7 @@
 import std/[strutils, strformat, options, os, tables]
 import cligen
 import viking/[config, ericffi, ottoffi, ustva_xml, euer_xml, est_xml, ust_xml, ericsetup, invoices, abholung_xml, nachricht_xml, bankverbindung_xml]
-import viking/[vikingconf, deductions, kap, log, abholung, codes]
+import viking/[vikingconf, deductions, kap, log, abholung, codes, ericerror]
 
 const NimblePkgVersion {.strdefine.} = "dev"
 
@@ -118,7 +118,15 @@ proc resolveSigningAuth(vc: VikingConf): tuple[ok: bool, certPath, certPin: stri
   (true, certPath, pin)
 
 proc handleEricError(rc: int, response, serverResponse: string, ericLogPath: string) =
-  err &"Error: ERiC code {rc}: {ericHoleFehlerText(rc)}"
+  let parsed = parseFehlerRegelpruefung(response) & parseServerRueckgabeErrors(serverResponse)
+  if parsed.len > 0:
+    for e in parsed:
+      if e.code.len > 0:
+        err &"{e.text} ({e.code})"
+      else:
+        err e.text
+  else:
+    err &"Error: ERiC code {rc}: {ericHoleFehlerText(rc)}"
   case rc
   of 610301202:
     err "Hint: The HerstellerID is blocked."
