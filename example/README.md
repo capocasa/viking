@@ -1,7 +1,7 @@
 # Viking example
 
 A complete viking project that exercises every config feature: multi-source
-income, alphanumeric aliases, spouse, kids, KAP, deductions, and the `[auth]`
+income, alphanumeric aliases, spouse, kids, KAP, abzuege, and the `[auth]`
 wiring. Wired up against the public ELSTER sandbox so you can dry-run or
 even submit (with `--test`) end-to-end.
 
@@ -18,7 +18,7 @@ paths; the year flag (`--year`) only picks the ERiC schema.
 | `viking.pin.sh`       | Alternative: a script that prints the PIN to stdout        |
 | `freelance.tsv`       | TSV wired up via `[freiberuf].euer=`                       |
 | `gewerbe.tsv`         | TSV wired up via `[gewerbe].euer=`                         |
-| `deductions.tsv`      | All deduction code groups (vor / sa / agb / per-kid)       |
+| `abzuege.tsv`         | All abzuege code groups (vor / sa / agb / per-kid)         |
 
 ## Setup
 
@@ -63,7 +63,7 @@ viking ust     gewerbe   --test --dry-run            # vorauszahlungen=100
 
 # ESt aggregates every source: Anlage S (freiberuf) + Anlage G (gewerbe)
 # + Anlage KAP (ibkr inline values) + Anlage Kind for max & lisa.
-# personal.deductions = deductions.tsv is picked up automatically.
+# personal.abzuege = abzuege.tsv is picked up automatically.
 viking est --test --dry-run
 ```
 

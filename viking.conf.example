@@ -14,7 +14,7 @@ iban         = DE89370400440532013000
 religion     = keine          ; keine, rk, ev, altkath, ev_ref, ... or numeric
 beruf        = Software-Entwickler
 ; krankenkasse = privat       ; privat (default) or gesetzlich
-; deductions = deductions.tsv ; ESt deductions TSV (optional)
+; abzuege    = abzuege.tsv    ; ESt Abzüge TSV (optional)
 
 ; Income sources. Reserved names: freiberuf (Anlage S), gewerbe
 ; (Einzelgewerbe). Otherwise rechtsform is inferred from a legal-form
@@ -43,9 +43,14 @@ vorauszahlungen = 0
 ; guenstigerpruefung  = 1
 ; pauschbetrag        = 1000
 
-; Kids. Marker: `verhaeltnis`. Section name = full name (last word =
-; Nachname). First word of given names (lowercased) is the deduction-
-; code prefix, e.g. lena174.
+; Kids. Marker: `verhaeltnis`. Section name parsing:
+;   1 word         Vorname only; Nachname implicitly the taxpayer's.
+;   2 words        Vorname Nachname. Nachname = taxpayer's → optional
+;                  Nachname field left empty; differs → emitted.
+;   3+ words       Vorname middle(s) Nachname (hyphenated stays one
+;                  word). To keep a middle name you must spell out
+;                  the Nachname even when it matches the taxpayer's.
+; First given word (lowercased) is the abzuege-code prefix (e.g. lena174).
 ; [Lena Maier]
 ; geburtsdatum        = 15.03.2019
 ; idnr                = 02293417683

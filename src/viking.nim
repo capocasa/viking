@@ -11,7 +11,7 @@
 ## * `list`     — list documents in the ELSTER Postfach
 ## * `download` — fetch documents from the Postfach
 ## * `fetch`    — download/install the ERiC runtime
-## * `init`     — seed `viking.conf` and `deductions.tsv` skeletons
+## * `init`     — seed `viking.conf` and `abzuege.tsv` skeletons
 ##
 ## Configuration lives in `viking.conf`; signing in `[auth]`. See
 ## `vikingconf <vikingconf.html>`_ for the data model and `docs.rst`
@@ -171,10 +171,11 @@ template initBuffersAndCert(certPath, certPin: string, dryRun: bool, outputPdf: 
     flags = flags or ERIC_DRUCKE
     druckParam.version = 4
     druckParam.vorschau = if dryRun: 1 else: 0
-    druckParam.ersteSeite = 1
     druckParam.duplexDruck = 0
     druckParam.pdfName = outputPdf.cstring
     druckParam.fussText = nil
+    druckParam.pdfCallback = nil
+    druckParam.pdfCallbackBenutzerdaten = nil
     druckParamPtr = addr druckParam
   var cryptParam: EricVerschluesselungsParameterT
   var cryptParamPtr {.inject.}: ptr EricVerschluesselungsParameterT = nil
@@ -421,10 +422,10 @@ proc est(
     try:
       ded = loadDeductions(dedPath, vikingConf.kidFirstnames)
     except ValueError as e:
-      err &"Error parsing deductions: {e.msg}"
+      err &"Error parsing abzuege: {e.msg}"
       return 1
   elif not force:
-    err "Warning: no deductions set. Either add `deductions = …` to the taxpayer section of viking.conf, or use --force to suppress."
+    err "Warning: no abzuege set. Either add `abzuege = …` to the taxpayer section of viking.conf, or use --force to suppress."
 
   let (techOk, cfg) = loadTechConfig(dataDir, test)
   if not techOk: return 1
@@ -912,7 +913,7 @@ iban         = ""
 religion     = keine
 beruf        = ""
 krankenkasse = privat
-deductions   = deductions.tsv  ; TSV with vor/sa/agb/per-kid codes for ESt (optional)
+abzuege      = abzuege.tsv     ; TSV with vor/sa/agb/per-kid codes for ESt (optional)
 
 ; Spouse (optional, for Zusammenveranlagung). Any later person-named
 ; section with an `idnr` is the co-filing spouse. Section name = full name.
@@ -958,7 +959,7 @@ deductions   = deductions.tsv  ; TSV with vor/sa/agb/per-kid codes for ESt (opti
 
 ; Kids. Marker: verhaeltnis (leiblich | pflege | enkel).
 ; Section name = full name. The firstname's first word (lowercased) is
-; the deduction-code prefix, e.g. alice174.
+; the abzuege-code prefix, e.g. alice174.
 ; [Alice Maier]
 ; geburtsdatum        = ""
 ; idnr                = ""
@@ -1008,10 +1009,10 @@ proc initFiles(
   global: bool = false,
   force: bool = false,
 ): int =
-  ## Create skeleton viking.conf and deductions.tsv
+  ## Create skeleton viking.conf and abzuege.tsv
   ##
   ## With --global, seeds ~/.config/viking/viking.conf.
-  ## Otherwise writes viking.conf, deductions.tsv, example.tsv to dir.
+  ## Otherwise writes viking.conf, abzuege.tsv, example.tsv to dir.
 
   if global:
     let gpath = globalConfPath()
@@ -1026,7 +1027,7 @@ proc initFiles(
     return 0
 
   let confPath = dir / "viking.conf"
-  let deductionsPath = dir / "deductions.tsv"
+  let deductionsPath = dir / "abzuege.tsv"
   let euerPath = dir / "example.tsv"
 
   if not dirExists(dir):
@@ -1113,7 +1114,7 @@ when isMainModule:
         "conf": "viking.conf file (optional; default search chain)",
         "dry-run": "Validate via ERiC; don't actually send",
         "verbose": "Show full server response XML",
-        "force": "Suppress warnings (e.g. no deductions)",
+        "force": "Suppress warnings (e.g. no abzuege)",
         "output-pdf": "Write PDF of submitted forms to file",
         "data-dir": dataDirHelp,
         "test": " ",

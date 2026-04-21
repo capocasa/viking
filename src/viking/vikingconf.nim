@@ -40,7 +40,7 @@
 ##
 ## Relative paths in all these resolve against the conf's own directory.
 
-import std/[parsecfg, streams, strutils, os, osproc, tables]
+import std/[parsecfg, streams, strutils, strformat, os, osproc, sets, tables]
 import viking/codes
 
 type
@@ -165,7 +165,7 @@ proc applyPersonal(p: var Personal, key, val: string) =
   of "religion":                        p.religion = religionMap.resolve(val)
   of "beruf", "profession":             p.profession = val
   of "krankenkasse", "kv_art", "kvart": p.kvArt = val
-  of "deductions":                      p.deductions = val
+  of "abzuege":                         p.deductions = val
   of "year", "jahr":
     try: p.year = parseInt(val.strip)
     except ValueError: discard
@@ -358,8 +358,79 @@ proc applySourceSection(conf: var VikingConf, sec: RawSection, kind: SourceKind,
       conf.sources[idx].rechtsform = defaultRechtsform
     for k, v in sec.keys: applySource(conf.sources[idx], k, v)
 
-proc applySection(conf: var VikingConf, sec: RawSection) =
-  case classify(sec, conf)
+const personalKeys = toHashSet([
+  "year", "jahr",
+  "geburtsdatum", "birthdate",
+  "idnr",
+  "steuernr", "steuernummer", "taxnumber",
+  "strasse", "street",
+  "nr", "hausnummer", "housenumber",
+  "plz", "zip",
+  "ort", "city",
+  "iban",
+  "religion",
+  "beruf", "profession",
+  "krankenkasse", "kv_art", "kvart",
+  "abzuege",
+])
+
+const spouseKeys = toHashSet([
+  "geburtsdatum", "birthdate",
+  "idnr",
+  "steuernr", "steuernummer", "taxnumber",
+  "strasse", "street",
+  "nr", "hausnummer", "housenumber",
+  "plz", "zip",
+  "ort", "city",
+  "religion",
+  "beruf", "profession",
+  "krankenkasse", "kv_art", "kvart",
+])
+
+const kidKeys = toHashSet([
+  "geburtsdatum", "birthdate",
+  "idnr",
+  "verhaeltnis", "kindschaftsverhaeltnis",
+  "personb-verhaeltnis", "personbverhaeltnis",
+  "kindschaftsverhaeltnis_b", "kindschaftsverhaeltnisb",
+  "personb-name", "personbname", "parent_b_name", "parentbname",
+  "familienkasse",
+  "kindergeld",
+])
+
+const authKeys = toHashSet(["cert", "pin", "pincmd"])
+
+const sourceKeys = toHashSet([
+  "steuernr", "steuernummer", "taxnumber",
+  "rechtsform",
+  "versteuerung", "besteuerungsart",
+  "owner",
+  "euer",
+  "vorauszahlungen",
+  "gains", "tax", "soli", "kirchensteuer",
+  "pauschbetrag", "sparer_pauschbetrag", "sparerpauschbetrag",
+  "guenstigerpruefung",
+])
+
+func knownKeys(kind: SectionKind): HashSet[string] =
+  case kind
+  of sPersonal:                 personalKeys
+  of sSpouse:                   spouseKeys
+  of sKid:                      kidKeys
+  of sAuth:                     authKeys
+  of sFreelance, sGewerbe,
+     sKap, sCompany:            sourceKeys
+
+proc applySection(conf: var VikingConf, sec: RawSection,
+                  malformedKeys: HashSet[string],
+                  errors: var seq[string]) =
+  let kind = classify(sec, conf)
+  let known = knownKeys(kind)
+  for k in sec.keys.keys:
+    if k in malformedKeys: continue  # already reported as malformed line
+    if k notin known:
+      errors.add(&"[{sec.rawName}]: unknown key `{k}`")
+  case kind
   of sAuth:
     for k, v in sec.keys: applyAuth(conf.auth, k, v)
   of sPersonal:
@@ -379,18 +450,45 @@ proc applySection(conf: var VikingConf, sec: RawSection) =
     let code = if rf != "": rf else: "120"
     applySourceSection(conf, sec, skGewerbe, sec.rawName, code)
 
+proc findMalformedLines(path: string):
+    tuple[errors: seq[string], keys: HashSet[string]] =
+  ## Flag lines that aren't blank, comment, section header, or `key = value`.
+  ## parsecfg silently accepts bare words as empty-value keys; catch them here
+  ## and return the set of "would-be" keys so downstream unknown-key reporting
+  ## can skip them.
+  var lineno = 0
+  for rawLine in lines(path):
+    inc lineno
+    let s = rawLine.strip
+    if s.len == 0: continue
+    if s[0] == ';' or s[0] == '#': continue
+    if s[0] == '[': continue
+    if '=' notin s:
+      result.errors.add(&"{path}:{lineno}: not a key=value pair: {s}")
+      result.keys.incl(s.toLowerAscii)
+
+proc raiseIfErrors(errors: seq[string]) =
+  if errors.len > 0:
+    raise newException(ValueError, errors.join("\n"))
+
 proc loadSingleFile(path: string): VikingConf =
   result.personal = defaultPersonal()
   result.confDir = path.parentDir
   result.confBase = path.extractFilename.changeFileExt("")
+  let (malformed, malformedKeys) = findMalformedLines(path)
+  var errors = malformed
   for sec in readSections(path):
-    applySection(result, sec)
+    applySection(result, sec, malformedKeys, errors)
+  raiseIfErrors(errors)
 
 proc mergeFile(conf: var VikingConf, path: string) =
   conf.confDir = path.parentDir
   conf.confBase = path.extractFilename.changeFileExt("")
+  let (malformed, malformedKeys) = findMalformedLines(path)
+  var errors = malformed
   for sec in readSections(path):
-    applySection(conf, sec)
+    applySection(conf, sec, malformedKeys, errors)
+  raiseIfErrors(errors)
 
 proc globalConfPath*(): string =
   ## XDG-aware path of the global conf

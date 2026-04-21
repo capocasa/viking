@@ -15,6 +15,14 @@
 
 ## TODO
 
+- [ ] Full double-entry bookkeeping per source, parallel to EÜR. Today
+  an EÜR source is marked by `euer = <tsv>` (income/cost TSV). When we
+  add double-entry (bilanzierung), use a different key on the source
+  section (e.g. `konten = <path>` or `buchungen = <path>`) so the key
+  doubles as the accounting-method marker: presence of `euer=` →
+  Einnahmen-Überschuss-Rechnung; presence of the double-entry key →
+  full Bilanz. Validators enforce exactly one per source. Changes the
+  EÜR vs Bilanz dispatch in `est`/`euer`/`ust` accordingly.
 - [ ] ESt Veranlagungsart wiring. Viking still emits no `<ESt1A>
   <Allg><B>` for the spouse and no `<Vlg_Art>`, so ERiC treats every
   return as Einzelveranlagung regardless of `[spouse]`. As a result
@@ -32,15 +40,73 @@
 
 ## Done
 
+- [x] CLI and conf simplification pass. Goal: one canonical path
+  per piece of data; no redundant CLI surface.
+  * `submit` renamed to `ustva` (it was already only a UStVA).
+  * Dropped `--amount19` / `--amount7` / `--amount0` / `-i/--invoice-file`
+    on `ustva`. Amounts come from the source's `euer=` TSV.
+  * Dropped `-y/--year` everywhere. Added required `year = YYYY` to
+    the taxpayer section in viking.conf. Validators reject confs
+    without it. Users copy the conf dir per tax year.
+  * Dropped `$year` substitution in `euer=` paths — plain relative
+    paths only (e.g. `euer = freelance.tsv`). Example TSVs renamed
+    to `freelance.tsv` / `gewerbe.tsv`.
+  * Dropped the old print-XML-and-exit `--dry-run`. Renamed
+    `--validate-only` to `--dry-run` with short `-d` (and dropped
+    the old `-n`). The merged mode validates via ERiC and echoes
+    the XML. Applies to every submission subcommand.
+  * Added short `-D` for `--data-dir` on every subcommand.
+  * Dropped `--deductions` / `-D` CLI flag. Only `personal.deductions`
+    in viking.conf.
+  * Every example, README, docs.rst, init template, and test updated
+    to the new shape. 178 e2e + 54 example tests green. Tests that
+    exercise structural assertions now tolerate ERiC plausi failures
+    (`610001002`) alongside the existing HerstellerID-blocked
+    (`610301202`) tolerance — both are expected with demo data.
+
+- [x] `[auth]` + `[personal].deductions` interface cleanup. `pin=`
+  now accepts either a path to a plaintext PIN file or the PIN text
+  itself (inline — fine for the public sandbox PIN, noted as not-
+  recommended for checked-in real confs; dispatched by `fileExists` on
+  the resolved path). `pincmd=` is now a plain shell command executed
+  with `confDir` as cwd — no more `.pin.sh`/`.ps1`/`.cmd`/`.bat`/`.exe`
+  extension dispatch; any one-liner works (`pass show elster/pin`,
+  `./viking.pin.sh`, `cat viking.pin`, `security find-generic-
+  password -s elster -w`, …). `source.euer=` relaxed from required
+  to optional — unset sources submit zeros and warn on
+  submit/euer/ust/est. `personal.deductions=` added as the new
+  first-class home for the ESt deductions TSV; `--deductions` CLI
+  flag retained as an ad-hoc override. Code + example/viking.conf +
+  example/README + docs.rst + README + init template + all tests
+  updated; 325 e2e + 54 example tests green. Resolver API: old
+  `resolvePinPath`/`readPin` pair collapsed into `resolvePin` which
+  returns the PIN directly.
+
+- [x] Explicit external-file wiring. Auth and EÜR TSVs no longer
+  auto-discover by filename convention. `[auth]` now requires `cert=`
+  and exactly one of `pin=` (plaintext PIN file path) or `pincmd=`
+  (executable that prints the PIN on stdout) — the `<confBase>.pfx` /
+  `<confBase>.pin*` scans are gone. Each EÜR source declares its TSV
+  via `euer=` (income + costs; name chosen so it can double as an
+  accounting-method marker once full double-entry lands). `$year` is
+  substituted in the value at lookup time (chosen over `{year}` because
+  Nim's `parsecfg` treats `{...}` specially). Validation surfaces the
+  missing key with a clear message; runtime resolvers raise with the
+  same wording when called directly. README, docs.rst, example/,
+  init template and all tests updated.
+
 - [x] Nicer conf interface (German, name-inferred). `viking.conf` is now
   driven by section-name and key markers — no more `income = …` field.
   First section is the taxpayer, named by full name (`[Hans Maier]`;
   last word = Nachname, rest = Vornamen, handles middle names).
   Reserved section names shrunk to three: `[auth]`, `[freiberuf]`
   (Anlage S), `[gewerbe]` (Einzelgewerbe). Classification rules:
-  `ehepartner = ja` → spouse (section name = full name — `[spouse]`
-  reserved name dropped); `verhaeltnis` → kid (full name);
-  `guenstigerpruefung` or `pauschbetrag` → Anlage KAP; section name
+  later person-named section carrying `idnr` → spouse (section name =
+  full name — `[spouse]` reserved name dropped; `ehepartner = ja`
+  marker eliminated in 0.1.2 since an IdNr is only issued to natural
+  persons and can't collide with companies); `verhaeltnis` → kid
+  (full name); `guenstigerpruefung` or `pauschbetrag` → Anlage KAP;
+  section name
   ends with a legal-form suffix (GmbH/UG/AG/KG/OHG/GbR/PartG/eK/eG/
   KGaA/SE, plus "GmbH & Co. KG" / "AG & Co. KG" / "GmbH & Co. OHG" /
   "AG & Co. OHG") → Anlage G with that Rechtsform; otherwise

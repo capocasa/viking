@@ -73,7 +73,7 @@ nr         = 1
 plz        = 10115
 ort        = Berlin
 iban       = DE89370400440532013000
-deductions = deductions.tsv   ; optional: ESt deductions TSV
+abzuege    = abzuege.tsv      ; optional: ESt Abzüge TSV
 
 [Greta Maier]            ; later person-named section + idnr → spouse
 idnr         = 04452397688
@@ -101,7 +101,7 @@ cert = viking.pfx
 pin  = viking.pin        ; or inline, or `pincmd = pass show elster/pin`
 ```
 
-Rules: `[auth]`, `[freiberuf]` and `[gewerbe]` are the only reserved section names; `verhaeltnis` flags a kid, `guenstigerpruefung`/`pauschbetrag` Anlage KAP. The first person-named section is you (required: `year = YYYY`); any later person-named section with an `idnr` is your co-filing spouse (Zusammenveranlagung). A trailing legal-form in the section name (GmbH, UG, KG, OHG, GbR, PartG, eK, eG, KGaA, SE, "GmbH & Co. KG", …) picks the Rechtsform; otherwise it's an Einzelgewerbe. Company sections are accepted today but only EÜR is wired — full double-entry bookkeeping (Bilanz / E-Bilanz) is future work. External files are wired explicitly: EÜR sources declare their income/cost TSV via `euer=` (optional — zeros + warning if unset); the taxpayer declares the ESt `deductions=` TSV; `[auth]` points at the `.pfx` (`cert=`) and either a PIN source (`pin=` file or inline) or a shell command (`pincmd=`). No filesystem scanning, no year interpolation, nothing implicit — copy the conf dir per year for clean data. See `viking init` for a full template and `docs.rst` for the slow tour.
+Rules: `[auth]`, `[freiberuf]` and `[gewerbe]` are the only reserved section names; `verhaeltnis` flags a kid, `guenstigerpruefung`/`pauschbetrag` Anlage KAP. The first person-named section is you (required: `year = YYYY`); any later person-named section with an `idnr` is your co-filing spouse (Zusammenveranlagung). A trailing legal-form in the section name (GmbH, UG, KG, OHG, GbR, PartG, eK, eG, KGaA, SE, "GmbH & Co. KG", …) picks the Rechtsform; otherwise it's an Einzelgewerbe. Company sections are accepted today but only EÜR is wired — full double-entry bookkeeping (Bilanz / E-Bilanz) is future work. External files are wired explicitly: EÜR sources declare their income/cost TSV via `euer=` (optional — zeros + warning if unset); the taxpayer declares the ESt `abzuege=` TSV; `[auth]` points at the `.pfx` (`cert=`) and either a PIN source (`pin=` file or inline) or a shell command (`pincmd=`). No filesystem scanning, no year interpolation, nothing implicit — copy the conf dir per year for clean data. See `viking init` for a full template and `docs.rst` for the slow tour.
 
 The conf is loaded from:
 

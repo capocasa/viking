@@ -36,7 +36,7 @@ The configuration model was reworked. Highlights:
 - German-word aliases for every numeric ELSTER code you used to look up:
   `freiberuf` instead of `3`, `einzel` instead of `120`, `q1` instead of
   `41`, `rk` instead of `03`. Numerics still work.
-- Explicit external-file wiring: the cert, PIN source, deductions
+- Explicit external-file wiring: the cert, PIN source, abzuege
   TSV, and every invoice TSV are declared in the conf. No filesystem
   scanning, no basename-derived defaults — you always see which file
   feeds which return. Wire `pass`, Keychain or libsecret with a
@@ -59,7 +59,7 @@ Build the binary, fetch the ERiC runtime, and seed an empty conf.
 
     nimble build
     ./viking fetch              # downloads ERiC, ~50 MB once
-    ./viking init               # writes viking.conf + deductions.tsv
+    ./viking init               # writes viking.conf + abzuege.tsv
 
 Point the `[auth]` section at your ELSTER signing cert (`cert=`) and
 a PIN source (`pin=` for a plaintext PIN file, or `pincmd=` for a
@@ -234,9 +234,29 @@ natural persons, so there's no ambiguity with companies:
     religion     = ev
     beruf        = Lehrerin
 
-Add one section per kid. The section name is the full name; the
+Add one section per kid. The section name is the kid's name; the
 first given word (lowercased) becomes the prefix for that kid's
-deduction codes. Marker: `verhaeltnis`.
+abzuege codes. Marker: `verhaeltnis`.
+
+Name parsing (whitespace-split, hyphenated names like ``Ann-Kathrin``
+or ``Rosenmüller-Huber`` stay one word):
+
+* **1 word** — just the given name (``[Louise]``). The Nachname
+  is implicitly the taxpayer's; the optional Nachname field
+  (E0500108) is left empty.
+* **2 words** — ``Vorname Nachname``. If the Nachname matches the
+  taxpayer's it's accepted but E0500108 is still omitted; if it
+  differs, E0500108 is emitted with the kid's Nachname.
+* **3+ words** — first word is the Vorname, middle words are
+  additional given names (joined with spaces into E0500107, same
+  as the taxpayer's Vornamen), last word is the Nachname. Same
+  rule for E0500108.
+
+To give a kid a middle name, the Nachname **must** be written out
+explicitly, even when it matches the taxpayer's — otherwise the
+last word would be parsed as the Nachname. ``[Louise Ann Capocasa]``
+sets firstname ``Louise Ann``; ``[Louise Ann]`` sets firstname
+``Louise`` and Nachname ``Ann``.
 
 .. code-block:: ini
 
@@ -263,7 +283,7 @@ to the other parent (can differ from ``verhaeltnis`` for stepchild /
 foster cases). ``familienkasse`` is the office name (usually a city
 like ``Berlin`` or ``Regensburg``).
 
-Then in `deductions.tsv`, prefix the per-kid codes with the firstname:
+Then in `abzuege.tsv`, prefix the per-kid codes with the firstname:
 
 .. code-block:: text
 
@@ -279,11 +299,11 @@ automatically:
 
     [Hans Maier]
     ...
-    deductions = deductions.tsv
+    abzuege = abzuege.tsv
 
 Leaving the key unset prints a warning on ``viking est``; use
 ``--force`` to silence it when you know there really are no
-deductions to claim.
+abzuege to claim.
 
 `viking est` emits one `<Kind>` block per kid section.
 
@@ -387,7 +407,7 @@ explicit `[auth]` pointing at `viking.pfx` + `viking.pin`:
     religion     = rk
     beruf        = Software-Entwickler
     krankenkasse = privat
-    deductions   = deductions.tsv
+    abzuege      = abzuege.tsv
 
     [Greta Maier]
     geburtsdatum = 12.07.1956
@@ -432,7 +452,7 @@ explicit `[auth]` pointing at `viking.pfx` + `viking.pin`:
     cert = viking.pfx
     pin  = viking.pin
 
-This is `example/viking.conf` in the repo, with TSVs and a deductions
+This is `example/viking.conf` in the repo, with TSVs and an abzuege
 file alongside it. Copy the directory and you have a working sandbox
 project.
 

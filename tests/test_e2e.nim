@@ -516,22 +516,22 @@ check("est no sources no G/S", not nsOut.contains("<G>") and not nsOut.contains(
 removeFile(estNoSrc)
 echo ""
 
-echo "--- est: deductions from conf ---"
-let dedTsv = testDir / "tmp_deductions.tsv"
+echo "--- est: abzuege from conf ---"
+let dedTsv = testDir / "tmp_abzuege.tsv"
 writeFile(dedTsv, "code\tamount\nsa131\t500\n")
 let estDedConf = testDir / "tmp_est_ded.conf"
 writeConf(estDedConf, personalBlock().replace("beruf        = Software-Entwickler",
-  "beruf        = Software-Entwickler\ndeductions   = " & dedTsv) & """
+  "beruf        = Software-Entwickler\nabzuege      = " & dedTsv) & """
 [mybiz]
 versteuerung = 2
 euer = mybiz.tsv
 """)
 writeFile(estTsv, "100,19\n")
 let (dedOut, dedRc) = runIn(testDir, "est -c " & estDedConf & " --dry-run -v")
-check("est deductions from conf exits 0", dedRc == 0, dedOut)
-check("est deductions loaded (Spenden)", dedOut.contains("<E0108105>500</E0108105>"))
+check("est abzuege from conf exits 0", dedRc == 0, dedOut)
+check("est abzuege loaded (Spenden)", dedOut.contains("<E0108105>500</E0108105>"))
 
-echo "--- est: missing deductions warns, --force suppresses ---"
+echo "--- est: missing abzuege warns, --force suppresses ---"
 let estNoDedConf = testDir / "tmp_est_noded.conf"
 writeConf(estNoDedConf, personalBlock() & """
 [mybiz]
@@ -539,7 +539,7 @@ versteuerung = 2
 euer = mybiz.tsv
 """)
 let (noDedOut, _) = runIn(testDir, "est -c " & estNoDedConf & " --dry-run -v")
-check("missing deductions warns", noDedOut.contains("Warning") and noDedOut.contains("deductions"))
+check("missing abzuege warns", noDedOut.contains("Warning") and noDedOut.contains("abzuege"))
 let (forceOut, forceRc) = runIn(testDir, "est -c " & estNoDedConf & " --dry-run -v --force")
 check("--force ok", forceRc == 0, forceOut)
 check("--force suppresses warning", not forceOut.contains("Warning"))
@@ -572,7 +572,7 @@ echo ""
 echo "--- est Anlage Kind ---"
 let estKindConf = testDir / "tmp_est_kind.conf"
 writeConf(estKindConf, personalBlock().replace("beruf        = Software-Entwickler",
-  "beruf        = Software-Entwickler\ndeductions   = " & (testDir / "tmp_kind_ded.tsv")) & """
+  "beruf        = Software-Entwickler\nabzuege      = " & (testDir / "tmp_kind_ded.tsv")) & """
 [mybiz]
 versteuerung = 2
 euer = mybiz.tsv
@@ -625,6 +625,33 @@ check("est K_Verh_and_P has E0501903", andPOut.contains("<E0501903>01.01-31.12</
 check("est K_Verh_and_P has E0501106", andPOut.contains("<E0501106>1</E0501106>"))
 check("est Kind familienkasse", andPOut.contains("<E0500706>Berlin</E0500706>"))
 removeFile(estAndPConf)
+echo ""
+
+echo "--- --output-pdf renders PDFs across subcommands ---"
+let pdfConf = testDir / "tmp_pdf.conf"
+writeConf(pdfConf, personalBlock() & """
+[freelance]
+versteuerung = 2
+euer = freelance.tsv
+""")
+writeFile(testDir / "freelance.tsv", "1000,19\n-300,19\n")
+for (cmd, args) in [
+    ("ustva", "ustva freelance --test -c " & pdfConf & " --period 41"),
+    ("euer", "euer freelance --test -c " & pdfConf),
+    ("est", "est --test -c " & pdfConf & " --force"),
+    ("ust", "ust freelance --test -c " & pdfConf)]:
+  let pdfPath = testDir / ("tmp_" & cmd & ".pdf")
+  removeFile(pdfPath)
+  let (pOut, pRc) = runIn(testDir, args & " --dry-run --output-pdf=" & pdfPath)
+  check(cmd & " --output-pdf exits 0", pRc == 0, pOut)
+  check(cmd & " --output-pdf writes PDF",
+        fileExists(pdfPath) and getFileSize(pdfPath) > 0)
+  if fileExists(pdfPath):
+    let head = readFile(pdfPath)[0 ..< min(4, getFileSize(pdfPath).int)]
+    check(cmd & " --output-pdf is a PDF", head == "%PDF")
+  removeFile(pdfPath)
+removeFile(testDir / "freelance.tsv")
+removeFile(pdfConf)
 echo ""
 
 echo "--- est per-year plugin validation ---"
@@ -815,15 +842,15 @@ createDir(initDir)
 let (initOut, initRc) = run(Viking & " init --dir " & initDir)
 check("init creates files", initRc == 0, initOut)
 check("init creates viking.conf", fileExists(initDir / "viking.conf"))
-check("init creates deductions.tsv", fileExists(initDir / "deductions.tsv"))
+check("init creates abzuege.tsv", fileExists(initDir / "abzuege.tsv"))
 
 let confContent = readFile(initDir / "viking.conf")
 check("init has taxpayer section", confContent.contains("[Vorname Nachname]"))
 check("init has year", confContent.contains("year"))
 check("init has geburtsdatum", confContent.contains("geburtsdatum"))
 
-let dedContent = readFile(initDir / "deductions.tsv")
-check("init deductions has header", dedContent.contains("code\tamount\tdescription"))
+let dedContent = readFile(initDir / "abzuege.tsv")
+check("init abzuege has header", dedContent.contains("code\tamount\tdescription"))
 
 let (skipOut, skipRc) = run(Viking & " init --dir " & initDir)
 check("init skips existing", skipRc == 0)
@@ -864,6 +891,33 @@ let (nyOut, nyRc) = runIn(testDir, "est -c " & noYearConf & " --dry-run -v --for
 check("missing year rejected", nyRc != 0)
 check("missing year error", nyOut.contains("year"))
 removeFile(noYearConf)
+echo ""
+
+echo "--- conf validation: unknown keys and malformed lines ---"
+let unkConf = testDir / "tmp_unknown.conf"
+writeConf(unkConf, personalBlock() & "typokey = oops\n" & """
+[freiberuf]
+versteuerung = 2
+unknownfield  = bad
+euer = freiberuf.tsv
+""")
+let (unkOut, unkRc) = runIn(testDir, "ustva -c " & unkConf & " --period 41 --dry-run -v")
+check("unknown key rejected", unkRc != 0)
+check("unknown key mentions typokey", unkOut.contains("typokey"))
+check("unknown key mentions unknownfield", unkOut.contains("unknownfield"))
+removeFile(unkConf)
+
+let malConf = testDir / "tmp_malformed.conf"
+writeConf(malConf, personalBlock() & "this line has no equals sign\n" & """
+[freiberuf]
+versteuerung = 2
+euer = freiberuf.tsv
+""")
+let (malOut, malRc) = runIn(testDir, "ustva -c " & malConf & " --period 41 --dry-run -v")
+check("malformed line rejected", malRc != 0)
+check("malformed line cites filepath:lineno", malOut.contains(":13:"))
+check("malformed line shown", malOut.contains("this line has no equals"))
+removeFile(malConf)
 echo ""
 
 # Cleanup isolation

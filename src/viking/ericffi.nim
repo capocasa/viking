@@ -16,13 +16,19 @@ type
     zertifikatHandle*: EricZertifikatHandle
     pin*: cstring
 
+  EricPdfCallback* = proc (
+    fileNumber: uint32, pdfData: pointer, pdfSize: uint32,
+    userData: pointer
+  ): cint {.cdecl.}
+
   EricDruckParameterT* {.bycopy.} = object
     version*: uint32           # Must be 4
     vorschau*: uint32          # 0 = no preview, 1 = preview
-    ersteSeite*: uint32        # First page number
-    duplexDruck*: uint32       # 0 = simplex, 1 = duplex
-    pdfName*: cstring          # Output PDF path or nil
+    duplexDruck*: uint32       # 0 = simplex, 1 = duplex with binding margin
+    pdfName*: cstring          # Output PDF path (required if pdfCallback nil)
     fussText*: cstring         # Footer text or nil
+    pdfCallback*: EricPdfCallback  # nil → write to file
+    pdfCallbackBenutzerdaten*: pointer
 
 var
   ericLibHandle: pointer = nil

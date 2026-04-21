@@ -197,16 +197,20 @@ proc generateEst*(input: EstInput): string =
   for kid in input.conf.kids:
     var kindParts = ""
 
-    # Basic child info
+    # Basic child info. E0500108 (Nachname) is optional — only emit when
+    # the kid's explicit last name differs from the taxpayer's. A 1-word
+    # section header ("[Louise]") leaves kid.lastname empty and implies
+    # the taxpayer's surname, so the field stays out. For 2+ words, last
+    # word is the surname; same-as-taxpayer is allowed but not emitted.
     var allgParts = ""
     if kid.idnr != "":
       allgParts.add(&"""
               <E0500406>{kid.idnr}</E0500406>""")
     allgParts.add(&"""
               <E0500107>{kid.firstname}</E0500107>""")
-    if p.lastname != "":
+    if kid.lastname != "" and kid.lastname != p.lastname:
       allgParts.add(&"""
-              <E0500108>{p.lastname}</E0500108>""")
+              <E0500108>{kid.lastname}</E0500108>""")
     allgParts.add(&"""
               <E0500701>{kid.birthdate}</E0500701>""")
     if kid.familienkasse != "":
