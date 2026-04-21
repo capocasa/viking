@@ -74,7 +74,10 @@ proc writeConf(path, body: string) =
   writeFile(path, body & authBlock())
 
 proc runIn(dir, args: string): tuple[output: string, code: int] =
-  run("cd " & dir & " && " & projectRoot / Viking & " " & args)
+  # execCmdEx's workingDir is cross-platform; avoids "cd X && cmd" which
+  # mis-parses on Windows cmd.exe when paths have drive letters.
+  let (output, code) = execCmdEx(projectRoot / Viking & " " & args, workingDir = dir)
+  (output.strip, code)
 
 # --- Prerequisites ---
 echo "--- Prerequisites ---"

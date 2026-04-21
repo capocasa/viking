@@ -64,6 +64,13 @@ jobs:
       - name: Fetch ERiC
         run: ./viking fetch
 
+      - name: Download ELSTER test certificate
+        shell: bash
+        run: |
+          mkdir -p "$VIKING_DATA_DIR/certificates"
+          curl -sSL -o "$RUNNER_TEMP/Test_Zertifikate.zip" https://download.elster.de/download/schnittstellen/Test_Zertifikate.zip
+          unzip -o -d "$VIKING_DATA_DIR/certificates" "$RUNNER_TEMP/Test_Zertifikate.zip"
+
       - name: Run tests
         run: nimble test
 

@@ -74,7 +74,10 @@ let authBlock = "\n[auth]\ncert = " & testCertPath &
 writeFile(confPath, baseConf & authBlock)
 
 proc inEx(args: string): tuple[output: string, code: int] =
-  run("cd " & tmp & " && " & projectRoot / Viking & " " & args)
+  # execCmdEx's workingDir is cross-platform; avoids "cd X && cmd" which
+  # mis-parses on Windows cmd.exe when paths have drive letters.
+  let (output, code) = execCmdEx(projectRoot / Viking & " " & args, workingDir = tmp)
+  (output.strip, code)
 
 # -----------------------------------------------------------------
 # Conf parses
