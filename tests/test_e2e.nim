@@ -627,6 +627,52 @@ check("est Kind familienkasse", andPOut.contains("<E0500706>Berlin</E0500706>"))
 removeFile(estAndPConf)
 echo ""
 
+echo "--- est Anlage Kind date ranges ---"
+# Mix of: born in tax year (auto-start from birthdate), aging out mid-year
+# (verhaeltnis_bis), and an independent wohnsitz override.
+let estDatesConf = testDir / "tmp_est_dates.conf"
+writeConf(estDatesConf, personalBlock() & """
+[mybiz]
+versteuerung = 2
+euer = mybiz.tsv
+
+[Baby Maier]
+geburtsdatum       = 10.04.2025
+idnr               = 11111111111
+verhaeltnis        = leiblich
+personb-verhaeltnis= leiblich
+personb-name       = Greta Maier
+
+[Anna Maier]
+geburtsdatum       = 01.06.2000
+idnr               = 22222222222
+verhaeltnis        = leiblich
+personb-verhaeltnis= leiblich
+personb-name       = Greta Maier
+verhaeltnis_bis    = 30.06
+
+[Tim Maier]
+geburtsdatum       = 15.03.2000
+idnr               = 33333333333
+verhaeltnis        = leiblich
+personb-verhaeltnis= leiblich
+personb-name       = Greta Maier
+wohnsitz_bis       = 31.08
+""")
+let (datesOut, datesRc) = runIn(testDir, "est -c " & estDatesConf & " --dry-run -v --force")
+check("est date ranges ok", structuralOk(datesOut, datesRc), datesOut)
+# Baby: born 10.04.2025 → kvh + wohnsitz auto-start on 10.04
+check("Baby auto-start K_Verh_A", datesOut.contains("<E0500601>10.04-31.12</E0500601>"))
+check("Baby auto-start Wohnsitz", datesOut.contains("<E0500703>10.04-31.12</E0500703>"))
+# Anna: aged out 30.06 → kvh ends 30.06, wohnsitz follows by default
+check("Anna verhaeltnis_bis", datesOut.contains("<E0500601>01.01-30.06</E0500601>"))
+check("Anna wohnsitz follows kvh", datesOut.contains("<E0500703>01.01-30.06</E0500703>"))
+# Tim: wohnsitz overridden independently (moved out 31.08); kvh stays full year
+check("Tim kvh default", datesOut.contains("<E0500601>01.01-31.12</E0500601>"))
+check("Tim wohnsitz override", datesOut.contains("<E0500703>01.01-31.08</E0500703>"))
+removeFile(estDatesConf)
+echo ""
+
 echo "--- --output-pdf renders PDFs across subcommands ---"
 let pdfConf = testDir / "tmp_pdf.conf"
 writeConf(pdfConf, personalBlock() & """

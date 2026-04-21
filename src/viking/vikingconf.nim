@@ -71,6 +71,14 @@ type
                                      ## (E0501103 in K_Verh_and_P/Ang_Pers)
     familienkasse*: string           ## Anlage Kind line 6/7, E0500706
     kindergeld*: float
+    verhaeltnisVon*: string          ## Kindschaftsverhältnis start (DD.MM).
+                                     ## Default: DD.MM of birthdate if birth
+                                     ## year == tax year, else 01.01.
+    verhaeltnisBis*: string          ## Kindschaftsverhältnis end (DD.MM);
+                                     ## default 31.12.
+    wohnsitzVon*, wohnsitzBis*: string
+                                     ## Wohnsitz im Inland (DD.MM); default
+                                     ## follows verhaeltnisVon/verhaeltnisBis.
 
   SourceKind* = enum
     skGewerbe    ## Anlage G (Gewerbebetrieb)
@@ -115,6 +123,18 @@ func defaultPersonal(): Personal =
 func parseBool(val: string): bool =
   let v = val.strip.toLowerAscii
   v == "1" or v == "true" or v == "yes"
+
+func normalizeDayMonth*(val: string): string =
+  ## Accept DD.MM, DD.MM., or DD.MM.YYYY; return zero-padded DD.MM.
+  ## Malformed input passes through untouched so ERiC surfaces the error.
+  let parts = val.strip.split('.')
+  if parts.len < 2: return val.strip
+  let d = parts[0].strip
+  let m = parts[1].strip
+  if d.len == 0 or m.len == 0: return val.strip
+  let dd = if d.len == 1: "0" & d else: d
+  let mm = if m.len == 1: "0" & m else: m
+  dd & "." & mm
 
 func parseFullName(name: string): tuple[firstname, lastname: string] =
   ## "Hans Maier" → ("Hans", "Maier"). "Hans Peter Maier" → ("Hans Peter", "Maier").
@@ -201,6 +221,10 @@ proc applyKid(k: var Kid, key, val: string) =
   of "kindergeld":
     try: k.kindergeld = parseFloat(val)
     except ValueError: discard
+  of "verhaeltnis_von", "verhaeltnisvon": k.verhaeltnisVon = normalizeDayMonth(val)
+  of "verhaeltnis_bis", "verhaeltnisbis": k.verhaeltnisBis = normalizeDayMonth(val)
+  of "wohnsitz_von", "wohnsitzvon":       k.wohnsitzVon = normalizeDayMonth(val)
+  of "wohnsitz_bis", "wohnsitzbis":       k.wohnsitzBis = normalizeDayMonth(val)
   else: discard
 
 proc applyAuth(a: var Auth, key, val: string) =
@@ -396,6 +420,10 @@ const kidKeys = toHashSet([
   "personb-name", "personbname", "parent_b_name", "parentbname",
   "familienkasse",
   "kindergeld",
+  "verhaeltnis_von", "verhaeltnisvon",
+  "verhaeltnis_bis", "verhaeltnisbis",
+  "wohnsitz_von", "wohnsitzvon",
+  "wohnsitz_bis", "wohnsitzbis",
 ])
 
 const authKeys = toHashSet(["cert", "pin", "pincmd"])

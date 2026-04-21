@@ -197,6 +197,30 @@ proc generateEst*(input: EstInput): string =
   for kid in input.conf.kids:
     var kindParts = ""
 
+    # Date ranges for Kindschaftsverhältnis and Wohnsitz im Inland.
+    # Kindschaftsverhältnis start defaults to DD.MM of birthdate when
+    # the child was born in the tax year, else 01.01. End defaults to
+    # 31.12. Wohnsitz defaults to the resolved Kindschaftsverhältnis
+    # range (aging-out / adoption-out / death typically ends household
+    # residence too). Each of the four edges is independently overridable
+    # via verhaeltnis_von/_bis and wohnsitz_von/_bis.
+    let kvhVon = block:
+      if kid.verhaeltnisVon != "": kid.verhaeltnisVon
+      else:
+        let parts = kid.birthdate.split('.')
+        if parts.len == 3 and parts[2].strip == $input.year:
+          let d = parts[0].strip
+          let m = parts[1].strip
+          let dd = if d.len == 1: "0" & d else: d
+          let mm = if m.len == 1: "0" & m else: m
+          dd & "." & mm
+        else: "01.01"
+    let kvhBis = if kid.verhaeltnisBis != "": kid.verhaeltnisBis else: "31.12"
+    let wohnVon = if kid.wohnsitzVon != "": kid.wohnsitzVon else: kvhVon
+    let wohnBis = if kid.wohnsitzBis != "": kid.wohnsitzBis else: kvhBis
+    let kvhRange = kvhVon & "-" & kvhBis
+    let wohnRange = wohnVon & "-" & wohnBis
+
     # Basic child info. E0500108 (Nachname) is optional — only emit when
     # the kid's explicit last name differs from the taxpayer's. A 1-word
     # section header ("[Louise]") leaves kid.lastname empty and implies
@@ -223,7 +247,7 @@ proc generateEst*(input: EstInput): string =
             </Allg>
             <WS>
               <Inl>
-                <E0500703>01.01-31.12</E0500703>
+                <E0500703>{wohnRange}</E0500703>
               </Inl>
             </WS>
           </Ang_Kind>""")
@@ -242,13 +266,13 @@ proc generateEst*(input: EstInput): string =
     var kVerhParts = &"""
             <K_Verh_A>
               <E0500807>{kvhA}</E0500807>
-              <E0500601>01.01-31.12</E0500601>
+              <E0500601>{kvhRange}</E0500601>
             </K_Verh_A>"""
     if input.conf.spouse.present and kid.kindschaftsverhaeltnisB != "":
       kVerhParts.add(&"""
             <K_Verh_B>
               <E0500808>{kid.kindschaftsverhaeltnisB}</E0500808>
-              <E0500805>01.01-31.12</E0500805>
+              <E0500805>{kvhRange}</E0500805>
             </K_Verh_B>""")
     elif not input.conf.spouse.present and kid.parentBName != "":
       # E0501106 enum: only "1" (leiblich/Adoptiv) or "2" (Pflege).
@@ -260,7 +284,7 @@ proc generateEst*(input: EstInput): string =
             <K_Verh_and_P>
               <Ang_Pers>
                 <E0501103>{kid.parentBName}</E0501103>
-                <E0501903>01.01-31.12</E0501903>
+                <E0501903>{kvhRange}</E0501903>
                 <E0501106>{kvhB}</E0501106>
               </Ang_Pers>
             </K_Verh_and_P>""")

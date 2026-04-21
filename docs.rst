@@ -276,6 +276,17 @@ sets firstname ``Louise Ann``; ``[Louise Ann]`` sets firstname
     familienkasse        = Berlin
     kindergeld           = 2400
 
+The Kindschaftsverhältnis period defaults to ``01.01-31.12``. When the
+birth year matches the tax year the start shifts to the birth date
+automatically (a baby born ``15.03.2025`` in tax year 2025 emits
+``15.03-31.12``). Four optional keys override any edge:
+``verhaeltnis_von`` / ``verhaeltnis_bis`` for the Kindschaftsverhältnis
+itself (end date handles aging out, adoption-out, death), and
+``wohnsitz_von`` / ``wohnsitz_bis`` for the Wohnsitz-im-Inland period
+(defaults to the Kindschaftsverhältnis range — override only when they
+diverge, e.g. a disabled adult child still in the household). Values
+are ``DD.MM``; a trailing ``.YYYY`` is tolerated.
+
 ``personb-verhaeltnis`` and ``familienkasse`` are optional but ERiC's
 Anlage Kind plausibility checks ask for them — set them if you want a
 clean validation. ``personb-verhaeltnis`` is the Kindschaftsverhältnis

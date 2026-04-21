@@ -155,7 +155,11 @@ check("est dry-run ok", structuralOk(e, eRc), e)
 check("Anlage G (gewerbe)", e.contains("<G>"))
 check("Anlage S (freiberuf)", e.contains("<S>"))
 check("Anlage KAP (ibkr)", e.contains("<KAP>"))
-check("two Anlage Kind", e.count("<Kind>") == 2)
+check("three Anlage Kind", e.count("<Kind>") == 3)
+check("Luna kvh auto-starts on birthdate",
+      e.contains("<E0500601>15.03-31.12</E0500601>"))
+check("Luna wohnsitz follows kvh",
+      e.contains("<E0500703>15.03-31.12</E0500703>"))
 check("KAP guenstigerpruefung", e.contains("<E1900401>1</E1900401>"))
 check("religion rk -> 03", e.contains("<E0100402>03</E0100402>"))
 check("Sonderausgaben Spenden", e.contains("<E0108105>"))
