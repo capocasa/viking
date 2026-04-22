@@ -138,7 +138,7 @@ func generateEuer*(input: EuerInput): string =
             <AbsStr>{i.strasse}</AbsStr>
             <AbsPlz>{i.plz}</AbsPlz>
             <AbsOrt>{i.ort}</AbsOrt>
-            <Copyright>(C) {ProduktName}</Copyright>
+            <Copyright>{Copyright}</Copyright>
             <OrdNrArt>S</OrdNrArt>
             <Rueckuebermittlung>
               <Bescheid>2</Bescheid>

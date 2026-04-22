@@ -429,7 +429,7 @@ func generateEst*(input: EstInput): string =
             <AbsStr>{p.street} {p.housenumber}</AbsStr>
             <AbsPlz>{p.zip}</AbsPlz>
             <AbsOrt>{p.city}</AbsOrt>
-            <Copyright>(C) {ProduktName}</Copyright>
+            <Copyright>{Copyright}</Copyright>
             <OrdNrArt>S</OrdNrArt>
             <Rueckuebermittlung>
               <Bescheid>2</Bescheid>

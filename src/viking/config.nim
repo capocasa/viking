@@ -12,6 +12,16 @@ import ericsetup
 const HerstellerId* = "40036"
 const ProduktName* = "Viking"
 
+const
+  StartYear = "2025"
+  CurrentYear = CompileDate[0 .. 3]
+  Copyright* =
+    if CurrentYear == StartYear: "(C) " & StartYear & " viking contributors"
+    else: "(C) " & StartYear & "-" & CurrentYear & " viking contributors"
+    ## Rendered into the ELSTER `<Copyright>` field (which ERiC drops into
+    ## the PDF footer). End year floats with the build date. ASCII only —
+    ## ELSTER rejects `©` and non-ASCII dashes with `ZeichenNichtImZeichensatz`.
+
 func roundCents*(val: float): float =
   ## Round to 2 decimal places (cents)
   round(val * 100) / 100
