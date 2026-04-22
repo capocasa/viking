@@ -124,6 +124,13 @@ func parseBool(val: string): bool =
   let v = val.strip.toLowerAscii
   v == "1" or v == "true" or v == "yes"
 
+proc setFloat(dst: var float, val: string) =
+  ## Parse `val` as float into `dst`. Silently ignores malformed input —
+  ## config-key validation catches typos earlier, so a bad number just
+  ## keeps the zero default.
+  try: dst = parseFloat(val)
+  except ValueError: discard
+
 func normalizeDayMonth*(val: string): string =
   ## Accept DD.MM, DD.MM., or DD.MM.YYYY; return zero-padded DD.MM.
   ## Malformed input passes through untouched so ERiC surfaces the error.
@@ -218,9 +225,7 @@ proc applyKid(k: var Kid, key, val: string) =
   of "personb-name", "personbname", "parent_b_name", "parentbname":
     k.parentBName = val
   of "familienkasse": k.familienkasse = val
-  of "kindergeld":
-    try: k.kindergeld = parseFloat(val)
-    except ValueError: discard
+  of "kindergeld": setFloat(k.kindergeld, val)
   of "verhaeltnis_von", "verhaeltnisvon": k.verhaeltnisVon = normalizeDayMonth(val)
   of "verhaeltnis_bis", "verhaeltnisbis": k.verhaeltnisBis = normalizeDayMonth(val)
   of "wohnsitz_von", "wohnsitzvon":       k.wohnsitzVon = normalizeDayMonth(val)
@@ -242,26 +247,14 @@ proc applySource(s: var Source, key, val: string) =
     s.besteuerungsart = besteuerungsartMap.resolve(val)
   of "owner": s.owner = val.toLowerAscii
   of "euer": s.euer = val
-  of "vorauszahlungen":
-    try: s.vorauszahlungen = parseFloat(val)
-    except ValueError: discard
-  of "gains":
-    try: s.gains = parseFloat(val)
-    except ValueError: discard
-  of "tax":
-    try: s.tax = parseFloat(val)
-    except ValueError: discard
-  of "soli":
-    try: s.soli = parseFloat(val)
-    except ValueError: discard
-  of "kirchensteuer":
-    try: s.kirchensteuer = parseFloat(val)
-    except ValueError: discard
-  of "pauschbetrag", "sparer_pauschbetrag", "sparerpauschbetrag":
-    try: s.sparerPauschbetrag = parseFloat(val)
-    except ValueError: discard
-  of "guenstigerpruefung":
-    s.guenstigerpruefung = parseBool(val)
+  of "vorauszahlungen":                                   setFloat(s.vorauszahlungen, val)
+  of "gains":                                             setFloat(s.gains, val)
+  of "tax":                                               setFloat(s.tax, val)
+  of "soli":                                              setFloat(s.soli, val)
+  of "kirchensteuer":                                     setFloat(s.kirchensteuer, val)
+  of "pauschbetrag", "sparer_pauschbetrag",
+     "sparerpauschbetrag":                                setFloat(s.sparerPauschbetrag, val)
+  of "guenstigerpruefung":                                s.guenstigerpruefung = parseBool(val)
   else: discard
 
 type

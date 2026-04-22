@@ -15,7 +15,7 @@
 
 import std/[xmltree, xmlparser]
 
-proc findAllDeep*(node: XmlNode, tag: string): seq[XmlNode] =
+func findAllDeep*(node: XmlNode, tag: string): seq[XmlNode] =
   if node.kind != xnElement: return
   if node.tag == tag: result.add(node)
   for child in node:

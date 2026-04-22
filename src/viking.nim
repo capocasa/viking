@@ -17,105 +17,90 @@
 ## `vikingconf <vikingconf.html>`_ for the data model and `docs.rst`
 ## for the user guide.
 
-import std/[strutils, strformat, options, os, tables]
+import std/[strutils, strformat, options, os, sequtils, tables]
 import cligen
 import viking/[config, ericffi, ottoffi, ustva_xml, euer_xml, est_xml, ust_xml, ericsetup, invoices, abholung_xml, nachricht_xml, bankverbindung_xml]
 import viking/[vikingconf, deductions, kap, log, abholung, codes, ericerror]
 
 const NimblePkgVersion {.strdefine.} = "dev"
 
-proc loadConf(conf: string, validate: proc(conf: VikingConf): seq[string]): tuple[ok: bool, conf: VikingConf] =
-  var vikingConf: VikingConf
+const
+  ExitOk = 0
+  ExitUsage = 2     ## bad or missing CLI arguments
+  ExitConfig = 3    ## viking.conf / TSV load or validation failed
+  ExitNotFound = 4  ## a file referenced from the conf/CLI doesn't exist
+  ExitApi = 5       ## ERiC / Otto call failed (load, init, submit, …)
+
+type ConfigError = object of CatchableError
+  ## Raised by the config-loading helpers below. Caught once per command;
+  ## `msg` is the ready-to-print user-facing text.
+
+proc loadConf(conf: string, validate: proc(conf: VikingConf): seq[string]): VikingConf =
   try:
-    vikingConf = loadVikingConf(conf)
+    result = loadVikingConf(conf)
   except IOError as e:
-    err &"Error: {e.msg}"
-    return (false, vikingConf)
+    raise newException(ConfigError, "Error: " & e.msg)
   except ValueError as e:
-    err &"Error parsing viking.conf: {e.msg}"
-    return (false, vikingConf)
-  let errors = validate(vikingConf)
+    raise newException(ConfigError, "Error parsing viking.conf: " & e.msg)
+  let errors = validate(result)
   if errors.len > 0:
-    err "Configuration errors:"
-    for e in errors:
-      err &"  - {e}"
-    return (false, vikingConf)
-  return (true, vikingConf)
+    raise newException(ConfigError, "Configuration errors:\n  - " & errors.join("\n  - "))
 
 proc loadConfForSource(conf: string, srcName: string,
                        kinds: set[SourceKind],
                        validate: proc(conf: VikingConf, src: Source): seq[string]):
-                       tuple[ok: bool, conf: VikingConf, src: Source] =
+                       tuple[conf: VikingConf, src: Source] =
   var vc: VikingConf
-  var src: Source
   try:
     vc = loadVikingConf(conf)
   except IOError as e:
-    err &"Error: {e.msg}"
-    return (false, vc, src)
+    raise newException(ConfigError, "Error: " & e.msg)
   except ValueError as e:
-    err &"Error parsing viking.conf: {e.msg}"
-    return (false, vc, src)
+    raise newException(ConfigError, "Error parsing viking.conf: " & e.msg)
 
   let candidates = vc.sourcesOfKind(kinds)
   if candidates.len == 0:
-    err &"Error: no matching source defined in viking.conf"
-    return (false, vc, src)
+    raise newException(ConfigError, "Error: no matching source defined in viking.conf")
 
-  var chosen = -1
-  if srcName == "":
-    if candidates.len == 1:
-      for i, s in vc.sources:
-        if s.name == candidates[0].name:
-          chosen = i
-          break
+  let chosenName =
+    if srcName != "":
+      srcName
+    elif candidates.len == 1:
+      candidates[0].name
     else:
-      var names: seq[string]
-      for s in candidates: names.add(s.name)
-      err &"Error: multiple sources defined, specify one: " & names.join(", ")
-      return (false, vc, src)
-  else:
-    chosen = vc.findSource(srcName)
-    if chosen < 0:
-      err &"Error: source '{srcName}' not found in viking.conf"
-      return (false, vc, src)
-    if vc.sources[chosen].kind notin kinds:
-      err &"Error: source '{srcName}' is not a matching kind for this command"
-      return (false, vc, src)
+      raise newException(ConfigError,
+        "Error: multiple sources defined, specify one: " &
+        candidates.mapIt(it.name).join(", "))
 
-  src = vc.sources[chosen]
-  let errors = validate(vc, src)
+  let chosen = vc.findSource(chosenName)
+  if chosen < 0:
+    raise newException(ConfigError, &"Error: source '{chosenName}' not found in viking.conf")
+  if vc.sources[chosen].kind notin kinds:
+    raise newException(ConfigError, &"Error: source '{chosenName}' is not a matching kind for this command")
+
+  let errors = validate(vc, vc.sources[chosen])
   if errors.len > 0:
-    err "Configuration errors:"
-    for e in errors:
-      err &"  - {e}"
-    return (false, vc, src)
-  return (true, vc, src)
+    raise newException(ConfigError, "Configuration errors:\n  - " & errors.join("\n  - "))
+  (vc, vc.sources[chosen])
 
-proc loadTechConfig(dataDir: string, test: bool): tuple[ok: bool, cfg: Config] =
+proc loadTechConfig(dataDir: string, test: bool): Config =
   ## Derive ERiC paths from the data dir and carry the --test flag.
-  let cfg = loadConfig(dataDir, test)
-  let errors = cfg.validate()
+  result = loadConfig(dataDir, test)
+  let errors = result.validate()
   if errors.len > 0:
-    err "Configuration error:"
-    for e in errors:
-      err &"  - {e}"
-    return (false, cfg)
-  return (true, cfg)
+    raise newException(ConfigError, "Configuration error:\n  - " & errors.join("\n  - "))
 
-proc resolveSigningAuth(vc: VikingConf): tuple[ok: bool, certPath, certPin: string] =
-  ## Resolve cert path + pin for actual signing. Returns (false, ...) on error.
-  let certPath = vc.resolveCertPath()
-  if not fileExists(certPath):
-    err &"Error: cert not found: {certPath} (check [auth].cert in viking.conf)"
-    return (false, "", "")
-  var pin: string
+proc resolveSigningAuth(vc: VikingConf): tuple[certPath, certPin: string] =
+  ## Resolve cert path + pin for actual signing.
   try:
-    pin = vc.resolvePin()
+    let certPath = vc.resolveCertPath()
+    if not fileExists(certPath):
+      raise newException(ConfigError,
+        &"Error: cert not found: {certPath} (check [auth].cert in viking.conf)")
+    (certPath, vc.resolvePin())
+  except ConfigError: raise
   except CatchableError as e:
-    err &"Error: {e.msg}"
-    return (false, "", "")
-  (true, certPath, pin)
+    raise newException(ConfigError, "Error: " & e.msg)
 
 func stripFeldXPath(s: string): string =
   ## ELSTER error texts often start with "Feld '$/Elster[1]/.../x[1]$': ".
@@ -162,14 +147,14 @@ proc handleEricError(rc: int, response, serverResponse: string, ericLogPath: str
 template initEric(cfg: Config, xml: string) =
   if not loadEricLib(cfg.ericLibPath):
     err &"Error: Failed to load ERiC library from {cfg.ericLibPath}"
-    return 1
+    return ExitApi
   defer: unloadEricLib()
   createDir(cfg.ericLogPath)
   block:
     let ericInitRc {.inject.} = ericInitialisiere(cfg.ericPluginPath, cfg.ericLogPath)
     if ericInitRc != 0:
       err &"Error: ERiC initialization failed with code {ericInitRc}: {ericHoleFehlerText(ericInitRc)}"
-      return 1
+      return ExitApi
   defer: discard ericBeende()
   log xml
 
@@ -178,7 +163,7 @@ template initBuffersAndCert(certPath, certPin: string, dryRun: bool, outputPdf: 
   let serverBuf {.inject.} = ericRueckgabepufferErzeugen()
   if responseBuf == nil or serverBuf == nil:
     err "Error: Failed to create return buffers"
-    return 1
+    return ExitApi
   defer:
     discard ericRueckgabepufferFreigabe(responseBuf)
     discard ericRueckgabepufferFreigabe(serverBuf)
@@ -205,7 +190,7 @@ template initBuffersAndCert(certPath, certPin: string, dryRun: bool, outputPdf: 
       let (ericCertRc {.inject.}, ericCertHandle {.inject.}) = ericGetHandleToCertificate(certPath)
       if ericCertRc != 0:
         err &"Error: Failed to open certificate: {ericHoleFehlerText(ericCertRc)}"
-        return 1
+        return ExitApi
       certHandle = ericCertHandle
     cryptParam.version = 3
     cryptParam.zertifikatHandle = certHandle
@@ -225,7 +210,7 @@ template submitAndCheck(xml: string, datenartVersion: string) =
     if serverResponse.len > 0: log serverResponse
   else:
     handleEricError(rc, response, serverResponse, cfg.ericLogPath)
-    return 1
+    return ExitApi
 
 proc ustva(
   source: string = "",
@@ -245,74 +230,72 @@ proc ustva(
 
   if period == "":
     err "Error: --period is required; " & periodMap.listing
-    return 1
-  var normalizedPeriod: string
+    return ExitUsage
+  let normalizedPeriod =
+    try: periodMap.resolve(period)
+    except ValueError:
+      err &"Error: Invalid period '{period}'; " & periodMap.listing
+      return ExitUsage
+
   try:
-    normalizedPeriod = periodMap.resolve(period)
-  except ValueError:
-    err &"Error: Invalid period '{period}'; " & periodMap.listing
-    return 1
+    let (vikingConf, src) = loadConfForSource(conf, source,
+      {skGewerbe, skFreelance}, validateForUstva)
 
-  let (confOk, vikingConf, src) = loadConfForSource(conf, source,
-    {skGewerbe, skFreelance}, validateForUstva)
-  if not confOk: return 1
+    let year = vikingConf.personal.year
+    log.verbose = verbose
+    initLog(year)
+    defer: closeLog()
 
-  let year = vikingConf.personal.year
-  log.verbose = verbose
-  initLog(year)
-  defer: closeLog()
-
-  var amount19, amount7, amount0: Option[float]
-  let tsvPath = resolveEuerPath(vikingConf, src)
-  if tsvPath == "":
-    err &"Warning: source [{src.name}] has no euer= set; submitting zeros"
-    amount19 = some(0.0)
-  elif not fileExists(tsvPath):
-    err &"Error: invoice TSV not found: {tsvPath}"
-    return 1
-  else:
-    let (agg, _, ok) = loadAndAggregateInvoices(tsvPath, year, normalizedPeriod)
-    if not ok: return 1
-    amount19 = agg.amount19
-    amount7 = agg.amount7
-    amount0 = agg.amount0
-    if amount19.isNone and amount7.isNone and amount0.isNone:
+    var amount19, amount7, amount0: Option[float]
+    let tsvPath = resolveEuerPath(vikingConf, src)
+    if tsvPath == "":
+      err &"Warning: source [{src.name}] has no euer= set; submitting zeros"
       amount19 = some(0.0)
+    elif not fileExists(tsvPath):
+      err &"Error: invoice TSV not found: {tsvPath}"
+      return ExitNotFound
+    else:
+      let (agg, ok) = loadAndAggregateInvoices(tsvPath, year, normalizedPeriod)
+      if not ok: return ExitConfig
+      amount19 = agg.amount19
+      amount7 = agg.amount7
+      amount0 = agg.amount0
+      if amount19.isNone and amount7.isNone and amount0.isNone:
+        amount19 = some(0.0)
 
-  let (techOk, cfg) = loadTechConfig(dataDir, test)
-  if not techOk: return 1
+    let cfg = loadTechConfig(dataDir, test)
 
-  let p = vikingConf.personal
-  let fullName = p.firstname & " " & p.lastname
-  let fullStreet = p.street & " " & p.housenumber
-  let stnr = vikingConf.effectiveTaxnumber(src)
+    let p = vikingConf.personal
+    let fullName = p.firstname & " " & p.lastname
+    let fullStreet = p.street & " " & p.housenumber
+    let stnr = vikingConf.effectiveTaxnumber(src)
 
-  let xml = generateUstva(
-    steuernummer = stnr,
-    jahr = year,
-    zeitraum = normalizedPeriod,
-    kz81 = amount19,
-    kz86 = amount7,
-    kz45 = amount0,
-    name = fullName,
-    strasse = fullStreet,
-    plz = p.zip,
-    ort = p.city,
-    test = cfg.test,
-    produktVersion = NimblePkgVersion,
-  )
+    let xml = generateUstva(
+      steuernummer = stnr,
+      jahr = year,
+      zeitraum = normalizedPeriod,
+      kz81 = amount19,
+      kz86 = amount7,
+      kz45 = amount0,
+      name = fullName,
+      strasse = fullStreet,
+      plz = p.zip,
+      ort = p.city,
+      test = cfg.test,
+      produktVersion = NimblePkgVersion,
+    )
 
-  var certPath, certPin: string
-  if not dryRun:
-    let (authOk, cp, pn) = resolveSigningAuth(vikingConf)
-    if not authOk: return 1
-    certPath = cp; certPin = pn
+    var certPath, certPin: string
+    if not dryRun:
+      (certPath, certPin) = resolveSigningAuth(vikingConf)
 
-  initEric(cfg, xml)
-  initBuffersAndCert(certPath, certPin, dryRun, outputPdf)
-
-  submitAndCheck(xml, &"UStVA_{year}")
-  return 0
+    initEric(cfg, xml)
+    initBuffersAndCert(certPath, certPin, dryRun, outputPdf)
+    submitAndCheck(xml, &"UStVA_{year}")
+    ExitOk
+  except ConfigError as e:
+    err e.msg
+    ExitConfig
 
 proc euer(
   source: string = "",
@@ -329,58 +312,57 @@ proc euer(
   ## exactly one EÜR source is defined. Loads the source's `euer=` TSV.
   ## Positive = income, negative = expenses. Tax year from `personal.year`.
 
-  let (confOk, vikingConf, src) = loadConfForSource(conf, source,
-    {skGewerbe, skFreelance}, validateForEuer)
-  if not confOk: return 1
+  try:
+    let (vikingConf, src) = loadConfForSource(conf, source,
+      {skGewerbe, skFreelance}, validateForEuer)
 
-  let year = vikingConf.personal.year
-  log.verbose = verbose
-  initLog(year)
-  defer: closeLog()
+    let year = vikingConf.personal.year
+    log.verbose = verbose
+    initLog(year)
+    defer: closeLog()
 
-  let tsvPath = resolveEuerPath(vikingConf, src)
-  var agg: EuerAggregation
-  if tsvPath == "":
-    err &"Warning: source [{src.name}] has no euer= set; submitting zeros"
-  elif not fileExists(tsvPath):
-    err &"Error: invoice TSV not found: {tsvPath}"
-    return 1
-  else:
-    let (a, ok) = loadAndAggregateForEuer(tsvPath)
-    if not ok: return 1
-    agg = a
+    let tsvPath = resolveEuerPath(vikingConf, src)
+    var agg: EuerAggregation
+    if tsvPath == "":
+      err &"Warning: source [{src.name}] has no euer= set; submitting zeros"
+    elif not fileExists(tsvPath):
+      err &"Error: invoice TSV not found: {tsvPath}"
+      return ExitNotFound
+    else:
+      let (a, ok) = loadAndAggregateForEuer(tsvPath)
+      if not ok: return ExitConfig
+      agg = a
 
-  let (techOk, cfg) = loadTechConfig(dataDir, test)
-  if not techOk: return 1
+    let cfg = loadTechConfig(dataDir, test)
 
-  let p = vikingConf.personal
-  let fullName = p.firstname & " " & p.lastname
-  let fullStreet = p.street & " " & p.housenumber
-  let einkunftsart = case src.kind
-    of skGewerbe: "2"
-    of skFreelance: "3"
-    else: "3"
+    let p = vikingConf.personal
+    let fullName = p.firstname & " " & p.lastname
+    let fullStreet = p.street & " " & p.housenumber
+    let einkunftsart = case src.kind
+      of skGewerbe: "2"
+      of skFreelance: "3"
+      else: "3"
 
-  let xml = generateEuer(EuerInput(
-    steuernummer: vikingConf.effectiveTaxnumber(src), jahr: year,
-    incomeNet: agg.incomeNet, incomeVat: agg.incomeVat,
-    expenseNet: agg.expenseNet, expenseVorsteuer: agg.expenseVorsteuer,
-    rechtsform: src.rechtsform, einkunftsart: einkunftsart,
-    name: fullName, strasse: fullStreet, plz: p.zip, ort: p.city,
-    test: cfg.test, produktVersion: NimblePkgVersion,
-  ))
+    let xml = generateEuer(EuerInput(
+      steuernummer: vikingConf.effectiveTaxnumber(src), jahr: year,
+      incomeNet: agg.incomeNet, incomeVat: agg.incomeVat,
+      expenseNet: agg.expenseNet, expenseVorsteuer: agg.expenseVorsteuer,
+      rechtsform: src.rechtsform, einkunftsart: einkunftsart,
+      name: fullName, strasse: fullStreet, plz: p.zip, ort: p.city,
+      test: cfg.test, produktVersion: NimblePkgVersion,
+    ))
 
-  var certPath, certPin: string
-  if not dryRun:
-    let (authOk, cp, pn) = resolveSigningAuth(vikingConf)
-    if not authOk: return 1
-    certPath = cp; certPin = pn
+    var certPath, certPin: string
+    if not dryRun:
+      (certPath, certPin) = resolveSigningAuth(vikingConf)
 
-  initEric(cfg, xml)
-  initBuffersAndCert(certPath, certPin, dryRun, outputPdf)
-
-  submitAndCheck(xml, &"EUER_{year}")
-  return 0
+    initEric(cfg, xml)
+    initBuffersAndCert(certPath, certPin, dryRun, outputPdf)
+    submitAndCheck(xml, &"EUER_{year}")
+    ExitOk
+  except ConfigError as e:
+    err e.msg
+    ExitConfig
 
 proc est(
   conf: string = "",
@@ -401,72 +383,71 @@ proc est(
   ## Deductions come from `personal.deductions`. Tax year from
   ## `personal.year`.
 
-  let (confOk, vikingConf) = loadConf(conf, validateForEst)
-  if not confOk: return 1
+  try:
+    let vikingConf = loadConf(conf, validateForEst)
 
-  let year = vikingConf.personal.year
-  log.verbose = verbose
-  initLog(year)
-  defer: closeLog()
+    let year = vikingConf.personal.year
+    log.verbose = verbose
+    initLog(year)
+    defer: closeLog()
 
-  var gewerbeProfits: seq[ProfitEntry] = @[]
-  var freelanceProfits: seq[ProfitEntry] = @[]
+    var gewerbeProfits: seq[ProfitEntry] = @[]
+    var freelanceProfits: seq[ProfitEntry] = @[]
 
-  for src in vikingConf.euerSources:
-    let tsvPath = resolveEuerPath(vikingConf, src)
-    var profit = 0.0
-    if tsvPath == "":
-      err &"Warning: source [{src.name}] has no euer= set; counting 0 profit"
-    elif not fileExists(tsvPath):
-      err &"Error: source [{src.name}] invoice TSV not found: {tsvPath}"
-      return 1
-    else:
-      let (agg, ok) = loadAndAggregateForEuer(tsvPath)
-      if not ok: return 1
-      profit = (agg.incomeNet + agg.incomeVat) - (agg.expenseNet + agg.expenseVorsteuer)
-    let entry = ProfitEntry(label: src.name, profit: profit)
-    case src.kind
-    of skGewerbe: gewerbeProfits.add(entry)
-    of skFreelance: freelanceProfits.add(entry)
-    else: discard
+    for src in vikingConf.euerSources:
+      let tsvPath = resolveEuerPath(vikingConf, src)
+      var profit = 0.0
+      if tsvPath == "":
+        err &"Warning: source [{src.name}] has no euer= set; counting 0 profit"
+      elif not fileExists(tsvPath):
+        err &"Error: source [{src.name}] invoice TSV not found: {tsvPath}"
+        return ExitNotFound
+      else:
+        let (agg, ok) = loadAndAggregateForEuer(tsvPath)
+        if not ok: return ExitConfig
+        profit = (agg.incomeNet + agg.incomeVat) - (agg.expenseNet + agg.expenseVorsteuer)
+      let entry = ProfitEntry(label: src.name, profit: profit)
+      case src.kind
+      of skGewerbe: gewerbeProfits.add(entry)
+      of skFreelance: freelanceProfits.add(entry)
+      else: discard
 
-  let kapTotals = aggregateKap(vikingConf.sources)
+    let kapTotals = aggregateKap(vikingConf.sources)
 
-  var ded: DeductionsByForm
-  let dedPath = resolveDeductionsPath(vikingConf)
-  if dedPath != "":
-    if not fileExists(dedPath):
-      err &"Error: Deductions file not found: {dedPath}"
-      return 1
-    try:
-      ded = loadDeductions(dedPath, vikingConf.kidFirstnames)
-    except ValueError as e:
-      err &"Error parsing abzuege: {e.msg}"
-      return 1
-  elif not force:
-    err "Warning: no abzuege set. Either add `abzuege = …` to the taxpayer section of viking.conf, or use --force to suppress."
+    var ded: DeductionsByForm
+    let dedPath = resolveDeductionsPath(vikingConf)
+    if dedPath != "":
+      if not fileExists(dedPath):
+        err &"Error: Deductions file not found: {dedPath}"
+        return ExitNotFound
+      try:
+        ded = loadDeductions(dedPath, vikingConf.kidFirstnames)
+      except ValueError as e:
+        err &"Error parsing abzuege: {e.msg}"
+        return ExitConfig
+    elif not force:
+      err "Warning: no abzuege set. Either add `abzuege = …` to the taxpayer section of viking.conf, or use --force to suppress."
 
-  let (techOk, cfg) = loadTechConfig(dataDir, test)
-  if not techOk: return 1
+    let cfg = loadTechConfig(dataDir, test)
 
-  let xml = generateEst(EstInput(
-    conf: vikingConf, year: year,
-    gewerbeProfits: gewerbeProfits, freelanceProfits: freelanceProfits,
-    kapTotals: kapTotals, deductions: ded,
-    test: cfg.test, produktVersion: NimblePkgVersion,
-  ))
+    let xml = generateEst(EstInput(
+      conf: vikingConf, year: year,
+      gewerbeProfits: gewerbeProfits, freelanceProfits: freelanceProfits,
+      kapTotals: kapTotals, deductions: ded,
+      test: cfg.test, produktVersion: NimblePkgVersion,
+    ))
 
-  var certPath, certPin: string
-  if not dryRun:
-    let (authOk, cp, pn) = resolveSigningAuth(vikingConf)
-    if not authOk: return 1
-    certPath = cp; certPin = pn
+    var certPath, certPin: string
+    if not dryRun:
+      (certPath, certPin) = resolveSigningAuth(vikingConf)
 
-  initEric(cfg, xml)
-  initBuffersAndCert(certPath, certPin, dryRun, outputPdf)
-
-  submitAndCheck(xml, &"ESt_{year}")
-  return 0
+    initEric(cfg, xml)
+    initBuffersAndCert(certPath, certPin, dryRun, outputPdf)
+    submitAndCheck(xml, &"ESt_{year}")
+    ExitOk
+  except ConfigError as e:
+    err e.msg
+    ExitConfig
 
 proc ust(
   source: string = "",
@@ -483,57 +464,56 @@ proc ust(
   ## exactly one EÜR source is defined. Loads the source's `euer=` TSV.
   ## Vorauszahlungen from source section. Tax year from `personal.year`.
 
-  let (confOk, vikingConf, src) = loadConfForSource(conf, source,
-    {skGewerbe, skFreelance}, validateForUst)
-  if not confOk: return 1
+  try:
+    let (vikingConf, src) = loadConfForSource(conf, source,
+      {skGewerbe, skFreelance}, validateForUst)
 
-  let year = vikingConf.personal.year
-  log.verbose = verbose
-  initLog(year)
-  defer: closeLog()
+    let year = vikingConf.personal.year
+    log.verbose = verbose
+    initLog(year)
+    defer: closeLog()
 
-  let tsvPath = resolveEuerPath(vikingConf, src)
-  var agg: UstAggregation
-  if tsvPath == "":
-    err &"Warning: source [{src.name}] has no euer= set; filing Nullmeldung"
-    agg.has19 = true
-  elif not fileExists(tsvPath):
-    err &"Error: invoice TSV not found: {tsvPath}"
-    return 1
-  else:
-    let (a, ok) = loadAndAggregateForUst(tsvPath)
-    if not ok: return 1
-    agg = a
-    if not (agg.has19 or agg.has7 or agg.has0) and agg.vorsteuer == 0:
+    let tsvPath = resolveEuerPath(vikingConf, src)
+    var agg: UstAggregation
+    if tsvPath == "":
+      err &"Warning: source [{src.name}] has no euer= set; filing Nullmeldung"
       agg.has19 = true
+    elif not fileExists(tsvPath):
+      err &"Error: invoice TSV not found: {tsvPath}"
+      return ExitNotFound
+    else:
+      let (a, ok) = loadAndAggregateForUst(tsvPath)
+      if not ok: return ExitConfig
+      agg = a
+      if not (agg.has19 or agg.has7 or agg.has0) and agg.vorsteuer == 0:
+        agg.has19 = true
 
-  let (techOk, cfg) = loadTechConfig(dataDir, test)
-  if not techOk: return 1
+    let cfg = loadTechConfig(dataDir, test)
 
-  let p = vikingConf.personal
-  let fullName = p.firstname & " " & p.lastname
-  let xml = generateUst(UstInput(
-    steuernummer: vikingConf.effectiveTaxnumber(src), jahr: year,
-    income19: agg.income19, income7: agg.income7, income0: agg.income0,
-    has19: agg.has19, has7: agg.has7, has0: agg.has0,
-    vorsteuer: agg.vorsteuer, vorauszahlungen: src.vorauszahlungen,
-    besteuerungsart: src.besteuerungsart,
-    name: fullName, strasse: p.street & " " & p.housenumber,
-    plz: p.zip, ort: p.city,
-    test: cfg.test, produktVersion: NimblePkgVersion,
-  ))
+    let p = vikingConf.personal
+    let fullName = p.firstname & " " & p.lastname
+    let xml = generateUst(UstInput(
+      steuernummer: vikingConf.effectiveTaxnumber(src), jahr: year,
+      income19: agg.income19, income7: agg.income7, income0: agg.income0,
+      has19: agg.has19, has7: agg.has7, has0: agg.has0,
+      vorsteuer: agg.vorsteuer, vorauszahlungen: src.vorauszahlungen,
+      besteuerungsart: src.besteuerungsart,
+      name: fullName, strasse: p.street & " " & p.housenumber,
+      plz: p.zip, ort: p.city,
+      test: cfg.test, produktVersion: NimblePkgVersion,
+    ))
 
-  var certPath, certPin: string
-  if not dryRun:
-    let (authOk, cp, pn) = resolveSigningAuth(vikingConf)
-    if not authOk: return 1
-    certPath = cp; certPin = pn
+    var certPath, certPin: string
+    if not dryRun:
+      (certPath, certPin) = resolveSigningAuth(vikingConf)
 
-  initEric(cfg, xml)
-  initBuffersAndCert(certPath, certPin, dryRun, outputPdf)
-
-  submitAndCheck(xml, &"USt_{year}")
-  return 0
+    initEric(cfg, xml)
+    initBuffersAndCert(certPath, certPin, dryRun, outputPdf)
+    submitAndCheck(xml, &"USt_{year}")
+    ExitOk
+  except ConfigError as e:
+    err e.msg
+    ExitConfig
 
 proc fetch(file: string = "", check: bool = false, data_dir: string = ""): int =
   ## Fetch and install the ERiC library.
@@ -548,23 +528,16 @@ proc fetch(file: string = "", check: bool = false, data_dir: string = ""): int =
     let existing = findExistingEric(ericDir)
     if existing.valid:
       printStatus(existing)
-      let years = listAvailableYears(existing)
-      if years.len > 0:
-        echo &"  UStVA years: {years.join(\", \")}"
-      let euerYears = listAvailableEuerYears(existing)
-      if euerYears.len > 0:
-        echo &"  EUER years:  {euerYears.join(\", \")}"
-      let estYears = listAvailableEstYears(existing)
-      if estYears.len > 0:
-        echo &"  ESt years:   {estYears.join(\", \")}"
-      let ustYears = listAvailableUstYears(existing)
-      if ustYears.len > 0:
-        echo &"  USt years:   {ustYears.join(\", \")}"
-      return 0
+      for (label, tag) in {"UStVA": "UStVA", "EUER ": "EUER",
+                           "ESt  ": "ESt", "USt  ": "USt"}:
+        let years = listPluginYears(existing, tag)
+        if years.len > 0:
+          echo &"  {label} years: {years.join(\", \")}"
+      return ExitOk
     else:
       stderr.writeLine "No ERiC installation found."
       printDownloadInstructions(effectiveDataDir)
-      return 1
+      return ExitNotFound
 
   var installation: EricInstallation
   if file != "":
@@ -576,7 +549,7 @@ proc fetch(file: string = "", check: bool = false, data_dir: string = ""): int =
       if success:
         installation = inst
       else:
-        return 1
+        return ExitApi
 
   if installation.valid:
     echo &"ERiC installed at {installation.path}"
@@ -584,38 +557,17 @@ proc fetch(file: string = "", check: bool = false, data_dir: string = ""): int =
     stderr.writeLine "For sandbox testing, grab ELSTER's test certs:"
     stderr.writeLine "  wget https://download.elster.de/download/schnittstellen/Test_Zertifikate.zip"
     stderr.writeLine "  unzip Test_Zertifikate.zip   # PIN for all certs: 123456"
-    return 0
+    return ExitOk
   else:
     stderr.writeLine "ERiC setup incomplete. Use 'viking fetch --file=<path>' with a local archive."
-    return 1
+    return ExitApi
 
-proc loadConfigAndEricForAbholung(
-    conf, dataDir: string, test: bool
-): tuple[rc: int, cfg: Config, vc: VikingConf, name: string] =
-  let (confOk, vikingConf) = loadConf(conf, validateForAbholung)
-  var cfg: Config
-  var emptyVc: VikingConf
-  if not confOk: return (1, cfg, emptyVc, "")
-
-  let (techOk, cfgLoaded) = loadTechConfig(dataDir, test)
-  if not techOk: return (1, cfgLoaded, emptyVc, "")
-  cfg = cfgLoaded
-
-  let name = vikingConf.personal.firstname & " " & vikingConf.personal.lastname
-
-  if not loadEricLib(cfg.ericLibPath):
-    err &"Error: Failed to load ERiC library from {cfg.ericLibPath}"
-    return (1, cfg, emptyVc, "")
-
-  createDir(cfg.ericLogPath)
-
-  let initRc = ericInitialisiere(cfg.ericPluginPath, cfg.ericLogPath)
-  if initRc != 0:
-    err &"Error: ERiC initialization failed: {ericHoleFehlerText(initRc)}"
-    unloadEricLib()
-    return (1, cfg, emptyVc, "")
-
-  return (0, cfg, vikingConf, name)
+proc loadAbholungConf(conf, dataDir: string, test: bool):
+    tuple[cfg: Config, vc: VikingConf, name: string] =
+  ## Load viking.conf + tech config for Postfach commands. Raises ConfigError.
+  let vc = loadConf(conf, validateForAbholung)
+  let cfg = loadTechConfig(dataDir, test)
+  (cfg, vc, vc.personal.firstname & " " & vc.personal.lastname)
 
 proc list(
   conf: string = "",
@@ -630,25 +582,36 @@ proc list(
   initLog()
   defer: closeLog()
 
-  let (cfgRc, cfg, vc, name) = loadConfigAndEricForAbholung(conf, dataDir, test)
-  if cfgRc != 0: return cfgRc
-  defer:
-    discard ericBeende()
-    unloadEricLib()
+  try:
+    let (cfg, vc, name) = loadAbholungConf(conf, dataDir, test)
 
-  if dry_run:
-    echo generatePostfachAnfrageXml(name, cfg.test, NimblePkgVersion)
-    return 0
+    if not loadEricLib(cfg.ericLibPath):
+      err &"Error: Failed to load ERiC library from {cfg.ericLibPath}"
+      return ExitApi
+    defer: unloadEricLib()
+    createDir(cfg.ericLogPath)
 
-  let (authOk, certPath, certPin) = resolveSigningAuth(vc)
-  if not authOk: return 1
+    let initRc = ericInitialisiere(cfg.ericPluginPath, cfg.ericLogPath)
+    if initRc != 0:
+      err &"Error: ERiC initialization failed: {ericHoleFehlerText(initRc)}"
+      return ExitApi
+    defer: discard ericBeende()
 
-  let (rc, bereitstellungen, _) = initEricAndQueryPostfach(
-    cfg, certPath, certPin, name, NimblePkgVersion, verbose)
-  if rc != 0: return rc
+    if dry_run:
+      echo generatePostfachAnfrageXml(name, cfg.test, NimblePkgVersion)
+      return ExitOk
 
-  displayBereitstellungen(bereitstellungen)
-  return 0
+    let (certPath, certPin) = resolveSigningAuth(vc)
+
+    let (rc, bereitstellungen, _) = initEricAndQueryPostfach(
+      cfg, certPath, certPin, name, NimblePkgVersion, verbose)
+    if rc != 0: return ExitApi
+
+    displayBereitstellungen(bereitstellungen)
+    ExitOk
+  except ConfigError as e:
+    err e.msg
+    ExitConfig
 
 proc download(
   files: seq[string],
@@ -666,144 +629,155 @@ proc download(
   initLog()
   defer: closeLog()
 
-  let (cfgRc, cfg, vc, name) = loadConfigAndEricForAbholung(conf, dataDir, test)
-  if cfgRc != 0: return cfgRc
-  defer:
-    discard ericBeende()
-    unloadEricLib()
+  try:
+    let (cfg, vc, name) = loadAbholungConf(conf, dataDir, test)
 
-  if dry_run:
-    echo generatePostfachAnfrageXml(name, cfg.test, NimblePkgVersion)
-    return 0
+    if not loadEricLib(cfg.ericLibPath):
+      err &"Error: Failed to load ERiC library from {cfg.ericLibPath}"
+      return ExitApi
+    defer: unloadEricLib()
+    createDir(cfg.ericLogPath)
 
-  let (authOk, certPath, certPin) = resolveSigningAuth(vc)
-  if not authOk: return 1
+    let initRc = ericInitialisiere(cfg.ericPluginPath, cfg.ericLogPath)
+    if initRc != 0:
+      err &"Error: ERiC initialization failed: {ericHoleFehlerText(initRc)}"
+      return ExitApi
+    defer: discard ericBeende()
 
-  let (rc, bereitstellungen, _) = initEricAndQueryPostfach(
-    cfg, certPath, certPin, name, NimblePkgVersion, verbose)
-  if rc != 0: return rc
+    if dry_run:
+      echo generatePostfachAnfrageXml(name, cfg.test, NimblePkgVersion)
+      return ExitOk
 
-  if bereitstellungen.len == 0:
-    return 0
+    let (certPath, certPin) = resolveSigningAuth(vc)
 
-  let outDir = if output_dir.len > 0: output_dir else: "."
-  if outDir != ".":
-    createDir(outDir)
+    let (rc, bereitstellungen, _) = initEricAndQueryPostfach(
+      cfg, certPath, certPin, name, NimblePkgVersion, verbose)
+    if rc != 0: return ExitApi
 
-  let ottoLibName = when defined(macosx): "libotto.dylib"
-                    elif defined(windows): "otto.dll"
-                    else: "libotto.so"
-  let ottoLibPath = cfg.ericLibPath.parentDir / ottoLibName
-  if not loadOttoLib(ottoLibPath):
-    err &"Error: Failed to load Otto library from {ottoLibPath}"
-    return 1
-  defer: unloadOttoLib()
+    if bereitstellungen.len == 0:
+      return ExitOk
 
-  let (ottoRc, ottoInstanz) = ottoInstanzErzeugen(cfg.ericLogPath)
-  if ottoRc != 0:
-    err &"Error: Failed to create Otto instance: {ottoHoleFehlertext(ottoRc)}"
-    return 1
-  defer: discard ottoInstanzFreigeben(ottoInstanz)
+    let outDir = if output_dir.len > 0: output_dir else: "."
+    if outDir != ".":
+      createDir(outDir)
 
-  var confirmedIds: seq[string] = @[]
-  var downloadErrors = 0
+    let ottoLibName = when defined(macosx): "libotto.dylib"
+                      elif defined(windows): "otto.dll"
+                      else: "libotto.so"
+    let ottoLibPath = cfg.ericLibPath.parentDir / ottoLibName
+    if not loadOttoLib(ottoLibPath):
+      err &"Error: Failed to load Otto library from {ottoLibPath}"
+      return ExitApi
+    defer: unloadOttoLib()
 
-  for b in bereitstellungen:
-    var allOk = true
-    var anySelected = false
-    var allSelected = true
+    let (ottoRc, ottoInstanz) = ottoInstanzErzeugen(cfg.ericLogPath)
+    if ottoRc != 0:
+      err &"Error: Failed to create Otto instance: {ottoHoleFehlertext(ottoRc)}"
+      return ExitApi
+    defer: discard ottoInstanzFreigeben(ottoInstanz)
 
-    for a in b.anhaenge:
-      let filename = constructFilename(b, a)
+    var confirmedIds: seq[string] = @[]
+    var downloadErrors = 0
 
-      if files.len > 0 and filename notin files:
-        allSelected = false
-        continue
+    for b in bereitstellungen:
+      var allOk = true
+      var anySelected = false
+      var allSelected = true
 
-      anySelected = true
-      let filepath = outDir / filename
+      for a in b.anhaenge:
+        let filename = constructFilename(b, a)
 
-      if not force and fileExists(filepath):
-        err &"Skipping {filename} (already exists, use --force to overwrite)"
-        continue
+        if files.len > 0 and filename notin files:
+          allSelected = false
+          continue
 
-      let (bufRc, ottoBuf) = ottoRueckgabepufferErzeugen(ottoInstanz)
-      if bufRc != 0:
-        err &"Error: Failed to create download buffer (code {bufRc})"
-        allOk = false
-        inc downloadErrors
-        continue
-      defer: discard ottoRueckgabepufferFreigeben(ottoBuf)
+        anySelected = true
+        let filepath = outDir / filename
 
-      let dlRc = ottoDatenAbholen(
-        ottoInstanz, a.dateiReferenzId, a.dateiGroesse.uint32,
-        certPath, certPin, HerstellerId, ottoBuf,
+        if not force and fileExists(filepath):
+          err &"Skipping {filename} (already exists, use --force to overwrite)"
+          continue
+
+        let (bufRc, ottoBuf) = ottoRueckgabepufferErzeugen(ottoInstanz)
+        if bufRc != 0:
+          err &"Error: Failed to create download buffer (code {bufRc})"
+          allOk = false
+          inc downloadErrors
+          continue
+        defer: discard ottoRueckgabepufferFreigeben(ottoBuf)
+
+        let dlRc = ottoDatenAbholen(
+          ottoInstanz, a.dateiReferenzId, a.dateiGroesse.uint32,
+          certPath, certPin, HerstellerId, ottoBuf,
+        )
+
+        if dlRc != 0:
+          err &"Error: Download failed: {ottoHoleFehlertext(dlRc)}"
+          allOk = false
+          inc downloadErrors
+          continue
+
+        let dataPtr = ottoRueckgabepufferInhalt(ottoBuf)
+        let dataSize = ottoRueckgabepufferGroesse(ottoBuf)
+
+        if dataPtr == nil or dataSize == 0:
+          err "Error: Downloaded empty data"
+          allOk = false
+          inc downloadErrors
+          continue
+
+        var data = newString(dataSize.int)
+        copyMem(addr data[0], dataPtr, dataSize.int)
+        writeFile(filepath, data)
+
+      if allOk and anySelected and allSelected:
+        confirmedIds.add(b.id)
+
+    if confirmedIds.len > 0:
+      let (certRc, certHandle) = ericGetHandleToCertificate(certPath)
+      if certRc != 0:
+        err &"Error: Failed to open certificate for confirmation: {ericHoleFehlerText(certRc)}"
+        err "Documents were downloaded but not confirmed. Run 'viking download' again."
+        return ExitApi
+      defer: discard ericCloseHandleToCertificate(certHandle)
+
+      var cryptParam: EricVerschluesselungsParameterT
+      cryptParam.version = 3
+      cryptParam.zertifikatHandle = certHandle
+      cryptParam.pin = certPin.cstring
+
+      let bestXml = generatePostfachBestaetigungXml(
+        confirmedIds, name, cfg.test, NimblePkgVersion,
       )
+      log bestXml
 
-      if dlRc != 0:
-        err &"Error: Download failed: {ottoHoleFehlertext(dlRc)}"
-        allOk = false
-        inc downloadErrors
-        continue
+      var bestTransferHandle: uint32 = 0
+      let bestResponseBuf = ericRueckgabepufferErzeugen()
+      let bestServerBuf = ericRueckgabepufferErzeugen()
+      if bestResponseBuf == nil or bestServerBuf == nil:
+        err "Error: Failed to create return buffers for confirmation"
+        return ExitApi
+      defer:
+        discard ericRueckgabepufferFreigabe(bestResponseBuf)
+        discard ericRueckgabepufferFreigabe(bestServerBuf)
 
-      let dataPtr = ottoRueckgabepufferInhalt(ottoBuf)
-      let dataSize = ottoRueckgabepufferGroesse(ottoBuf)
+      let bestRc = ericBearbeiteVorgang(bestXml, "PostfachBestaetigung_31",
+        ERIC_VALIDIERE or ERIC_SENDE, nil, addr cryptParam,
+        addr bestTransferHandle, bestResponseBuf, bestServerBuf)
 
-      if dataPtr == nil or dataSize == 0:
-        err "Error: Downloaded empty data"
-        allOk = false
-        inc downloadErrors
-        continue
-
-      var data = newString(dataSize.int)
-      copyMem(addr data[0], dataPtr, dataSize.int)
-      writeFile(filepath, data)
-
-    if allOk and anySelected and allSelected:
-      confirmedIds.add(b.id)
-
-  if confirmedIds.len > 0:
-    let (certRc, certHandle) = ericGetHandleToCertificate(certPath)
-    if certRc != 0:
-      err &"Error: Failed to open certificate for confirmation: {ericHoleFehlerText(certRc)}"
-      err "Documents were downloaded but not confirmed. Run 'viking download' again."
-      return 1
-    defer: discard ericCloseHandleToCertificate(certHandle)
-
-    var cryptParam: EricVerschluesselungsParameterT
-    cryptParam.version = 3
-    cryptParam.zertifikatHandle = certHandle
-    cryptParam.pin = certPin.cstring
-
-    let bestXml = generatePostfachBestaetigungXml(
-      confirmedIds, name, cfg.test, NimblePkgVersion,
-    )
-    log bestXml
-
-    var bestTransferHandle: uint32 = 0
-    let bestResponseBuf = ericRueckgabepufferErzeugen()
-    let bestServerBuf = ericRueckgabepufferErzeugen()
-    if bestResponseBuf == nil or bestServerBuf == nil:
-      err "Error: Failed to create return buffers for confirmation"
-      return 1
-    defer:
-      discard ericRueckgabepufferFreigabe(bestResponseBuf)
-      discard ericRueckgabepufferFreigabe(bestServerBuf)
-
-    let bestRc = ericBearbeiteVorgang(bestXml, "PostfachBestaetigung_31",
-      ERIC_VALIDIERE or ERIC_SENDE, nil, addr cryptParam,
-      addr bestTransferHandle, bestResponseBuf, bestServerBuf)
-
-    if bestRc != 0:
-      let bestResponse = ericRueckgabepufferInhalt(bestResponseBuf)
-      let bestServerResponse = ericRueckgabepufferInhalt(bestServerBuf)
-      err &"Warning: Confirmation failed: {ericHoleFehlerText(bestRc)}"
-      if bestResponse.len > 0: log bestResponse
-      if bestServerResponse.len > 0: log bestServerResponse
-      err "Documents were downloaded but not confirmed. Confirm within 24h to avoid HerstellerID suspension."
-  if downloadErrors > 0:
-    err &"Download complete with {downloadErrors} error(s)."
-  return 0
+      if bestRc != 0:
+        let bestResponse = ericRueckgabepufferInhalt(bestResponseBuf)
+        let bestServerResponse = ericRueckgabepufferInhalt(bestServerBuf)
+        err &"Warning: Confirmation failed: {ericHoleFehlerText(bestRc)}"
+        if bestResponse.len > 0: log bestResponse
+        if bestServerResponse.len > 0: log bestServerResponse
+        err "Documents were downloaded but not confirmed. Confirm within 24h to avoid HerstellerID suspension."
+    if downloadErrors > 0:
+      err &"Download complete with {downloadErrors} error(s)."
+    ExitOk
+  except ConfigError as e:
+    err e.msg
+    ExitConfig
 
 proc iban(
   new_iban: string = "",
@@ -822,32 +796,32 @@ proc iban(
 
   if new_iban == "":
     err "Error: --new-iban is required"
-    return 1
-  let (confOk, vikingConf) = loadConf(conf, validateForBankverbindung)
-  if not confOk: return 1
-  let (techOk, cfg) = loadTechConfig(dataDir, test)
-  if not techOk: return 1
+    return ExitUsage
 
-  let p = vikingConf.personal
-  let fullName = p.firstname & " " & p.lastname
-  let xml = generateBankverbindungXml(
-    steuernummer = p.taxnumber, name = fullName,
-    vorname = p.firstname, nachname = p.lastname,
-    idnr = p.idnr, geburtsdatum = p.birthdate,
-    iban = new_iban, test = cfg.test,
-  )
+  try:
+    let vikingConf = loadConf(conf, validateForBankverbindung)
+    let cfg = loadTechConfig(dataDir, test)
 
-  var certPath, certPin: string
-  if not dryRun:
-    let (authOk, cp, pn) = resolveSigningAuth(vikingConf)
-    if not authOk: return 1
-    certPath = cp; certPin = pn
+    let p = vikingConf.personal
+    let fullName = p.firstname & " " & p.lastname
+    let xml = generateBankverbindungXml(
+      steuernummer = p.taxnumber, name = fullName,
+      vorname = p.firstname, nachname = p.lastname,
+      idnr = p.idnr, geburtsdatum = p.birthdate,
+      iban = new_iban, test = cfg.test,
+    )
 
-  initEric(cfg, xml)
-  initBuffersAndCert(certPath, certPin, dryRun, outputPdf)
+    var certPath, certPin: string
+    if not dryRun:
+      (certPath, certPin) = resolveSigningAuth(vikingConf)
 
-  submitAndCheck(xml, "AenderungBankverbindung_20")
-  return 0
+    initEric(cfg, xml)
+    initBuffersAndCert(certPath, certPin, dryRun, outputPdf)
+    submitAndCheck(xml, "AenderungBankverbindung_20")
+    ExitOk
+  except ConfigError as e:
+    err e.msg
+    ExitConfig
 
 proc message(
   subject: string = "",
@@ -868,57 +842,56 @@ proc message(
 
   if subject == "":
     err "Error: --subject is required"
-    return 1
+    return ExitUsage
   if subject.len > 99:
     err "Error: --subject must be at most 99 characters"
-    return 1
+    return ExitUsage
 
   var messageText = text
   if text_file != "" and text != "":
     err "Error: --text and --text-file are mutually exclusive"
-    return 1
+    return ExitUsage
   elif text_file != "":
     if text_file == "-":
       messageText = stdin.readAll().strip
     elif not fileExists(text_file):
       err &"Error: File not found: {text_file}"
-      return 1
+      return ExitNotFound
     else:
       messageText = readFile(text_file).strip
 
   if messageText == "":
     err "Error: --text or --text-file is required"
-    return 1
+    return ExitUsage
   if messageText.len > 15000:
     err &"Error: Message text exceeds 15000 characters ({messageText.len})"
-    return 1
+    return ExitUsage
 
-  let (confOk, vikingConf) = loadConf(conf, validateForNachricht)
-  if not confOk: return 1
-  let (techOk, cfg) = loadTechConfig(dataDir, test)
-  if not techOk: return 1
+  try:
+    let vikingConf = loadConf(conf, validateForNachricht)
+    let cfg = loadTechConfig(dataDir, test)
 
-  let p = vikingConf.personal
-  let fullName = p.firstname & " " & p.lastname
-  let xml = generateNachrichtXml(NachrichtInput(
-    steuernummer: p.taxnumber, name: fullName,
-    strasse: p.street, hausnummer: p.housenumber,
-    plz: p.zip, ort: p.city,
-    betreff: subject, text: messageText,
-    test: cfg.test, produktVersion: NimblePkgVersion,
-  ))
+    let p = vikingConf.personal
+    let fullName = p.firstname & " " & p.lastname
+    let xml = generateNachrichtXml(NachrichtInput(
+      steuernummer: p.taxnumber, name: fullName,
+      strasse: p.street, hausnummer: p.housenumber,
+      plz: p.zip, ort: p.city,
+      betreff: subject, text: messageText,
+      test: cfg.test, produktVersion: NimblePkgVersion,
+    ))
 
-  var certPath, certPin: string
-  if not dryRun:
-    let (authOk, cp, pn) = resolveSigningAuth(vikingConf)
-    if not authOk: return 1
-    certPath = cp; certPin = pn
+    var certPath, certPin: string
+    if not dryRun:
+      (certPath, certPin) = resolveSigningAuth(vikingConf)
 
-  initEric(cfg, xml)
-  initBuffersAndCert(certPath, certPin, dryRun, outputPdf)
-
-  submitAndCheck(xml, "SonstigeNachrichten_21")
-  return 0
+    initEric(cfg, xml)
+    initBuffersAndCert(certPath, certPin, dryRun, outputPdf)
+    submitAndCheck(xml, "SonstigeNachrichten_21")
+    ExitOk
+  except ConfigError as e:
+    err e.msg
+    ExitConfig
 
 const initConfTemplate = """; First section = taxpayer. Section name = "Vornamen Nachname".
 ; `year` is required — copy this directory per tax year.
@@ -1043,10 +1016,10 @@ proc initFiles(
       createDir(gdir)
     if not force and fileExists(gpath):
       echo &"Skipped: {gpath} (exists, use --force)"
-      return 0
+      return ExitOk
     writeFile(gpath, initConfTemplate)
     echo &"Created: {gpath}"
-    return 0
+    return ExitOk
 
   let confPath = dir / "viking.conf"
   let deductionsPath = dir / "abzuege.tsv"
@@ -1054,7 +1027,7 @@ proc initFiles(
 
   if not dirExists(dir):
     stderr.writeLine &"Error: directory '{dir}' does not exist"
-    return 1
+    return ExitUsage
 
   var created: seq[string]
   var skipped: seq[string]
@@ -1083,12 +1056,10 @@ proc initFiles(
     echo ""
     echo "All files already exist. Use --force to overwrite."
 
-  return 0
+  return ExitOk
 
 when isMainModule:
-  import cligen
   clCfg.version = NimblePkgVersion
-  const hide = "CLIGEN-NOHELP"
   const dataDirHelp = "Viking data dir (default: ~/.local/share/viking)"
   dispatchMulti(
     [ustva,

@@ -21,42 +21,27 @@ type
     test*: bool
     produktVersion*: string
 
-proc generateEuer*(input: EuerInput): string =
+func generateEuer*(input: EuerInput): string =
   ## Generate ELSTER XML for EÜR (Einnahmenüberschussrechnung)
+  let i = input
+  let produktVersion = if i.produktVersion != "": i.produktVersion else: "0.1.0"
+  let finanzamt = i.steuernummer[0..3]
+  let bundesland = bundeslandFromSteuernummer(i.steuernummer)
+  let testmerkerLine = if i.test: "\n    <Testmerker>700000004</Testmerker>" else: ""
 
-  let steuernummer = input.steuernummer
-  let jahr = input.jahr
-  let incomeNet = input.incomeNet
-  let incomeVat = input.incomeVat
-  let expenseNet = input.expenseNet
-  let expenseVorsteuer = input.expenseVorsteuer
-  let name = input.name
-  let strasse = input.strasse
-  let plz = input.plz
-  let ort = input.ort
-  let rechtsform = input.rechtsform
-  let einkunftsart = input.einkunftsart
-  let produktVersion = if input.produktVersion != "": input.produktVersion else: "0.1.0"
-  let finanzamt = steuernummer[0..3]
-  let bundesland = bundeslandFromSteuernummer(steuernummer)
-  let testmerkerLine = if input.test: "\n    <Testmerker>700000004</Testmerker>" else: ""
-  let herstellerId = HerstellerId
-  let produktName = ProduktName
-
-  # Compute totals
-  let totalIncome = roundCents(incomeNet + incomeVat)
-  let totalExpense = roundCents(expenseNet + expenseVorsteuer)
+  let totalIncome = roundCents(i.incomeNet + i.incomeVat)
+  let totalExpense = roundCents(i.expenseNet + i.expenseVorsteuer)
   let profit = roundCents(totalIncome - totalExpense)
 
-  let xml = &"""<?xml version="1.0" encoding="UTF-8"?>
+  result = &"""<?xml version="1.0" encoding="UTF-8"?>
 <Elster xmlns="http://www.elster.de/elsterxml/schema/v11">
   <TransferHeader version="11">
     <Verfahren>ElsterErklaerung</Verfahren>
     <DatenArt>EUER</DatenArt>
     <Vorgang>send-Auth</Vorgang>{testmerkerLine}
     <Empfaenger id="L"><Ziel>{bundesland}</Ziel></Empfaenger>
-    <HerstellerID>{herstellerId}</HerstellerID>
-    <DatenLieferant>{name}</DatenLieferant>
+    <HerstellerID>{HerstellerId}</HerstellerID>
+    <DatenLieferant>{i.name}</DatenLieferant>
     <Datei>
       <Verschluesselung>CMSEncryptedData</Verschluesselung>
       <Kompression>GZIP</Kompression>
@@ -69,30 +54,30 @@ proc generateEuer*(input: EuerInput): string =
         <NutzdatenTicket>1</NutzdatenTicket>
         <Empfaenger id="F">{finanzamt}</Empfaenger>
         <Hersteller>
-          <ProduktName>{produktName}</ProduktName>
+          <ProduktName>{ProduktName}</ProduktName>
           <ProduktVersion>{produktVersion}</ProduktVersion>
         </Hersteller>
       </NutzdatenHeader>
       <Nutzdaten>
-        <E77 xmlns="http://finkonsens.de/elster/elstererklaerung/euer/e77/v{jahr}" version="{jahr}">
+        <E77 xmlns="http://finkonsens.de/elster/elstererklaerung/euer/e77/v{i.jahr}" version="{i.jahr}">
           <EUER>
             <Allg>
-              <E6000016>{name}</E6000016>
+              <E6000016>{i.name}</E6000016>
               <E6000017>Dienstleistungen</E6000017>
-              <E6000602>{rechtsform}</E6000602>
-              <E6000603>{einkunftsart}</E6000603>
+              <E6000602>{i.rechtsform}</E6000602>
+              <E6000603>{i.einkunftsart}</E6000603>
               <E6000604>1</E6000604>
               <E6000019>2</E6000019>
             </Allg>
             <BEin>
               <USt_StPflicht>
                 <Sum>
-                  <E6000401>{formatEurDE(incomeNet)}</E6000401>
+                  <E6000401>{formatEurDE(i.incomeNet)}</E6000401>
                 </Sum>
               </USt_StPflicht>
               <USt_Vereinnahmt_Unentgeltl>
                 <Sum>
-                  <E6000601>{formatEurDE(incomeVat)}</E6000601>
+                  <E6000601>{formatEurDE(i.incomeVat)}</E6000601>
                 </Sum>
               </USt_Vereinnahmt_Unentgeltl>
               <GesamtSum>
@@ -103,12 +88,12 @@ proc generateEuer*(input: EuerInput): string =
               <Sonst_unbeschraenkt>
                 <Vorsteuer>
                   <Sum>
-                    <E6005001>{formatEurDE(expenseVorsteuer)}</E6005001>
+                    <E6005001>{formatEurDE(i.expenseVorsteuer)}</E6005001>
                   </Sum>
                 </Vorsteuer>
                 <Sonst_unbeschr_abziehbar>
                   <Sum>
-                    <E6004901>{formatEurDE(expenseNet)}</E6004901>
+                    <E6004901>{formatEurDE(i.expenseNet)}</E6004901>
                   </Sum>
                 </Sonst_unbeschr_abziehbar>
               </Sonst_unbeschraenkt>
@@ -147,13 +132,13 @@ proc generateEuer*(input: EuerInput): string =
           <Vorsatz>
             <Unterfallart>77</Unterfallart>
             <Vorgang>01</Vorgang>
-            <StNr>{steuernummer}</StNr>
-            <Zeitraum>{jahr}</Zeitraum>
-            <AbsName>{name}</AbsName>
-            <AbsStr>{strasse}</AbsStr>
-            <AbsPlz>{plz}</AbsPlz>
-            <AbsOrt>{ort}</AbsOrt>
-            <Copyright>(C) {produktName}</Copyright>
+            <StNr>{i.steuernummer}</StNr>
+            <Zeitraum>{i.jahr}</Zeitraum>
+            <AbsName>{i.name}</AbsName>
+            <AbsStr>{i.strasse}</AbsStr>
+            <AbsPlz>{i.plz}</AbsPlz>
+            <AbsOrt>{i.ort}</AbsOrt>
+            <Copyright>(C) {ProduktName}</Copyright>
             <OrdNrArt>S</OrdNrArt>
             <Rueckuebermittlung>
               <Bescheid>2</Bescheid>
@@ -164,5 +149,3 @@ proc generateEuer*(input: EuerInput): string =
     </Nutzdatenblock>
   </DatenTeil>
 </Elster>"""
-
-  result = xml

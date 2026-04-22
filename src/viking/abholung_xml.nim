@@ -7,7 +7,7 @@ import viking/config
 const datenabholungNs = "http://finkonsens.de/elster/elsterdatenabholung/v3"
 const elsterNs = "http://www.elster.de/elsterxml/schema/v11"
 
-proc generateAbholungXml*(
+func generateAbholungXml*(
   nutzdatenContent: string,
   name: string,
   test: bool,
@@ -50,7 +50,7 @@ proc generateAbholungXml*(
   </DatenTeil>
 </Elster>"""
 
-proc generatePostfachAnfrageXml*(
+func generatePostfachAnfrageXml*(
   name: string,
   test: bool,
   produktVersion: string = "0.1.0",
@@ -70,7 +70,7 @@ proc generatePostfachAnfrageXml*(
   content.add("          </PostfachAnfrage>")
   generateAbholungXml(content, name, test, produktVersion, "PostfachAnfrage")
 
-proc generatePostfachBestaetigungXml*(
+func generatePostfachBestaetigungXml*(
   bereitstellungIds: seq[string],
   name: string,
   test: bool,

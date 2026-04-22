@@ -7,7 +7,7 @@ import viking/config
 const bankverbindungNs = "http://finkonsens.de/elster/elsternachricht/aenderungbankverbindung/v20"
 const elsterNs = "http://www.elster.de/elsterxml/schema/v11"
 
-proc generateBankverbindungXml*(
+func generateBankverbindungXml*(
   steuernummer: string,
   name: string,
   vorname: string,

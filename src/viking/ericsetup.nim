@@ -290,9 +290,9 @@ proc downloadFile*(url: string, destPath: string): bool =
     client.downloadFile(url, destPath)
     stderr.write("\n")
     return true
-  except:
+  except CatchableError as e:
     stderr.writeLine ""
-    stderr.writeLine &"Error downloading {url}: {getCurrentExceptionMsg()}"
+    stderr.writeLine &"Error downloading {url}: {e.msg}"
     return false
 
 # ===========================================================================
@@ -319,10 +319,6 @@ proc findExistingEric*(ericDir: string): EricInstallation =
           return subInstallation
 
   result.valid = false
-
-proc findExistingEricIn*(ericDir: string): EricInstallation {.inline.} =
-  ## Alias for use by config.nim.
-  findExistingEric(ericDir)
 
 # ===========================================================================
 # Status and instructions
@@ -377,82 +373,21 @@ proc printStatus*(installation: EricInstallation) =
     stderr.writeLine ""
     stderr.writeLine "Run 'viking fetch' to download and install."
 
-proc listAvailableYears*(installation: EricInstallation): seq[int] =
-  ## List years for which UStVA plugins are available
-  result = @[]
+proc listPluginYears*(installation: EricInstallation, tag: string): seq[int] =
+  ## Years for which a `<PluginPrefix><tag>_YYYY<DynlibExt>` plugin exists.
+  ## `tag` is the ELSTER form name: "UStVA", "USt", "EUER", "ESt". USt is
+  ## disambiguated from UStVA by matching the underscore after the tag.
   if not installation.valid:
     return
-
+  let prefix = PluginPrefix & tag & "_"
   for kind, path in walkDir(installation.pluginPath):
-    if kind == pcFile:
-      let name = path.extractFilename
-      let uStVAPrefix = PluginPrefix & "UStVA_"
-      if name.startsWith(uStVAPrefix) and name.endsWith(DynlibExt):
-        let yearStr = name[uStVAPrefix.len ..^ (DynlibExt.len + 1)]
-        try:
-          result.add(parseInt(yearStr))
-        except ValueError:
-          discard
-
-  result.sort()
-
-proc listAvailableEstYears*(installation: EricInstallation): seq[int] =
-  ## List years for which ESt plugins are available
-  result = @[]
-  if not installation.valid:
-    return
-
-  for kind, path in walkDir(installation.pluginPath):
-    if kind == pcFile:
-      let name = path.extractFilename
-      let eStPrefix = PluginPrefix & "ESt_"
-      if name.startsWith(eStPrefix) and name.endsWith(DynlibExt):
-        let yearStr = name[eStPrefix.len ..^ (DynlibExt.len + 1)]
-        try:
-          result.add(parseInt(yearStr))
-        except ValueError:
-          discard
-
-  result.sort()
-
-proc listAvailableUstYears*(installation: EricInstallation): seq[int] =
-  ## List years for which USt (annual VAT) plugins are available
-  result = @[]
-  if not installation.valid:
-    return
-
-  for kind, path in walkDir(installation.pluginPath):
-    if kind == pcFile:
-      let name = path.extractFilename
-      # Match libcheckUSt_YYYY.so but NOT libcheckUStVA_YYYY.so
-      let uStPrefix = PluginPrefix & "USt_"
-      let uStVAPrefix2 = PluginPrefix & "UStVA_"
-      if name.startsWith(uStPrefix) and not name.startsWith(uStVAPrefix2) and name.endsWith(DynlibExt):
-        let yearStr = name[uStPrefix.len ..^ (DynlibExt.len + 1)]
-        try:
-          result.add(parseInt(yearStr))
-        except ValueError:
-          discard
-
-  result.sort()
-
-proc listAvailableEuerYears*(installation: EricInstallation): seq[int] =
-  ## List years for which EUER plugins are available
-  result = @[]
-  if not installation.valid:
-    return
-
-  for kind, path in walkDir(installation.pluginPath):
-    if kind == pcFile:
-      let name = path.extractFilename
-      let euerPrefix = PluginPrefix & "EUER_"
-      if name.startsWith(euerPrefix) and name.endsWith(DynlibExt):
-        let yearStr = name[euerPrefix.len ..^ (DynlibExt.len + 1)]
-        try:
-          result.add(parseInt(yearStr))
-        except ValueError:
-          discard
-
+    if kind != pcFile: continue
+    let name = path.extractFilename
+    if not (name.startsWith(prefix) and name.endsWith(DynlibExt)): continue
+    try:
+      result.add(parseInt(name[prefix.len ..^ (DynlibExt.len + 1)]))
+    except ValueError:
+      discard
   result.sort()
 
 # ===========================================================================

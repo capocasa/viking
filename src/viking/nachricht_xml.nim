@@ -29,7 +29,7 @@ type
     test*: bool
     produktVersion*: string
 
-proc generateNachrichtXml*(input: NachrichtInput): string =
+func generateNachrichtXml*(input: NachrichtInput): string =
   let herstellerId = HerstellerId
   let steuernummer = input.steuernummer
   let hausnummer = input.hausnummer

@@ -25,33 +25,19 @@ type
     test*: bool
     produktVersion*: string
 
-proc generateUst*(input: UstInput): string =
+func generateUst*(input: UstInput): string =
   ## Generate ELSTER XML for annual Umsatzsteuererklaerung (E50 schema)
+  let i = input
+  let produktVersion = if i.produktVersion != "": i.produktVersion else: "0.1.0"
+  let finanzamt = i.steuernummer[0..3]
+  let bundesland = bundeslandFromSteuernummer(i.steuernummer)
+  let testmerkerLine = if i.test: "\n    <Testmerker>700000004</Testmerker>" else: ""
 
-  let herstellerId = HerstellerId
-  let produktName = ProduktName
-  let steuernummer = input.steuernummer
-  let jahr = input.jahr
-  let income19 = input.income19
-  let income7 = input.income7
-  let vorsteuer = input.vorsteuer
-  let vorauszahlungen = input.vorauszahlungen
-  let name = input.name
-  let strasse = input.strasse
-  let plz = input.plz
-  let ort = input.ort
-  let besteuerungsart = input.besteuerungsart
-  let produktVersion = if input.produktVersion != "": input.produktVersion else: "0.1.0"
-  let finanzamt = steuernummer[0..3]
-  let bundesland = bundeslandFromSteuernummer(steuernummer)
-  let testmerkerLine = if input.test: "\n    <Testmerker>700000004</Testmerker>" else: ""
-
-  # Compute VAT
-  let vat19 = roundCents(income19 * 0.19)
-  let vat7 = roundCents(income7 * 0.07)
+  let vat19 = roundCents(i.income19 * 0.19)
+  let vat7 = roundCents(i.income7 * 0.07)
   let totalVat = roundCents(vat19 + vat7)
-  let totalVorsteuer = roundCents(vorsteuer)
-  let vorauszahlungenR = roundCents(vorauszahlungen)
+  let totalVorsteuer = roundCents(i.vorsteuer)
+  let vorauszahlungenR = roundCents(i.vorauszahlungen)
 
   # Berech_USt calculation chain (USt 2A form Part III):
   # E3009201 (line 103): USt from taxable revenue = Ums_Sum E3006001
@@ -70,22 +56,22 @@ proc generateUst*(input: UstInput): string =
 
   # Plausibility rules USt_30900/30901 require Ums_Sum/Abz_VoSt_Sum to have
   # siblings: emit the Sum blocks only when there are underlying entries.
-  let hasUmsaetze = input.has19 or input.has7
+  let hasUmsaetze = i.has19 or i.has7
   let hasVorsteuer = totalVorsteuer > 0
 
   var umsaetzeBlock = ""
   if hasUmsaetze:
     var umsaetze = ""
-    if input.has19:
+    if i.has19:
       umsaetze.add(&"""
             <Ums_allg>
-              <E3003303>{roundEuro(income19)}</E3003303>
+              <E3003303>{roundEuro(i.income19)}</E3003303>
               <E3003304>{formatEurDE(vat19)}</E3003304>
             </Ums_allg>""")
-    if input.has7:
+    if i.has7:
       umsaetze.add(&"""
             <Ums_erm>
-              <E3004401>{roundEuro(income7)}</E3004401>
+              <E3004401>{roundEuro(i.income7)}</E3004401>
               <E3004402>{formatEurDE(vat7)}</E3004402>
             </Ums_erm>""")
     umsaetze.add(&"""
@@ -142,15 +128,15 @@ proc generateUst*(input: UstInput): string =
               </Tabelle>
             </Berech_USt>"""
 
-  let xml = &"""<?xml version="1.0" encoding="UTF-8"?>
+  result = &"""<?xml version="1.0" encoding="UTF-8"?>
 <Elster xmlns="http://www.elster.de/elsterxml/schema/v11">
   <TransferHeader version="11">
     <Verfahren>ElsterErklaerung</Verfahren>
     <DatenArt>USt</DatenArt>
     <Vorgang>send-Auth</Vorgang>{testmerkerLine}
     <Empfaenger id="L"><Ziel>{bundesland}</Ziel></Empfaenger>
-    <HerstellerID>{herstellerId}</HerstellerID>
-    <DatenLieferant>{name}</DatenLieferant>
+    <HerstellerID>{HerstellerId}</HerstellerID>
+    <DatenLieferant>{i.name}</DatenLieferant>
     <Datei>
       <Verschluesselung>CMSEncryptedData</Verschluesselung>
       <Kompression>GZIP</Kompression>
@@ -163,24 +149,24 @@ proc generateUst*(input: UstInput): string =
         <NutzdatenTicket>1</NutzdatenTicket>
         <Empfaenger id="F">{finanzamt}</Empfaenger>
         <Hersteller>
-          <ProduktName>{produktName}</ProduktName>
+          <ProduktName>{ProduktName}</ProduktName>
           <ProduktVersion>{produktVersion}</ProduktVersion>
         </Hersteller>
       </NutzdatenHeader>
       <Nutzdaten>
-        <E50 xmlns="http://finkonsens.de/elster/elstererklaerung/ust/e50/v{jahr}" version="{jahr}">
+        <E50 xmlns="http://finkonsens.de/elster/elstererklaerung/ust/e50/v{i.jahr}" version="{i.jahr}">
           <USt2A>
             <Allg>
               <Unternehmen>
-                <E3000901>{name}</E3000901>
+                <E3000901>{i.name}</E3000901>
                 <Adr>
-                  <E3001101>{strasse}</E3001101>
-                  <E3001206>{plz}</E3001206>
-                  <E3001207>{ort}</E3001207>
+                  <E3001101>{i.strasse}</E3001101>
+                  <E3001206>{i.plz}</E3001206>
+                  <E3001207>{i.ort}</E3001207>
                 </Adr>
               </Unternehmen>
               <Best_Art>
-                <E3002203>{besteuerungsart}</E3002203>
+                <E3002203>{i.besteuerungsart}</E3002203>
               </Best_Art>
             </Allg>
 {umsaetzeBlock}{abzVoSt}{berechUst}
@@ -188,13 +174,13 @@ proc generateUst*(input: UstInput): string =
           <Vorsatz>
             <Unterfallart>50</Unterfallart>
             <Vorgang>01</Vorgang>
-            <StNr>{steuernummer}</StNr>
-            <Zeitraum>{jahr}</Zeitraum>
-            <AbsName>{name}</AbsName>
-            <AbsStr>{strasse}</AbsStr>
-            <AbsPlz>{plz}</AbsPlz>
-            <AbsOrt>{ort}</AbsOrt>
-            <Copyright>(C) {produktName}</Copyright>
+            <StNr>{i.steuernummer}</StNr>
+            <Zeitraum>{i.jahr}</Zeitraum>
+            <AbsName>{i.name}</AbsName>
+            <AbsStr>{i.strasse}</AbsStr>
+            <AbsPlz>{i.plz}</AbsPlz>
+            <AbsOrt>{i.ort}</AbsOrt>
+            <Copyright>(C) {ProduktName}</Copyright>
             <OrdNrArt>S</OrdNrArt>
             <Rueckuebermittlung>
               <Bescheid>2</Bescheid>
@@ -205,5 +191,3 @@ proc generateUst*(input: UstInput): string =
     </Nutzdatenblock>
   </DatenTeil>
 </Elster>"""
-
-  result = xml

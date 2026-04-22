@@ -24,6 +24,7 @@ proc closeLog*() =
   ## Close the log file. Safe to call without `initLog`.
   if logFile != nil:
     logFile.close()
+    logFile = nil
 
 proc log*(msg: string) =
   ## Write to log file. Also to stdout if verbose.

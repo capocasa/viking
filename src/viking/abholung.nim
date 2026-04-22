@@ -2,7 +2,7 @@
 ## Types, XML parsing, and query logic for ELSTER Postfach operations.
 
 import std/[strutils, strformat, xmltree, xmlparser]
-import viking/[config, ericffi, abholung_xml, log]
+import viking/[config, ericffi, abholung_xml, ericerror, log]
 
 type
   AbholAnhang* = object
@@ -20,13 +20,6 @@ type
     bescheiddatum*: string
     anhaenge*: seq[AbholAnhang]
 
-func findAll(node: XmlNode, tag: string): seq[XmlNode] =
-  result = @[]
-  if node.kind != xnElement: return
-  if node.tag == tag: result.add(node)
-  for child in node:
-    result.add(findAll(child, tag))
-
 func mimeToExt*(mime: string): string =
   case mime
   of "application/pdf": ".pdf"
@@ -35,9 +28,13 @@ func mimeToExt*(mime: string): string =
   else: ".bin"
 
 func sanitizeFilename*(s: string): string =
-  result = s
-  for c in [' ', '/', '\\', ':', '*', '?', '"', '<', '>', '|']:
-    result = result.replace($c, "_")
+  const bad = {' ', '/', '\\', ':', '*', '?', '"', '<', '>', '|'}
+  for c in s:
+    result.add(if c in bad: '_' else: c)
+
+func parseIntOr(s: string, default: int): int =
+  try: parseInt(s)
+  except ValueError: default
 
 func constructFilename*(b: AbholBereitstellung, a: AbholAnhang): string =
   let ext = mimeToExt(a.dateityp)
@@ -51,12 +48,11 @@ iterator allFilenames*(bereitstellungen: seq[AbholBereitstellung]): tuple[b: Abh
 
 proc parsePostfachAntwort*(xmlDoc: XmlNode): seq[AbholBereitstellung] =
   result = @[]
-  for dab in xmlDoc.findAll("DatenartBereitstellung"):
+  for dab in xmlDoc.findAllDeep("DatenartBereitstellung"):
     let datenart = dab.attr("name")
-    let anzahl = try: parseInt(dab.attr("anzahltreffer")) except ValueError: 0
-    if anzahl == 0: continue
+    if parseIntOr(dab.attr("anzahltreffer"), 0) == 0: continue
 
-    for bs in dab.findAll("Bereitstellung"):
+    for bs in dab.findAllDeep("Bereitstellung"):
       let id = bs.attr("id")
       if id.len == 0:
         err "Warning: Bereitstellung missing id attribute, skipping"
@@ -64,10 +60,10 @@ proc parsePostfachAntwort*(xmlDoc: XmlNode): seq[AbholBereitstellung] =
       var b = AbholBereitstellung(
         id: id,
         datenart: datenart,
-        groesse: try: parseInt(bs.attr("groesse")) except ValueError: 0,
+        groesse: parseIntOr(bs.attr("groesse"), 0),
       )
 
-      for meta in bs.findAll("Meta"):
+      for meta in bs.findAllDeep("Meta"):
         let name = meta.attr("name")
         let value = meta.innerText
         case name
@@ -75,7 +71,7 @@ proc parsePostfachAntwort*(xmlDoc: XmlNode): seq[AbholBereitstellung] =
         of "steuernummer": b.steuernummer = value
         of "bescheiddatum": b.bescheiddatum = value
 
-      for anhang in bs.findAll("Anhang"):
+      for anhang in bs.findAllDeep("Anhang"):
         var a = AbholAnhang()
         for child in anhang:
           if child.kind != xnElement: continue
@@ -83,7 +79,7 @@ proc parsePostfachAntwort*(xmlDoc: XmlNode): seq[AbholBereitstellung] =
           of "Dateibezeichnung": a.dateibezeichnung = child.innerText
           of "Dateityp": a.dateityp = child.innerText
           of "DateiReferenzId": a.dateiReferenzId = child.innerText
-          of "DateiGroesse": a.dateiGroesse = try: parseInt(child.innerText) except ValueError: 0
+          of "DateiGroesse": a.dateiGroesse = parseIntOr(child.innerText, 0)
         if a.dateiReferenzId.len > 0:
           b.anhaenge.add(a)
 
@@ -164,8 +160,6 @@ proc initEricAndQueryPostfach*(cfg: Config, certPath, certPin, name, produktVers
   return (0, bereitstellungen, serverResponse)
 
 proc displayBereitstellungen*(bereitstellungen: seq[AbholBereitstellung]) =
-  if bereitstellungen.len == 0:
-    return
   for b in bereitstellungen:
     for a in b.anhaenge:
       echo constructFilename(b, a)

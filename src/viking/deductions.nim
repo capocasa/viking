@@ -17,7 +17,7 @@ type
     agb*: Table[string, float]
     kids*: Table[string, Table[string, float]]  # kidName → (ERiC code → amount)
 
-proc parseDeductions*(content: string, kidNames: seq[string]): DeductionsByForm =
+func parseDeductions*(content: string, kidNames: seq[string]): DeductionsByForm =
   ## Parse deductions.tsv content and group by form section.
   result.vor = initTable[string, float]()
   result.sa = initTable[string, float]()
@@ -69,33 +69,17 @@ proc parseDeductions*(content: string, kidNames: seq[string]): DeductionsByForm 
       raise newException(ValueError, "Invalid amount '" & amountStr & "' for code " & code)
 
     let resolved = resolveDeductionCode(code, kidNames)
-
+    let ec = resolved.ericCode
     case resolved.form
-    of "vor":
-      if resolved.ericCode in result.vor:
-        result.vor[resolved.ericCode] = result.vor[resolved.ericCode] + amount
-      else:
-        result.vor[resolved.ericCode] = amount
-    of "sa":
-      if resolved.ericCode in result.sa:
-        result.sa[resolved.ericCode] = result.sa[resolved.ericCode] + amount
-      else:
-        result.sa[resolved.ericCode] = amount
-    of "agb":
-      if resolved.ericCode in result.agb:
-        result.agb[resolved.ericCode] = result.agb[resolved.ericCode] + amount
-      else:
-        result.agb[resolved.ericCode] = amount
+    of "vor": result.vor[ec] = result.vor.getOrDefault(ec) + amount
+    of "sa":  result.sa[ec]  = result.sa.getOrDefault(ec)  + amount
+    of "agb": result.agb[ec] = result.agb.getOrDefault(ec) + amount
     of "kind":
       if resolved.kidName notin result.kids:
         result.kids[resolved.kidName] = initTable[string, float]()
-      if resolved.ericCode in result.kids[resolved.kidName]:
-        result.kids[resolved.kidName][resolved.ericCode] =
-          result.kids[resolved.kidName][resolved.ericCode] + amount
-      else:
-        result.kids[resolved.kidName][resolved.ericCode] = amount
-    else:
-      discard
+      result.kids[resolved.kidName][ec] =
+        result.kids[resolved.kidName].getOrDefault(ec) + amount
+    else: discard
 
 proc loadDeductions*(path: string, kidNames: seq[string]): DeductionsByForm =
   ## Load and parse a deductions.tsv file.

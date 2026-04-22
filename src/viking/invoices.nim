@@ -17,15 +17,12 @@ type
     amount19*: Option[float]
     amount7*: Option[float]
     amount0*: Option[float]
-    count*: int
 
   EuerAggregation* = object
     incomeNet*: float        ## Sum of positive amounts (net, excl. VAT)
     incomeVat*: float        ## VAT collected on income
     expenseNet*: float       ## Sum of abs(negative amounts) (net, excl. VAT)
     expenseVorsteuer*: float ## Input VAT on expenses
-    incomeCount*: int
-    expenseCount*: int
 
   UstAggregation* = object
     income19*: float         ## Net income at 19%
@@ -35,8 +32,6 @@ type
     has19*: bool
     has7*: bool
     has0*: bool
-    incomeCount*: int
-    expenseCount*: int
 
   InvoiceError* = object
     line*: int
@@ -153,11 +148,13 @@ func parseInvoices*(input: string): (seq[Invoice], seq[InvoiceError]) =
       if idStr.len > 64:
         errors.add(InvoiceError(line: lineNum, msg: "invoice-id too long: " & $idStr.len & " chars (max 64)"))
         continue
+      var badChar = '\0'
       for c in idStr:
         if not (c.isAlphaNumeric or c == '-' or c == '_'):
-          errors.add(InvoiceError(line: lineNum, msg: "invalid invoice-id character: '" & $c & "'"))
+          badChar = c
           break
-      if errors.len > 0 and errors[^1].line == lineNum:
+      if badChar != '\0':
+        errors.add(InvoiceError(line: lineNum, msg: "invalid invoice-id character: '" & $badChar & "'"))
         continue
       inv.invoiceId = idStr
 
@@ -199,7 +196,6 @@ func aggregate*(invoices: seq[Invoice]): InvoiceAggregation =
   result.amount19 = if has19: some(sum19) else: none(float)
   result.amount7 = if has7: some(sum7) else: none(float)
   result.amount0 = if has0: some(sum0) else: none(float)
-  result.count = invoices.len
 
 func monthsForPeriod*(period: string): seq[int] =
   ## Return which months (1-12) a period covers.
@@ -240,21 +236,19 @@ func aggregateForEuer*(invoices: seq[Invoice]): EuerAggregation =
     if inv.amount >= 0:
       result.incomeNet += inv.amount
       result.incomeVat += roundCents(inv.amount * rate)
-      inc result.incomeCount
     else:
       result.expenseNet += abs(inv.amount)
       result.expenseVorsteuer += roundCents(abs(inv.amount) * rate)
-      inc result.expenseCount
 
-proc loadAndAggregateInvoices*(path: string, year: int = 0, period: string = ""): (InvoiceAggregation, int, bool) =
+proc loadAndAggregateInvoices*(path: string, year: int = 0, period: string = ""): (InvoiceAggregation, bool) =
   ## Top-level entry point: read, parse, optionally filter by period, aggregate.
-  ## Prints errors to stderr. Returns (aggregation, totalParsed, success).
+  ## Prints errors to stderr. Returns (aggregation, success).
   var input: string
   try:
     input = readInvoiceInput(path)
   except IOError as e:
     err("Error: Cannot read invoice file: " & e.msg)
-    return (InvoiceAggregation(), 0, false)
+    return (InvoiceAggregation(), false)
 
   let (invoices, errors) = parseInvoices(input)
 
@@ -262,10 +256,10 @@ proc loadAndAggregateInvoices*(path: string, year: int = 0, period: string = "")
     err("Invoice parsing errors:")
     for e in errors:
       err("  line " & $e.line & ": " & e.msg)
-    return (InvoiceAggregation(), 0, false)
+    return (InvoiceAggregation(), false)
 
   if invoices.len == 0:
-    return (InvoiceAggregation(amount19: none(float), amount7: none(float), amount0: none(float), count: 0), 0, true)
+    return (InvoiceAggregation(), true)
 
   var filtered = invoices
   if year > 0 and period != "":
@@ -280,8 +274,7 @@ proc loadAndAggregateInvoices*(path: string, year: int = 0, period: string = "")
         err("Warning: " & $undated & " invoice(s) without date excluded from period filter")
       filtered = filterByPeriod(invoices, year, period)
 
-  let agg = aggregate(filtered)
-  return (agg, invoices.len, true)
+  (aggregate(filtered), true)
 
 proc loadAndAggregateForEuer*(path: string): (EuerAggregation, bool) =
   ## Top-level entry point for EÜR: read, parse, aggregate by income/expense.
@@ -325,10 +318,8 @@ func aggregateForUst*(invoices: seq[Invoice]): UstAggregation =
         result.income0 += inv.amount
         result.has0 = true
       else: discard
-      inc result.incomeCount
     else:
       result.vorsteuer += roundCents(abs(inv.amount) * rate)
-      inc result.expenseCount
 
 proc loadAndAggregateForUst*(path: string): (UstAggregation, bool) =
   ## Top-level entry point for annual USt: read, parse, aggregate.

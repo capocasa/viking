@@ -77,7 +77,7 @@ proc generateUstva*(
   let finanzamt = steuernummer[0..3]
   let testmerkerLine = if test: "\n    <Testmerker>700000004</Testmerker>" else: ""
 
-  let xml = &"""<?xml version="1.0" encoding="UTF-8"?>
+  result = &"""<?xml version="1.0" encoding="UTF-8"?>
 <Elster xmlns="http://www.elster.de/elsterxml/schema/v11">
   <TransferHeader version="11">
     <Verfahren>ElsterAnmeldung</Verfahren>
@@ -124,8 +124,6 @@ proc generateUstva*(
     </Nutzdatenblock>
   </DatenTeil>
 </Elster>"""
-
-  result = xml
 
 func isValidPeriod*(period: string): bool =
   ## Check if period is valid (01-12 for monthly, 41-44 for quarterly)

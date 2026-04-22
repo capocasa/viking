@@ -41,7 +41,7 @@ const fieldMap*: seq[FormField] = @[
 const knownFormPrefixes* = ["vor", "sa", "agb"]
 
 # Build lookup tables at compile time
-proc buildFormLookup(): Table[string, string] =
+func buildFormLookup(): Table[string, string] =
   result = initTable[string, string]()
   for f in fieldMap:
     let key = f.form & ":" & $f.kz
@@ -49,7 +49,7 @@ proc buildFormLookup(): Table[string, string] =
 
 const formLookup = buildFormLookup()
 
-proc parseCompoundCode*(code: string): ParsedCode =
+func parseCompoundCode*(code: string): ParsedCode =
   ## Parse a compound code like "vor326" or "lena174" into prefix + KZ.
   ## Splits at the letter→digit boundary. Case-insensitive.
   var i = 0
@@ -67,7 +67,7 @@ proc parseCompoundCode*(code: string): ParsedCode =
     raise newException(ValueError, "Invalid Kennzahl in code: " & code)
   result = ParsedCode(prefix: prefix, kz: kz)
 
-proc lookupCode*(form: string, kz: int): string =
+func lookupCode*(form: string, kz: int): string =
   ## Look up the ERiC XML element code for a (form, kz) pair.
   ## Returns empty string if not found.
   let key = form & ":" & $kz
@@ -75,10 +75,10 @@ proc lookupCode*(form: string, kz: int): string =
     return formLookup[key]
   return ""
 
-proc isKnownFormPrefix*(prefix: string): bool =
+func isKnownFormPrefix*(prefix: string): bool =
   prefix in knownFormPrefixes
 
-proc resolveDeductionCode*(code: string, kidNames: seq[string]): tuple[ericCode: string, form: string, kidName: string] =
+func resolveDeductionCode*(code: string, kidNames: seq[string]): tuple[ericCode: string, form: string, kidName: string] =
   ## Resolve a deductions.tsv code to its ERiC element code.
   ## Returns (ericCode, form, kidName). kidName is non-empty only for child deductions.
   let parsed = parseCompoundCode(code)

@@ -3,7 +3,7 @@
 ## Data is TSV-driven via source.euer= in viking.conf. Year comes from
 ## personal.year. Dry-run validates via ERiC and prints XML.
 
-import std/[osproc, strutils, os, algorithm]
+import std/[osproc, strutils, os, sequtils]
 import viking/ericsetup
 
 when defined(windows):
@@ -219,18 +219,7 @@ echo ""
 
 echo "--- per-year UStVA plugins validate ---"
 let installation = findExistingEric(getEricDataDir())
-let pluginPath = installation.pluginPath
-var years: seq[int] = @[]
-for kind, path in walkDir(pluginPath):
-  if kind == pcFile:
-    let name = path.extractFilename
-    let uStVAPrefix = PluginPrefix & "UStVA_"
-    if name.startsWith(uStVAPrefix) and name.endsWith(DynlibExt):
-      try:
-        let y = parseInt(name[uStVAPrefix.len ..^ (DynlibExt.len + 1)])
-        if y >= 2025: years.add(y)
-      except ValueError: discard
-years.sort()
+let years = listPluginYears(installation, "UStVA").filterIt(it >= 2025)
 check("found UStVA plugins >=2025", years.len > 0)
 writeFile(ustvaTsv, "1000,19\n")
 for year in years:
@@ -425,17 +414,7 @@ removeFile(noEuerConf)
 echo ""
 
 echo "--- euer: per-year plugin validation ---"
-var euerYears: seq[int] = @[]
-for kind, path in walkDir(pluginPath):
-  if kind == pcFile:
-    let name = path.extractFilename
-    let euerPrefix = PluginPrefix & "EUER_"
-    if name.startsWith(euerPrefix) and name.endsWith(DynlibExt):
-      try:
-        let y = parseInt(name[euerPrefix.len ..^ (DynlibExt.len + 1)])
-        if y >= 2025: euerYears.add(y)
-      except ValueError: discard
-euerYears.sort()
+let euerYears = listPluginYears(installation, "EUER").filterIt(it >= 2025)
 check("found EUER plugins >=2025", euerYears.len > 0)
 writeFile(euerTsv, "1000,19\n-500,19\n")
 for year in euerYears:
@@ -737,17 +716,7 @@ removeFile(pdfConf)
 echo ""
 
 echo "--- est per-year plugin validation ---"
-var estYears: seq[int] = @[]
-for kind, path in walkDir(pluginPath):
-  if kind == pcFile:
-    let name = path.extractFilename
-    let estPrefix = PluginPrefix & "ESt_"
-    if name.startsWith(estPrefix) and name.endsWith(DynlibExt):
-      try:
-        let y = parseInt(name[estPrefix.len ..^ (DynlibExt.len + 1)])
-        if y >= 2024: estYears.add(y)
-      except ValueError: discard
-estYears.sort()
+let estYears = listPluginYears(installation, "ESt").filterIt(it >= 2024)
 check("found ESt plugins >=2024", estYears.len > 0)
 writeFile(estTsv, "1000,19\n-500,19\n")
 for year in estYears:
@@ -826,18 +795,7 @@ removeFile(ustVzConf)
 echo ""
 
 echo "--- ust per-year plugin validation ---"
-var ustYears: seq[int] = @[]
-for kind, path in walkDir(pluginPath):
-  if kind == pcFile:
-    let name = path.extractFilename
-    let ustPrefix = PluginPrefix & "USt_"
-    let ustvaPrefix = PluginPrefix & "UStVA_"
-    if name.startsWith(ustPrefix) and not name.startsWith(ustvaPrefix) and name.endsWith(DynlibExt):
-      try:
-        let y = parseInt(name[ustPrefix.len ..^ (DynlibExt.len + 1)])
-        if y >= 2025: ustYears.add(y)
-      except ValueError: discard
-ustYears.sort()
+let ustYears = listPluginYears(installation, "USt").filterIt(it >= 2025)
 check("found USt plugins >=2025", ustYears.len > 0)
 writeFile(ustTsv, "1000,19\n-500,19\n")
 for year in ustYears:

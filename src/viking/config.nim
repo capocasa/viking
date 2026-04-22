@@ -38,7 +38,7 @@ proc loadConfig*(dataDir: string, test: bool): Config =
   result.dataDir = if dataDir != "": dataDir else: getAppDataDir()
   result.test = test
   result.ericLogPath = result.dataDir / "logs"
-  let installation = findExistingEricIn(result.dataDir / "eric")
+  let installation = findExistingEric(result.dataDir / "eric")
   if installation.valid:
     result.ericLibPath = installation.libPath / EricApiLib
     result.ericPluginPath = installation.pluginPath

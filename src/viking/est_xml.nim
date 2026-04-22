@@ -19,7 +19,7 @@ type
     test*: bool
     produktVersion*: string
 
-proc generateEst*(input: EstInput): string =
+func generateEst*(input: EstInput): string =
   let p = input.conf.personal
   let finanzamt = p.taxnumber[0..3]
   let bundesland = bundeslandFromSteuernummer(p.taxnumber)
@@ -85,15 +85,10 @@ proc generateEst*(input: EstInput): string =
 
     if hasGesetzlich:
       var andPers = ""
-      if "E2001805" in vor:
-        andPers.add(&"""
-              <E2001805>{roundEuro(vor["E2001805"])}</E2001805>""")
-      if "E2002105" in vor:
-        andPers.add(&"""
-              <E2002105>{roundEuro(vor["E2002105"])}</E2002105>""")
-      if "E2002206" in vor:
-        andPers.add(&"""
-              <E2002206>{roundEuro(vor["E2002206"])}</E2002206>""")
+      for code in ["E2001805", "E2002105", "E2002206"]:
+        if code in vor:
+          andPers.add(&"""
+              <{code}>{roundEuro(vor[code])}</{code}>""")
       vorParts.add(&"""
           <Beitr_g_KV_PV_Inl>
             <Person>PersonA</Person>
@@ -103,15 +98,10 @@ proc generateEst*(input: EstInput): string =
 
     if hasPrivat:
       var privParts = ""
-      if "E2003104" in vor:
-        privParts.add(&"""
-              <E2003104>{roundEuro(vor["E2003104"])}</E2003104>""")
-      if "E2003202" in vor:
-        privParts.add(&"""
-              <E2003202>{roundEuro(vor["E2003202"])}</E2003202>""")
-      if "E2003302" in vor:
-        privParts.add(&"""
-              <E2003302>{roundEuro(vor["E2003302"])}</E2003302>""")
+      for code in ["E2003104", "E2003202", "E2003302"]:
+        if code in vor:
+          privParts.add(&"""
+              <{code}>{roundEuro(vor[code])}</{code}>""")
       vorParts.add(&"""
           <Beitr_p_KV_PV_Inl>
             <Person>PersonA</Person>{privParts}
@@ -381,7 +371,7 @@ proc generateEst*(input: EstInput): string =
   let fullName = p.lastname & " " & p.firstname
   let produktVersion = if input.produktVersion != "": input.produktVersion else: "0.1.0"
 
-  let xml = &"""<?xml version="1.0" encoding="UTF-8"?>
+  result = &"""<?xml version="1.0" encoding="UTF-8"?>
 <Elster xmlns="http://www.elster.de/elsterxml/schema/v11">
   <TransferHeader version="11">
     <Verfahren>ElsterErklaerung</Verfahren>
@@ -450,5 +440,3 @@ proc generateEst*(input: EstInput): string =
     </Nutzdatenblock>
   </DatenTeil>
 </Elster>"""
-
-  result = xml
