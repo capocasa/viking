@@ -529,7 +529,7 @@ let dedTsv = testDir / "tmp_abzuege.tsv"
 writeFile(dedTsv, "code\tamount\nsa131\t500\n")
 let estDedConf = testDir / "tmp_est_ded.conf"
 writeConf(estDedConf, personalBlock().replace("beruf        = Software-Entwickler",
-  "beruf        = Software-Entwickler\nabzuege      = " & dedTsv) & """
+  "beruf        = Software-Entwickler\nabzuege      = r\"" & dedTsv & "\"") & """
 [mybiz]
 versteuerung = 2
 euer = mybiz.tsv
@@ -580,7 +580,7 @@ echo ""
 echo "--- est Anlage Kind ---"
 let estKindConf = testDir / "tmp_est_kind.conf"
 writeConf(estKindConf, personalBlock().replace("beruf        = Software-Entwickler",
-  "beruf        = Software-Entwickler\nabzuege      = " & (testDir / "tmp_kind_ded.tsv")) & """
+  "beruf        = Software-Entwickler\nabzuege      = r\"" & (testDir / "tmp_kind_ded.tsv") & "\"") & """
 [mybiz]
 versteuerung = 2
 euer = mybiz.tsv
