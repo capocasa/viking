@@ -16,8 +16,8 @@ const
   StartYear = "2025"
   CurrentYear = CompileDate[0 .. 3]
   Copyright* =
-    if CurrentYear == StartYear: "(C) " & StartYear & " viking contributors"
-    else: "(C) " & StartYear & "-" & CurrentYear & " viking contributors"
+    if CurrentYear == StartYear: "(c) " & StartYear & " viking contributors"
+    else: "(c) " & StartYear & "-" & CurrentYear & " viking contributors"
     ## Rendered into the ELSTER `<Copyright>` field (which ERiC drops into
     ## the PDF footer). End year floats with the build date. ASCII only —
     ## ELSTER rejects `©` and non-ASCII dashes with `ZeichenNichtImZeichensatz`.
