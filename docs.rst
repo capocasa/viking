@@ -19,31 +19,34 @@ The configuration model was reworked. Highlights:
 
 - A single `viking.conf` per project drives every command. No more `.env`,
   no more `VIKING_*` env vars.
-- INI sections classify themselves by **name and markers** — no `income =`
-  field needed. The first section is the taxpayer, named by full name
-  (`[Hans Maier]`). Only `[auth]`, `[freiberuf]`, `[gewerbe]` are reserved.
-  Everything else falls out from the shape of the section:
+- Four section names — `[steuerzahler]`, `[kind]`, `[einkommen]`, `[auth]`
+  — with duplicates allowed (parsecfg loop mode). Entities are identified
+  by `name=` and, for income sources, `typ=`:
 
-  - `verhaeltnis = ...`            → kid (section name = full name)
-  - `guenstigerpruefung`/`pauschbetrag` → Anlage KAP source
-  - section name ends with a legal-form suffix (GmbH, UG, KG, OHG, GbR,
-    PartG, eK, eG, KGaA, SE, "GmbH & Co. KG", …) → Anlage G with that
-    Rechtsform
-  - any later person-named section with an `idnr` → spouse
-    (triggers Zusammenveranlagung; section name = full name)
-  - anything else → Einzelgewerbe (Anlage G with rechtsform einzel)
+  - first `[steuerzahler]` → taxpayer; a later `[steuerzahler]` with a
+    different `name=` → co-filing spouse (Zusammenveranlagung)
+  - `[kind]` → child (`name=` is the full name; first given word
+    lowercased becomes the abzuege-code prefix)
+  - `[einkommen] typ=freiberuflich` → Anlage S
+  - `[einkommen] typ=gewerbe`       → Anlage G (optional `name=` with a
+    legal-form suffix — GmbH, UG, KG, OHG, GbR, PartG, eK, eG, KGaA, SE,
+    "GmbH & Co. KG", … — inferred. No suffix → Einzelgewerbe.)
+  - `[einkommen] typ=kapital`       → Anlage KAP (`name=` is the broker
+    handle; gains / tax / soli / pauschbetrag inline)
+  - `[einkommen] typ=rente`         → Anlage R (`rente=` points at the
+    row TSV)
 
 - German-word aliases for every numeric ELSTER code you used to look up:
-  `freiberuf` instead of `3`, `einzel` instead of `120`, `q1` instead of
-  `41`, `rk` instead of `03`. Numerics still work.
+  `freiberuflich` instead of `3`, `einzel` instead of `120`, `q1` instead
+  of `41`, `rk` instead of `03`. Numerics still work.
 - Explicit external-file wiring: the cert, PIN source, abzuege
   TSV, and every invoice TSV are declared in the conf. No filesystem
   scanning, no basename-derived defaults — you always see which file
   feeds which return. Wire `pass`, Keychain or libsecret with a
   one-line `pincmd` shell command.
-- Multi-source per conf: declare `[freiberuf]`, `[gewerbe]`,
-  `[Musterfirma GmbH]` and `[ibkr]` (KAP) side-by-side; commands pick by
-  section name.
+- Multi-source per conf: declare any number of `[einkommen]` sections
+  side-by-side; commands pick by handle (`typ` slug, or an explicit
+  `name=`).
 - Two-file conf chain: `~/.config/viking/viking.conf` for shared
   defaults, `./viking.conf` to override per project.
 
@@ -73,7 +76,8 @@ The simplest viable conf: one person, one freelance income source.
 
 .. code-block:: ini
 
-    [Hans Maier]
+    [steuerzahler]
+    name     = Hans Maier
     year     = 2025
     steuernr = 9198011310010
     strasse  = Musterstr.
@@ -82,9 +86,10 @@ The simplest viable conf: one person, one freelance income source.
     ort      = Berlin
     iban     = DE91100000000123456789
 
-    [freiberuf]
+    [einkommen]
+    typ          = freiberuflich
     versteuerung = ist
-    euer   = freelance.tsv
+    euer         = freelance.tsv
 
 That's enough for a UStVA:
 
@@ -137,25 +142,32 @@ A source with no ``euer=`` files a USt-Nullmeldung (zero at 19%).
 Multiple sources
 ################
 
-Add more sections — each one is a source. Section names can be the
-reserved `[freiberuf]` (Anlage S) / `[gewerbe]` (Einzelgewerbe), or a
-company name whose suffix picks the Rechtsform:
+Add more `[einkommen]` sections — each one is a source. `typ=` picks
+the Anlage; an optional `name=` gives the source its own handle and,
+for `typ=gewerbe`, hints the Rechtsform via a trailing legal-form
+suffix:
 
 .. code-block:: ini
 
-    [freiberuf]                    ; Anlage S, rechtsform freiberuf
+    [einkommen]                       ; Anlage S, rechtsform freiberuf
+    typ          = freiberuflich
     versteuerung = ist
 
-    [Musterfirma GmbH]             ; Anlage G, rechtsform gmbh (350)
+    [einkommen]                       ; Anlage G, rechtsform gmbh (350)
+    typ             = gewerbe
+    name            = Musterfirma GmbH
     steuernr        = 9198011310020   ; overrides personal.steuernr for this source
     versteuerung    = soll
     vorauszahlungen = 100
 
-    [mygewerbe]                    ; no suffix → Einzelgewerbe (120)
+    [einkommen]                       ; no suffix → Einzelgewerbe (120)
+    typ          = gewerbe
+    name         = mygewerbe
     versteuerung = soll
 
-Now commands need to know which source to act on. The section name is
-the handle:
+Now commands need to know which source to act on. Without `name=`, the
+handle is the `typ` slug (``freiberuf`` / ``gewerbe`` / ``rente``); with
+`name=`, it's the explicit name:
 
 .. code-block:: sh
 
@@ -165,7 +177,8 @@ the handle:
     viking ust   -s "Musterfirma GmbH"   # picks up vorauszahlungen=100
 
 `viking est` is special — it scans every source and emits Anlage G for
-each Gewerbe and Anlage S for each `[freiberuf]`, all in one return:
+each `typ=gewerbe` and Anlage S for each `typ=freiberuflich`, all in
+one return:
 
 .. code-block:: sh
 
@@ -211,11 +224,13 @@ Anlage KAP (capital gains)
 ##########################
 
 KAP sources don't need a TSV — gains, withheld tax and Soli go inline.
-Marker: `guenstigerpruefung` or `pauschbetrag`:
+Use `typ=kapital` and give the source a `name=` (the broker handle):
 
 .. code-block:: ini
 
-    [ibkr]
+    [einkommen]
+    typ                = kapital
+    name               = ibkr
     guenstigerpruefung = 1
     pauschbetrag       = 1000
     gains              = 1500.50
@@ -223,32 +238,32 @@ Marker: `guenstigerpruefung` or `pauschbetrag`:
     soli               = 20.63
 
 `viking est` aggregates every KAP source into one Anlage KAP. The
-section name (here `ibkr`) is just a label for your benefit.
+`name=` (here `ibkr`) is just a label for your benefit.
 
 Spouse and kids
 ###############
 
-Add a spouse section for joint filing (Zusammenveranlagung). Name it
-with the spouse's full name. The marker is simply the presence of an
-`idnr` on a later person-named section — IdNrs are only issued to
-natural persons, so there's no ambiguity with companies:
+Add a second `[steuerzahler]` for joint filing (Zusammenveranlagung);
+its `name=` must differ from the first (merge semantics: identical
+name merges, different name adds a spouse):
 
 .. code-block:: ini
 
-    [Greta Maier]
+    [steuerzahler]
+    name         = Greta Maier
     geburtsdatum = 12.07.1956
     idnr         = 04452397688
     religion     = ev
     beruf        = Lehrerin
 
-Add one section per kid. The section name is the kid's name; the
+Add one `[kind]` per kid. The `name=` key is the kid's full name; the
 first given word (lowercased) becomes the prefix for that kid's
-abzuege codes. Marker: `verhaeltnis`.
+abzuege codes.
 
 Name parsing (whitespace-split, hyphenated names like ``Ann-Kathrin``
 or ``Rosenmüller-Huber`` stay one word):
 
-* **1 word** — just the given name (``[Louise]``). The Nachname
+* **1 word** — just the given name (``name = Louise``). The Nachname
   is implicitly the taxpayer's; the optional Nachname field
   (E0500108) is left empty.
 * **2 words** — ``Vorname Nachname``. If the Nachname matches the
@@ -261,13 +276,14 @@ or ``Rosenmüller-Huber`` stay one word):
 
 To give a kid a middle name, the Nachname **must** be written out
 explicitly, even when it matches the taxpayer's — otherwise the
-last word would be parsed as the Nachname. ``[Louise Ann Capocasa]``
-sets firstname ``Louise Ann``; ``[Louise Ann]`` sets firstname
+last word would be parsed as the Nachname. ``name = Louise Ann Capocasa``
+sets firstname ``Louise Ann``; ``name = Louise Ann`` sets firstname
 ``Louise`` and Nachname ``Ann``.
 
 .. code-block:: ini
 
-    [Max Maier]
+    [kind]
+    name                 = Max Maier
     geburtsdatum         = 01.06.2018
     idnr                 = 12345678901
     verhaeltnis          = leiblich    ; to Person A (the filer)
@@ -275,7 +291,8 @@ sets firstname ``Louise Ann``; ``[Louise Ann]`` sets firstname
     familienkasse        = Berlin      ; Familienkasse zustaendig fuer Kindergeld
     kindergeld           = 2400
 
-    [Lisa Maier]
+    [kind]
+    name                 = Lisa Maier
     geburtsdatum         = 15.03.2020
     idnr                 = 98765432109
     verhaeltnis          = leiblich
@@ -315,7 +332,8 @@ automatically:
 
 .. code-block:: ini
 
-    [Hans Maier]
+    [steuerzahler]
+    name    = Hans Maier
     ...
     abzuege = abzuege.tsv
 
@@ -412,7 +430,8 @@ explicit `[auth]` pointing at `viking.pfx` + `viking.pin`:
 
 .. code-block:: ini
 
-    [Hans Maier]
+    [steuerzahler]
+    name         = Hans Maier
     year         = 2025
     geburtsdatum = 05.05.1955
     idnr         = 04452397687
@@ -427,30 +446,37 @@ explicit `[auth]` pointing at `viking.pfx` + `viking.pin`:
     krankenkasse = privat
     abzuege      = abzuege.tsv
 
-    [Greta Maier]
+    [steuerzahler]
+    name         = Greta Maier
     geburtsdatum = 12.07.1956
     idnr         = 04452397688
     religion     = ev
     beruf        = Lehrerin
 
-    [freiberuf]
+    [einkommen]
+    typ          = freiberuflich
     versteuerung = ist
-    euer   = freelance.tsv
+    euer         = freelance.tsv
 
-    [mygewerbe]
+    [einkommen]
+    typ             = gewerbe
+    name            = mygewerbe
     steuernr        = 9198011310020
     versteuerung    = soll
     vorauszahlungen = 100
-    euer      = mygewerbe.tsv
+    euer            = mygewerbe.tsv
 
-    [ibkr]
+    [einkommen]
+    typ                = kapital
+    name               = ibkr
     guenstigerpruefung = 1
     pauschbetrag       = 1000
     gains              = 1500.50
     tax                = 375.13
     soli               = 20.63
 
-    [Max Maier]
+    [kind]
+    name                = Max Maier
     geburtsdatum        = 01.06.2018
     idnr                = 12345678901
     verhaeltnis         = leiblich
@@ -458,7 +484,8 @@ explicit `[auth]` pointing at `viking.pfx` + `viking.pin`:
     familienkasse       = Berlin
     kindergeld          = 2400
 
-    [Lisa Maier]
+    [kind]
+    name                = Lisa Maier
     geburtsdatum        = 15.03.2020
     idnr                = 98765432109
     verhaeltnis         = leiblich

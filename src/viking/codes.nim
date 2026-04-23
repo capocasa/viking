@@ -79,6 +79,18 @@ const besteuerungsartMap* = CodeMap(field: "besteuerungsart", entries: @[
             aliases: @["teil-ist", "teil_ist"]),
 ])
 
+const haushaltMap* = CodeMap(field: "haushalt", entries: @[
+  CodeEntry(word: "a", number: "a",
+            desc: "Kind gehoert zum Haushalt der steuerpflichtigen Person",
+            aliases: @["filer", "ich", "selbst"]),
+  CodeEntry(word: "b", number: "b",
+            desc: "Kind gehoert zum Haushalt des anderen Elternteils",
+            aliases: @["andere", "partner"]),
+  CodeEntry(word: "beide", number: "beide",
+            desc: "gemeinsamer Haushalt (Zusammenveranlagung default)",
+            aliases: @["gemeinsam", "both"]),
+])
+
 const kindschaftsverhaeltnisMap* = CodeMap(
   field: "kindschaftsverhaeltnis", entries: @[
     CodeEntry(word: "leiblich", number: "1",

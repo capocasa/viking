@@ -20,7 +20,7 @@
 import std/[strutils, strformat, options, os, sequtils, tables]
 import cligen
 import viking/[config, ericffi, ottoffi, ustva_xml, euer_xml, est_xml, ust_xml, ericsetup, invoices, abholung_xml, nachricht_xml, bankverbindung_xml]
-import viking/[vikingconf, deductions, kap, log, abholung, codes, ericerror]
+import viking/[vikingconf, deductions, kap, log, abholung, codes, ericerror, rente]
 
 const NimblePkgVersion {.strdefine.} = "dev"
 
@@ -346,8 +346,11 @@ proc euer(
     let xml = generateEuer(EuerInput(
       steuernummer: vikingConf.effectiveTaxnumber(src), jahr: year,
       incomeNet: agg.incomeNet, incomeVat: agg.incomeVat,
+      incomeSteuerfrei: agg.incomeSteuerfrei,
+      incomeFaErstattung: agg.incomeFaErstattung,
       expenseNet: agg.expenseNet, expenseVorsteuer: agg.expenseVorsteuer,
       rechtsform: src.rechtsform, einkunftsart: einkunftsart,
+      art: src.art,
       name: fullName, strasse: fullStreet, plz: p.zip, ort: p.city,
       test: cfg.test, produktVersion: NimblePkgVersion,
     ))
@@ -405,7 +408,9 @@ proc est(
       else:
         let (agg, ok) = loadAndAggregateForEuer(tsvPath)
         if not ok: return ExitConfig
-        profit = (agg.incomeNet + agg.incomeVat) - (agg.expenseNet + agg.expenseVorsteuer)
+        profit = (agg.incomeNet + agg.incomeVat +
+                  agg.incomeSteuerfrei + agg.incomeFaErstattung) -
+                 (agg.expenseNet + agg.expenseVorsteuer)
       let entry = ProfitEntry(label: src.name, profit: profit)
       case src.kind
       of skGewerbe: gewerbeProfits.add(entry)
@@ -413,6 +418,41 @@ proc est(
       else: discard
 
     let kapTotals = aggregateKap(vikingConf.sources)
+
+    # Anlage R / R_AUS: log per-row summary, then emit XML for the rows
+    # we can route (see classifyRente in est_xml). Rows we can't route
+    # (gefördert / domestic Kapitalleistungen / unknown art) surface as
+    # warnings so the filer can add those lines via ELSTER Online or a
+    # Sonstige Nachricht. `--force` silences the warnings.
+    var renteSummaries: seq[RenteSummary]
+    let rentePath = resolveRentePath(vikingConf)
+    if rentePath != "":
+      if not fileExists(rentePath):
+        err &"Error: rente TSV not found: {rentePath}"
+        return ExitNotFound
+      var renteRows: seq[RenteRow]
+      try: renteRows = loadRente(rentePath)
+      except ValueError as e:
+        err &"Error parsing rente: {e.msg}"
+        return ExitConfig
+      renteSummaries = summarizeAll(renteRows)
+      if renteSummaries.len > 0:
+        log ""
+        log "--- Anlage R (Renten / sonstige Leistungen) ---"
+        for s in renteSummaries:
+          let r = s.row
+          log &"  zahler={r.zahler} land={r.herkunftsland} " &
+              &"art={r.art} gefoerdert={r.gefoerdert}"
+          log &"    Bruttobetrag:      {r.betrag:>12.2f} EUR"
+          log &"    Ertragsanteil:     {s.ertragsanteilProzent:>11.2f} %"
+          log &"    steuerpflichtig:   {s.taxable:>12.2f} EUR"
+          log &"    Hinweis: {s.note}"
+        log &"  Summe steuerpflichtig: {totalTaxable(renteSummaries):.2f} EUR"
+        log ""
+        if not force:
+          let classified = classifyRente(renteSummaries)
+          for w in classified.warnings:
+            err &"Warning: rente row '{w.zahler}' not emitted — {w.reason}"
 
     var ded: DeductionsByForm
     let dedPath = resolveDeductionsPath(vikingConf)
@@ -425,6 +465,22 @@ proc est(
       except ValueError as e:
         err &"Error parsing abzuege: {e.msg}"
         return ExitConfig
+      # Under Einzelveranlagung, ERiC plausi 100500031 / 100500001 requires
+      # the "selbst getragen" Anteil for any claimed KBK (Kz174) or
+      # Schulgeld (Kz176). Surface missing companion rows early with a
+      # clear message rather than letting ERiC reject the XML.
+      if not vikingConf.spouse.present and ded.kids.len > 0:
+        var missing: seq[string] = @[]
+        for kid, kt in ded.kids:
+          if "E0506105" in kt and "E0506604" notin kt:
+            missing.add(&"{kid}174_eigen (KBK selbst getragen)")
+          if "E0505607" in kt and "E0504505" notin kt:
+            missing.add(&"{kid}176_eigen (Schulgeld selbst getragen)")
+        if missing.len > 0:
+          err "Error: Einzelveranlagung requires 'selbst getragen' companion " &
+              "rows in abzuege.tsv for these claims:\n  - " &
+              missing.join("\n  - ")
+          return ExitConfig
     elif not force:
       err "Warning: no abzuege set. Either add `abzuege = …` to the taxpayer section of viking.conf, or use --force to suppress."
 
@@ -434,6 +490,7 @@ proc est(
       conf: vikingConf, year: year,
       gewerbeProfits: gewerbeProfits, freelanceProfits: freelanceProfits,
       kapTotals: kapTotals, deductions: ded,
+      rente: renteSummaries,
       test: cfg.test, produktVersion: NimblePkgVersion,
     ))
 
@@ -893,9 +950,10 @@ proc message(
     err e.msg
     ExitConfig
 
-const initConfTemplate = """; First section = taxpayer. Section name = "Vornamen Nachname".
+const initConfTemplate = """; [steuerzahler] is the taxpayer; `name = Vornamen Nachname`.
 ; `year` is required — copy this directory per tax year.
-[Vorname Nachname]
+[steuerzahler]
+name         = ""
 year         = 2025
 geburtsdatum = ""
 idnr         = ""
@@ -910,52 +968,64 @@ beruf        = ""
 krankenkasse = privat
 abzuege      = abzuege.tsv     ; TSV with vor/sa/agb/per-kid codes for ESt (optional)
 
-; Spouse (optional, for Zusammenveranlagung). Any later person-named
-; section with an `idnr` is the co-filing spouse. Section name = full name.
-; [Vorname Nachname]
+; Spouse (optional, for Zusammenveranlagung). A second [steuerzahler]
+; with a different `name=` is the co-filing spouse.
+; [steuerzahler]
+; name         = ""
 ; geburtsdatum = ""
 ; idnr         = ""
 ; religion     = keine
 
-; Income sources. Reserved names: freiberuf (Anlage S), gewerbe
-; (Einzelgewerbe). Otherwise the section name IS a handle; rechtsform
-; is inferred from a legal-form suffix (GmbH, UG, AG, KG, OHG, GbR,
-; PartG, eK, eG, KGaA, SE, "GmbH & Co. KG", …). No suffix = Einzelgewerbe.
-; Company sections (with a legal-form suffix) are accepted but only
-; submit EÜR today — full double-entry bookkeeping is future work.
+; Income sources. One [einkommen] per source; `typ=` dispatches:
+;   freiberuflich → Anlage S
+;   gewerbe       → Anlage G (optional `name=` with a Rechtsform
+;                   suffix — GmbH, UG, AG, KG, OHG, GbR, PartG, eK,
+;                   eG, KGaA, SE, "GmbH & Co. KG", … — inferred.
+;                   No suffix → Einzelgewerbe.)
+;   kapital       → Anlage KAP (`name=` is the broker handle)
+;   rente         → Anlage R   (`rente=` points at the row TSV)
 ; Each EÜR source declares its income/cost TSV via `euer=` (EÜR =
 ; Einnahmen-Überschuss-Rechnung). Optional — sources without `euer=`
 ; submit zeros with a warning. Copy this conf (and its TSVs) into a
 ; per-year directory so each year's data stays isolated.
 
-; [freiberuf]
-; versteuerung    = ist      ; ist or soll
+; [einkommen]
+; typ             = freiberuflich
+; versteuerung    = ist         ; ist or soll
 ; vorauszahlungen = 0
 ; euer            = freiberuf.tsv
 
-; [gewerbe]
+; [einkommen]
+; typ             = gewerbe
 ; versteuerung    = ist
 ; vorauszahlungen = 0
 ; euer            = gewerbe.tsv
 
-; [Musterfirma GmbH]          ; rechtsform inferred: gmbh
+; [einkommen]
+; typ             = gewerbe
+; name            = Musterfirma GmbH   ; rechtsform inferred: gmbh
 ; versteuerung    = soll
-; vorauszahlungen = 0
 ; euer            = musterfirma.tsv
 
-; Anlage KAP. Marker: guenstigerpruefung or pauschbetrag. No TSV —
-; values are inline.
-; [ibkr]
+; Anlage KAP — values inline, no TSV needed.
+; [einkommen]
+; typ                = kapital
+; name               = ibkr
 ; guenstigerpruefung = 1
 ; pauschbetrag       = 1000
 ; gains              = 0
 ; tax                = 0
 ; soli               = 0
 
-; Kids. Marker: verhaeltnis (leiblich | pflege | enkel).
-; Section name = full name. The firstname's first word (lowercased) is
-; the abzuege-code prefix, e.g. alice174.
-; [Alice Maier]
+; Anlage R — point `rente=` at a TSV of rente rows.
+; [einkommen]
+; typ   = rente
+; rente = rente.tsv
+
+; Kids. One [kind] per child; `name=` is the full name. The firstname's
+; first word (lowercased) is the abzuege-code prefix, e.g. alice174.
+; [kind]
+; name                = Alice Maier
 ; geburtsdatum        = ""
 ; idnr                = ""
 ; verhaeltnis         = leiblich

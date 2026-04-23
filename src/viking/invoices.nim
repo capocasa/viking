@@ -19,8 +19,10 @@ type
     amount0*: Option[float]
 
   EuerAggregation* = object
-    incomeNet*: float        ## Sum of positive amounts (net, excl. VAT)
-    incomeVat*: float        ## VAT collected on income
+    incomeNet*: float        ## Umsatzsteuerpflichtige Betriebseinnahmen (Z.13)
+    incomeVat*: float        ## VAT collected on income (Z.14)
+    incomeSteuerfrei*: float ## rate=0: steuerfreie/Reverse-Charge-Umsätze (Z.17)
+    incomeFaErstattung*: float ## rate=-1: FA USt-Erstattung, nicht steuerbar (Z.16)
     expenseNet*: float       ## Sum of abs(negative amounts) (net, excl. VAT)
     expenseVorsteuer*: float ## Input VAT on expenses
 
@@ -229,14 +231,26 @@ proc readInvoiceInput*(path: string): string =
 
 func aggregateForEuer*(invoices: seq[Invoice]): EuerAggregation =
   ## Split invoices into income (positive) and expenses (negative) for EÜR.
-  ## Positive amounts = income, negative amounts = expenses. rate = -1 is
-  ## "nicht steuerbar" (EÜR-only): counts toward income/expense with no VAT.
+  ## Positive amounts = income, negative amounts = expenses.
+  ##
+  ## Rate steers which EÜR-line the income lands on:
+  ##   19/7 -> umsatzsteuerpflichtig (Z.13/14, `incomeNet` + `incomeVat`)
+  ##   0    -> steuerfrei/Reverse-Charge (Z.17, `incomeSteuerfrei`)
+  ##   -1   -> nicht steuerbar, e.g. FA-USt-Erstattung (Z.16, `incomeFaErstattung`)
+  ## Expenses of any rate feed `expenseNet` + `expenseVorsteuer`.
   for inv in invoices:
-    let rate = if inv.rate < 0: 0.0 else: inv.rate.float / 100.0
     if inv.amount >= 0:
-      result.incomeNet += inv.amount
-      result.incomeVat += roundCents(inv.amount * rate)
+      case inv.rate
+      of -1:
+        result.incomeFaErstattung += inv.amount
+      of 0:
+        result.incomeSteuerfrei += inv.amount
+      else:
+        let rate = inv.rate.float / 100.0
+        result.incomeNet += inv.amount
+        result.incomeVat += roundCents(inv.amount * rate)
     else:
+      let rate = if inv.rate < 0: 0.0 else: inv.rate.float / 100.0
       result.expenseNet += abs(inv.amount)
       result.expenseVorsteuer += roundCents(abs(inv.amount) * rate)
 

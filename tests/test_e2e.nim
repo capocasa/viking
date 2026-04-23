@@ -1,7 +1,7 @@
 ## End-to-end sandbox tests for viking
 ## Requires: ERiC library + test certificates in <data-dir>/certificates.
-## Data is TSV-driven via source.euer= in viking.conf. Year comes from
-## personal.year. Dry-run validates via ERiC and prints XML.
+## Data is TSV-driven via [einkommen].euer= in viking.conf. Year comes
+## from [steuerzahler].year. Dry-run validates via ERiC and prints XML.
 
 import std/[osproc, strutils, os, sequtils]
 import viking/ericsetup
@@ -59,7 +59,8 @@ proc authBlock(): string =
   "\n[auth]\ncert = r\"" & testCertPath & "\"\npin = r\"" & testPinPath & "\"\n"
 
 proc personalBlock(year: int = 2025): string =
-  "[Hans Maier]\n" &
+  "[steuerzahler]\n" &
+  "name         = Hans Maier\n" &
   "year         = " & $year & "\n" &
   "geburtsdatum = 05.05.1955\n" &
   "idnr         = 04452397687\n" &
@@ -111,7 +112,8 @@ echo ""
 
 let ustvaConf = testDir / "tmp_ustva.conf"
 writeConf(ustvaConf, personalBlock() & """
-[freiberuf]
+[einkommen]
+typ = freiberuflich
 versteuerung = 2
 euer = freiberuf.tsv
 """)
@@ -225,7 +227,8 @@ writeFile(ustvaTsv, "1000,19\n")
 for year in years:
   let yearConf = testDir / ("tmp_ustva_" & $year & ".conf")
   writeConf(yearConf, personalBlock(year) & """
-[freiberuf]
+[einkommen]
+typ = freiberuflich
 versteuerung = 2
 euer = freiberuf.tsv
 """)
@@ -241,7 +244,9 @@ echo ""
 echo "--- ustva: alphanumeric aliases (rechtsform, versteuerung, religion) ---"
 let wordConf = testDir / "tmp_words.conf"
 writeConf(wordConf, personalBlock().replace("religion     = 11", "religion     = rk") & """
-[freelance]
+[einkommen]
+typ = gewerbe
+name = freelance
 rechtsform = einzel
 versteuerung = ist
 euer = freelance.tsv
@@ -263,7 +268,9 @@ removeFile(wordConf)
 echo "--- ustva: bad rechtsform lists valid values ---"
 let badConf = testDir / "tmp_bad.conf"
 writeConf(badConf, personalBlock() & """
-[freelance]
+[einkommen]
+typ = gewerbe
+name = freelance
 rechtsform = zzz
 versteuerung = ist
 """)
@@ -276,11 +283,14 @@ echo ""
 echo "--- ustva: multi-source requires name ---"
 let multiConf = testDir / "tmp_multi.conf"
 writeConf(multiConf, personalBlock() & """
-[freiberuf]
+[einkommen]
+typ = freiberuflich
 versteuerung = 2
 euer = freiberuf.tsv
 
-[mygewerbe]
+[einkommen]
+typ = gewerbe
+name = mygewerbe
 steuernr = 9198011310020
 versteuerung = 2
 euer = mygewerbe.tsv
@@ -318,7 +328,7 @@ writeFile(authTsvPath, "0,19\n")
 echo "--- auth: pin inline ---"
 let inlinePinConf = testDir / "tmp_inline_pin.conf"
 writeFile(inlinePinConf, personalBlock() &
-  "[freiberuf]\nversteuerung = 2\neuer = freiberuf.tsv\n\n" &
+  "[einkommen]\ntyp = freiberuflich\nversteuerung = 2\neuer = freiberuf.tsv\n\n" &
   "[auth]\ncert = r\"" & testCertPath & "\"\npin = 123456\n")
 let (inPinOut, inPinRc) = runIn(testDir, "ustva -s freiberuf --test -c " & inlinePinConf & " --period 41")
 check("inline pin accepted",
@@ -331,7 +341,7 @@ let pincmdConf = testDir / "tmp_pincmd.conf"
 let pinFile = testDir / "tmp_pincmd.pin"
 writeFile(pinFile, "123456\n")
 writeFile(pincmdConf, personalBlock() &
-  "[freiberuf]\nversteuerung = 2\neuer = freiberuf.tsv\n\n" &
+  "[einkommen]\ntyp = freiberuflich\nversteuerung = 2\neuer = freiberuf.tsv\n\n" &
   "[auth]\ncert = r\"" & testCertPath & "\"\npincmd = r\"cat " & pinFile & "\"\n")
 let (pcOut, pcRc) = runIn(testDir, "ustva -s freiberuf --test -c " & pincmdConf & " --period 41")
 check("pincmd shell accepted", pcRc == 0 or pcOut.contains("610301202"), pcOut)
@@ -341,7 +351,7 @@ removeFile(pinFile)
 echo "--- auth: missing pin+pincmd ---"
 let noAuthConf = testDir / "tmp_no_auth.conf"
 writeFile(noAuthConf, personalBlock() &
-  "[freiberuf]\nversteuerung = 2\neuer = freiberuf.tsv\n\n" &
+  "[einkommen]\ntyp = freiberuflich\nversteuerung = 2\neuer = freiberuf.tsv\n\n" &
   "[auth]\ncert = r\"" & testCertPath & "\"\n")
 let (noAuthOut, noAuthRc) = runIn(testDir, "ustva -s freiberuf --test -c " & noAuthConf & " --period 41")
 check("missing pin+pincmd rejected", noAuthRc != 0)
@@ -356,7 +366,9 @@ echo ""
 
 let euerConf = testDir / "tmp_euer.conf"
 writeConf(euerConf, personalBlock() & """
-[freelance]
+[einkommen]
+typ = gewerbe
+name = freelance
 versteuerung = 2
 euer = freelance.tsv
 """)
@@ -391,7 +403,9 @@ echo ""
 echo "--- euer: unset (optional, warns + zeros) ---"
 let noEuerConf = testDir / "tmp_no_euer.conf"
 writeConf(noEuerConf, personalBlock() & """
-[freelance]
+[einkommen]
+typ = gewerbe
+name = freelance
 versteuerung = 2
 """)
 let (noEOut, noERc) = runIn(testDir, "euer -s freelance -c " & noEuerConf & " --dry-run -v")
@@ -420,7 +434,9 @@ writeFile(euerTsv, "1000,19\n-500,19\n")
 for year in euerYears:
   let yearConf = testDir / ("tmp_euer_" & $year & ".conf")
   writeConf(yearConf, personalBlock(year) & """
-[freelance]
+[einkommen]
+typ = gewerbe
+name = freelance
 versteuerung = 2
 euer = freelance.tsv
 """)
@@ -439,7 +455,9 @@ echo ""
 
 let estConf = testDir / "tmp_est.conf"
 writeConf(estConf, personalBlock() & """
-[mybiz]
+[einkommen]
+typ = gewerbe
+name = mybiz
 versteuerung = 2
 euer = mybiz.tsv
 """)
@@ -457,7 +475,8 @@ echo ""
 echo "--- est Anlage S ---"
 let estConfS = testDir / "tmp_est_s.conf"
 writeConf(estConfS, personalBlock() & """
-[freiberuf]
+[einkommen]
+typ = freiberuflich
 versteuerung = 2
 euer = freiberuf.tsv
 """)
@@ -475,11 +494,14 @@ echo ""
 echo "--- est multi-source (G + S) ---"
 let estMultiConf = testDir / "tmp_est_multi.conf"
 writeConf(estMultiConf, personalBlock() & """
-[mybiz]
+[einkommen]
+typ = gewerbe
+name = mybiz
 versteuerung = 2
 euer = mybiz.tsv
 
-[freiberuf]
+[einkommen]
+typ = freiberuflich
 versteuerung = 2
 euer = freiberuf.tsv
 """)
@@ -509,7 +531,9 @@ writeFile(dedTsv, "code\tamount\nsa131\t500\n")
 let estDedConf = testDir / "tmp_est_ded.conf"
 writeConf(estDedConf, personalBlock().replace("beruf        = Software-Entwickler",
   "beruf        = Software-Entwickler\nabzuege      = r\"" & dedTsv & "\"") & """
-[mybiz]
+[einkommen]
+typ = gewerbe
+name = mybiz
 versteuerung = 2
 euer = mybiz.tsv
 """)
@@ -521,7 +545,9 @@ check("est abzuege loaded (Spenden)", dedOut.contains("<E0108105>500</E0108105>"
 echo "--- est: missing abzuege warns, --force suppresses ---"
 let estNoDedConf = testDir / "tmp_est_noded.conf"
 writeConf(estNoDedConf, personalBlock() & """
-[mybiz]
+[einkommen]
+typ = gewerbe
+name = mybiz
 versteuerung = 2
 euer = mybiz.tsv
 """)
@@ -538,11 +564,15 @@ echo ""
 echo "--- est Anlage KAP ---"
 let estKapConf = testDir / "tmp_est_kap.conf"
 writeConf(estKapConf, personalBlock() & """
-[mybiz]
+[einkommen]
+typ = gewerbe
+name = mybiz
 versteuerung = 2
 euer = mybiz.tsv
 
-[ibkr]
+[einkommen]
+typ = kapital
+name = ibkr
 gains = 1500.50
 tax = 375.13
 soli = 20.63
@@ -553,31 +583,72 @@ check("est KAP ok", structuralOk(kapOut, kapRc), kapOut)
 check("est KAP <KAP>", kapOut.contains("<KAP>"))
 check("est KAP guenstigerpruefung", kapOut.contains("<E1900401>1</E1900401>"))
 check("est KAP Kapitalertraege", kapOut.contains("<E1900701>"))
+# XSD code meanings: E1904701=KapESt, E1904901=Soli, E1904801=KiSt.
+# ERiC also requires that exact ordering inside St_Abz_Betr.
+check("est KAP soli -> E1904901", kapOut.contains("<E1904901>20,63</E1904901>"))
+let e1904901idx = kapOut.find("<E1904901>")
+let e1904801idx = kapOut.find("<E1904801>")
+# The -1 sentinel cases are fine: the e2e conf has no Kirchensteuer.
+check("est KAP E1904901 before E1904801",
+      e1904801idx < 0 or e1904901idx < e1904801idx)
 removeFile(estKapConf)
+echo ""
+
+# FR6: Sparer-Pauschbetrag must not be emitted when the only KAP gains
+# are ohne Steuerabzug. Otherwise ERiC rule 192021 triggers
+# ("SPB angegeben, aber keine Z.7 Kapitalerträge"). Carlo's 2025 Wise
+# scenario is exactly this: gains=18, no tax, guenstigerpruefung=1.
+echo "--- est Anlage KAP: ohne-StAbz suppresses Sp_PB ---"
+let estKapNoAbzConf = testDir / "tmp_est_kap_noabz.conf"
+writeConf(estKapNoAbzConf, personalBlock() & """
+[einkommen]
+typ = gewerbe
+name = mybiz
+versteuerung = 2
+euer = mybiz.tsv
+
+[einkommen]
+typ = kapital
+name = wise
+gains = 18
+guenstigerpruefung = 1
+""")
+let (noabzOut, noabzRc) = runIn(testDir, "est -c " & estKapNoAbzConf & " --dry-run -v --force")
+check("est KAP wise-only ok", structuralOk(noabzOut, noabzRc), noabzOut)
+check("est KAP wise routes to E1901501", noabzOut.contains("<E1901501>18</E1901501>"))
+check("est KAP wise-only no Sp_PB", not noabzOut.contains("<Sp_PB>"))
+check("est KAP wise-only no 192021", not noabzOut.contains("192021"))
+removeFile(estKapNoAbzConf)
 echo ""
 
 echo "--- est Anlage Kind ---"
 let estKindConf = testDir / "tmp_est_kind.conf"
 writeConf(estKindConf, personalBlock().replace("beruf        = Software-Entwickler",
   "beruf        = Software-Entwickler\nabzuege      = r\"" & (testDir / "tmp_kind_ded.tsv") & "\"") & """
-[mybiz]
+[einkommen]
+typ = gewerbe
+name = mybiz
 versteuerung = 2
 euer = mybiz.tsv
 
-[Max Maier]
+[kind]
+name = Max Maier
 geburtsdatum = 01.06.2018
 idnr = 12345678901
 verhaeltnis = 1
 kindergeld = 2400
 
-[Lisa Maier]
+[kind]
+name = Lisa Maier
 geburtsdatum = 15.03.2020
 idnr = 98765432109
 verhaeltnis = 1
 kindergeld = 2400
 """)
 writeFile(testDir / "tmp_kind_ded.tsv",
-  "code\tamount\nmax174\t2400\nlisa174\t3600\nlisa176\t1500\n")
+  "code\tamount\nmax174\t2400\nmax174_eigen\t2400\n" &
+  "lisa174\t3600\nlisa174_eigen\t3600\n" &
+  "lisa176\t1500\nlisa176_eigen\t1500\n")
 let (kindOut, kindRc) = runIn(testDir, "est -c " & estKindConf & " --dry-run -v")
 check("est Kind ok", structuralOk(kindOut, kindRc), kindOut)
 check("est Kind 2 <Kind>", kindOut.count("<Kind>") == 2)
@@ -585,6 +656,15 @@ check("est Kind betreuungskosten", kindOut.contains("<E0506105>"))
 check("est Kind schulgeld", kindOut.contains("<E0505607>"))
 check("est Kind no K_Verh_B without kindschaftsverhaeltnis_b",
       not kindOut.contains("<K_Verh_B>"))
+# ERiC rule Kind_Kinderbetreuungskosten_10050054 requires an <Einz> row
+# alongside <Sum> inside <Elt_k_ZV>/<Kosten>. Previously only Sum was
+# emitted, which tripped the rule on every Einzelveranlagung KBK claim.
+check("est KBK Elt_k_ZV has Einz row",
+      kindOut.contains("<Elt_k_ZV>") and
+      kindOut.contains("<E0506606>") and
+      kindOut.contains("<E0506605>"))
+check("est KBK 10050054 not triggered",
+      not kindOut.contains("Kind_Kinderbetreuungskosten_10050054"))
 removeFile(estKindConf)
 removeFile(testDir / "tmp_kind_ded.tsv")
 echo ""
@@ -592,11 +672,14 @@ echo ""
 echo "--- est Anlage Kind K_Verh_and_P ---"
 let estAndPConf = testDir / "tmp_est_andp.conf"
 writeConf(estAndPConf, personalBlock() & """
-[mybiz]
+[einkommen]
+typ = gewerbe
+name = mybiz
 versteuerung = 2
 euer = mybiz.tsv
 
-[Max Maier]
+[kind]
+name = Max Maier
 geburtsdatum         = 01.06.2018
 idnr                 = 12345678901
 verhaeltnis          = leiblich
@@ -614,23 +697,67 @@ check("est Kind familienkasse", andPOut.contains("<E0500706>Berlin</E0500706>"))
 removeFile(estAndPConf)
 echo ""
 
+# FR8: cohabiting unmarried parents under Einzelveranlagung must be able
+# to override haushalt_eltern_getrennt back to "0" (the Einzelveranlagung
+# default is "1"). Previously the tri-state collapsed "0" to "" — so
+# even with `haushalt_eltern_getrennt = 0` the renderer still took the
+# getrennt="1" path and emitted no Ang_HH block, tripping ERiC plausi
+# 10514160 on KBK.
+echo "--- est Anlage Kind cohabiting unmarried parents (FR8) ---"
+let estCohabConf = testDir / "tmp_est_cohab.conf"
+writeConf(estCohabConf, personalBlock().replace("beruf        = Software-Entwickler",
+  "beruf        = Software-Entwickler\nabzuege      = r\"" & (testDir / "tmp_cohab_ded.tsv") & "\"") & """
+[einkommen]
+typ = gewerbe
+name = mybiz
+versteuerung = 2
+euer = mybiz.tsv
+
+[kind]
+name = Max Maier
+geburtsdatum             = 01.06.2018
+idnr                     = 12345678901
+verhaeltnis              = leiblich
+personb-verhaeltnis      = leiblich
+personb-name             = Greta Schmidt
+haushalt                 = beide
+haushalt_eltern_getrennt = 0
+""")
+writeFile(testDir / "tmp_cohab_ded.tsv",
+  "code\tamount\nmax174\t2400\nmax174_eigen\t2400\n")
+let (cohabOut, cohabRc) = runIn(testDir, "est -c " & estCohabConf & " --dry-run -v")
+check("est cohab ok", structuralOk(cohabOut, cohabRc), cohabOut)
+check("est cohab emits Gem_HH_Elt", cohabOut.contains("<Gem_HH_Elt>"))
+check("est cohab emits E0504807", cohabOut.contains("<E0504807>01.01-31.12</E0504807>"))
+check("est cohab emits E0504808", cohabOut.contains("<E0504808>01.01-31.12</E0504808>"))
+check("est cohab no K_gem_HH_Elt", not cohabOut.contains("<K_gem_HH_Elt>"))
+check("est cohab 10514160 not triggered",
+      not cohabOut.contains("Kind_Kinderbetreuungskosten_10514160"))
+removeFile(estCohabConf)
+removeFile(testDir / "tmp_cohab_ded.tsv")
+echo ""
+
 echo "--- est Anlage Kind date ranges ---"
 # Mix of: born in tax year (auto-start from birthdate), aging out mid-year
 # (verhaeltnis_bis), and an independent wohnsitz override.
 let estDatesConf = testDir / "tmp_est_dates.conf"
 writeConf(estDatesConf, personalBlock() & """
-[mybiz]
+[einkommen]
+typ = gewerbe
+name = mybiz
 versteuerung = 2
 euer = mybiz.tsv
 
-[Baby Maier]
+[kind]
+name = Baby Maier
 geburtsdatum       = 10.04.2025
 idnr               = 11111111111
 verhaeltnis        = leiblich
 personb-verhaeltnis= leiblich
 personb-name       = Greta Maier
 
-[Anna Maier]
+[kind]
+name = Anna Maier
 geburtsdatum       = 01.06.2000
 idnr               = 22222222222
 verhaeltnis        = leiblich
@@ -638,7 +765,8 @@ personb-verhaeltnis= leiblich
 personb-name       = Greta Maier
 verhaeltnis_bis    = 30.06
 
-[Tim Maier]
+[kind]
+name = Tim Maier
 geburtsdatum       = 15.03.2000
 idnr               = 33333333333
 verhaeltnis        = leiblich
@@ -663,7 +791,9 @@ echo ""
 echo "--- --output-pdf renders PDFs across subcommands ---"
 let pdfConf = testDir / "tmp_pdf.conf"
 writeConf(pdfConf, personalBlock() & """
-[freelance]
+[einkommen]
+typ = gewerbe
+name = freelance
 versteuerung = 2
 euer = freelance.tsv
 """)
@@ -722,7 +852,9 @@ writeFile(estTsv, "1000,19\n-500,19\n")
 for year in estYears:
   let yConf = testDir / ("tmp_est_" & $year & ".conf")
   writeConf(yConf, personalBlock(year) & """
-[mybiz]
+[einkommen]
+typ = gewerbe
+name = mybiz
 versteuerung = 2
 euer = mybiz.tsv
 """)
@@ -741,7 +873,9 @@ echo ""
 
 let ustConf = testDir / "tmp_ust.conf"
 writeConf(ustConf, personalBlock() & """
-[freelance]
+[einkommen]
+typ = gewerbe
+name = freelance
 versteuerung = 2
 euer = freelance.tsv
 """)
@@ -775,13 +909,19 @@ check("ust nst skips rate -1 from Umsaetze", nstU.contains("<E3003303>1000</E300
 check("ust nst Ums_Sum ignores rate -1", nstU.contains("<E3006001>190,00</E3006001>"))
 let (nstE, nstERc) = runIn(testDir, "euer -s freelance -c " & ustConf & " --dry-run -v")
 check("euer nst exits 0", nstERc == 0, nstE)
-check("euer nst includes rate -1 as income", nstE.contains("<E6000401>1200,00</E6000401>"))
+check("euer nst keeps 19% in E6000401", nstE.contains("<E6000401>1000,00</E6000401>"))
+check("euer nst routes rate=-1 to E6000701 (FA Erstattung)",
+      nstE.contains("<E6000701>200,00</E6000701>"))
+check("euer nst GesamtSum incl. rate=-1",
+      nstE.contains("<E6001201>1390,00</E6001201>"))
 echo ""
 
 echo "--- ust vorauszahlungen ---"
 let ustVzConf = testDir / "tmp_ust_vz.conf"
 writeConf(ustVzConf, personalBlock() & """
-[freelance]
+[einkommen]
+typ = gewerbe
+name = freelance
 versteuerung = 2
 euer = freelance.tsv
 vorauszahlungen = 100
@@ -801,7 +941,9 @@ writeFile(ustTsv, "1000,19\n-500,19\n")
 for year in ustYears:
   let yConf = testDir / ("tmp_ust_" & $year & ".conf")
   writeConf(yConf, personalBlock(year) & """
-[freelance]
+[einkommen]
+typ = gewerbe
+name = freelance
 versteuerung = 2
 euer = freelance.tsv
 """)
@@ -898,7 +1040,7 @@ check("init creates viking.conf", fileExists(initDir / "viking.conf"))
 check("init creates abzuege.tsv", fileExists(initDir / "abzuege.tsv"))
 
 let confContent = readFile(initDir / "viking.conf")
-check("init has taxpayer section", confContent.contains("[Vorname Nachname]"))
+check("init has taxpayer section", confContent.contains("[steuerzahler]"))
 check("init has year", confContent.contains("year"))
 check("init has geburtsdatum", confContent.contains("geburtsdatum"))
 
@@ -929,7 +1071,8 @@ echo ""
 echo "--- conf validation: year required ---"
 let noYearConf = testDir / "tmp_no_year.conf"
 writeConf(noYearConf,
-  "[Hans Maier]\n" &
+  "[steuerzahler]\n" &
+  "name = Hans Maier\n" &
   "geburtsdatum = 05.05.1955\n" &
   "idnr = 04452397687\n" &
   "steuernr = 9198011310010\n" &
@@ -949,7 +1092,8 @@ echo ""
 echo "--- conf validation: unknown keys and malformed lines ---"
 let unkConf = testDir / "tmp_unknown.conf"
 writeConf(unkConf, personalBlock() & "typokey = oops\n" & """
-[freiberuf]
+[einkommen]
+typ = freiberuflich
 versteuerung = 2
 unknownfield  = bad
 euer = freiberuf.tsv
@@ -962,13 +1106,14 @@ removeFile(unkConf)
 
 let malConf = testDir / "tmp_malformed.conf"
 writeConf(malConf, personalBlock() & "this line has no equals sign\n" & """
-[freiberuf]
+[einkommen]
+typ = freiberuflich
 versteuerung = 2
 euer = freiberuf.tsv
 """)
 let (malOut, malRc) = runIn(testDir, "ustva -c " & malConf & " --period 41 --dry-run -v")
 check("malformed line rejected", malRc != 0)
-check("malformed line cites filepath:lineno", malOut.contains(":13:"))
+check("malformed line cites filepath:lineno", malOut.contains(":14:"))
 check("malformed line shown", malOut.contains("this line has no equals"))
 removeFile(malConf)
 echo ""

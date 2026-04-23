@@ -133,10 +133,15 @@ echo "--- EÜR per source ---"
 let (eF, eFRc) = inEx("euer -s freiberuf --test --dry-run -v")
 check("euer freiberuf ok", eFRc == 0, eF)
 check("rechtsform freiberuf -> 140", eF.contains("<E6000602>140</E6000602>"))
+check("euer rate=-1 routes to USt_Erstattet",
+      eF.contains("<E6000701>204,37</E6000701>"))
+check("euer art freiberuf", eF.contains("<E6000017>IT-Dienstleistungen</E6000017>"))
 
 let (eM, eMRc) = inEx("euer -s gewerbe --test --dry-run -v")
 check("euer gewerbe ok", eMRc == 0, eM)
 check("rechtsform einzel -> 120", eM.contains("<E6000602>120</E6000602>"))
+check("euer art gewerbe",
+      eM.contains("<E6000017>Online-Handel SaaS</E6000017>"))
 echo ""
 
 # -----------------------------------------------------------------
@@ -164,13 +169,36 @@ check("Luna kvh auto-starts on birthdate",
 check("Luna wohnsitz follows kvh",
       e.contains("<E0500703>15.03-31.12</E0500703>"))
 check("KAP guenstigerpruefung", e.contains("<E1900401>1</E1900401>"))
+# Wise source has gains but no tax/soli/kirchensteuer → auto-routes to
+# KapErt_kein_inl_StAbz (Zeile 18) instead of the withholding bucket.
+check("KAP wise -> kein_inl_StAbz",
+      e.contains("<KapErt_kein_inl_StAbz>") and
+      e.contains("<E1901501>18</E1901501>"))
 check("religion rk -> 03", e.contains("<E0100402>03</E0100402>"))
 check("Sonderausgaben Spenden", e.contains("<E0108105>"))
 check("AgB Krankheitskosten", e.contains("<E0161304>"))
 check("Anlage Kind Betreuungskosten", e.contains("<E0506105>"))
 check("Anlage Kind Schulgeld", e.contains("<E0505607>"))
+check("Anlage Kind Schulgeld Einzelposten", e.contains("<E0504405>"))
+check("Anlage Kind KBK Ang_HH", e.contains("<Ang_HH>"))
+check("KAP soli (E1904901)", e.contains("<E1904901>20,63</E1904901>"))
+check("KAP kirchensteuer (E1904801)", e.contains("<E1904801>33,76</E1904801>"))
+check("KAP aqs (E1901201)", e.contains("<E1901201>12,40</E1901201>"))
+check("§35a Minijob", e.contains("<Minijobs>"))
+check("§35a haushaltsnahe DL", e.contains("<Hhn_BV_DL>"))
+check("§35a Handwerker", e.contains("<Handw_L>"))
 check("Vorsorge KV privat", e.contains("<E2003104>"))
 check("Testmerker", e.contains("<Testmerker>700000004</Testmerker>"))
+
+# Anlage R: rente rows parse, log a summary, and emit an R_AUS/Leist_bAV
+# block for the Swiss Freizügigkeit example (foreign Einmalleistung,
+# nicht gefördert). The country code + amount land on the ungeförderte
+# Einmalleistung Kennzahl E1823901.
+check("Anlage R summary logged", e.contains("Anlage R (Renten"))
+check("R_AUS emitted", e.contains("<R_AUS>"))
+check("R_AUS Leist_bAV", e.contains("<Leist_bAV>"))
+check("R_AUS country CH", e.contains("<E1823101>CH</E1823101>"))
+check("R_AUS Einmalleistung", e.contains("<E1823901>4440</E1823901>"))
 echo ""
 
 # -----------------------------------------------------------------
@@ -223,6 +251,24 @@ if testCertAvailable:
         not vEst.contains("Regel_Kind_2020_100500048"))
   check("ESt Kind 100500001 not triggered",
         not vEst.contains("Kind_Kindschaftsverhaeltnis_100500001"))
+  # ERIC_VALIDIERE alone doesn't catch all XSD-sequence violations —
+  # ERIC_DRUCKE does. Run the full example through --output-pdf to
+  # exercise complete schema validation (Kind children order,
+  # Schulgeld Einz order, KAP element order, etc.). 610301200 =
+  # ERIC_IO_READER_SCHEMA_VALIDIERUNGSFEHLER.
+  let estPdf = tmp / "tmp_est_example.pdf"
+  let (vEstPdf, _) = inEx("est --test --dry-run -v --output-pdf=" & estPdf)
+  check("ESt --output-pdf no schema errors",
+        not vEstPdf.contains("610301200") and
+        not vEstPdf.contains("SCHEMA_VALIDIERUNGSFEHLER"))
+  check("ESt SPB not emitted when Z.7 gains=0",
+        block:
+          # Carlo's wise-only scenario (gains without Steuerabzug) would
+          # trigger FachlicheFehlerId 192021 if we still emitted Sp_PB.
+          # Example has both ibkr (Z.7) and wise (Z.18), so Sp_PB is OK
+          # here; just ensure 192021 never fires.
+          not vEstPdf.contains("192021"))
+  removeFile(estPdf)
   echo ""
 
   # ---------------------------------------------------------------

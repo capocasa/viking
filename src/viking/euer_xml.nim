@@ -10,10 +10,13 @@ type
     jahr*: int
     incomeNet*: float
     incomeVat*: float
+    incomeSteuerfrei*: float    ## rate=0 rows (Z.17, E6000501)
+    incomeFaErstattung*: float  ## rate=-1 rows, FA USt-Erstattung (Z.16, E6000701)
     expenseNet*: float
     expenseVorsteuer*: float
     rechtsform*: string
     einkunftsart*: string
+    art*: string          ## Art des Betriebs (E6000017). "" -> "Dienstleistungen".
     name*: string
     strasse*: string
     plz*: string
@@ -28,10 +31,28 @@ func generateEuer*(input: EuerInput): string =
   let finanzamt = i.steuernummer[0..3]
   let bundesland = bundeslandFromSteuernummer(i.steuernummer)
   let testmerkerLine = if i.test: "\n    <Testmerker>700000004</Testmerker>" else: ""
+  let art = if i.art != "": i.art else: "Dienstleistungen"
 
-  let totalIncome = roundCents(i.incomeNet + i.incomeVat)
+  let totalIncome = roundCents(i.incomeNet + i.incomeVat +
+                               i.incomeSteuerfrei + i.incomeFaErstattung)
   let totalExpense = roundCents(i.expenseNet + i.expenseVorsteuer)
   let profit = roundCents(totalIncome - totalExpense)
+
+  var beinExtra = ""
+  if i.incomeSteuerfrei != 0:
+    beinExtra.add(&"""
+              <USt_StFrei>
+                <Sum>
+                  <E6000501>{formatEurDE(i.incomeSteuerfrei)}</E6000501>
+                </Sum>
+              </USt_StFrei>""")
+  if i.incomeFaErstattung != 0:
+    beinExtra.add(&"""
+              <USt_Erstattet_Verrechnet>
+                <Sum>
+                  <E6000701>{formatEurDE(i.incomeFaErstattung)}</E6000701>
+                </Sum>
+              </USt_Erstattet_Verrechnet>""")
 
   result = &"""<?xml version="1.0" encoding="UTF-8"?>
 <Elster xmlns="http://www.elster.de/elsterxml/schema/v11">
@@ -63,7 +84,7 @@ func generateEuer*(input: EuerInput): string =
           <EUER>
             <Allg>
               <E6000016>{i.name}</E6000016>
-              <E6000017>Dienstleistungen</E6000017>
+              <E6000017>{art}</E6000017>
               <E6000602>{i.rechtsform}</E6000602>
               <E6000603>{i.einkunftsart}</E6000603>
               <E6000604>1</E6000604>
@@ -79,7 +100,7 @@ func generateEuer*(input: EuerInput): string =
                 <Sum>
                   <E6000601>{formatEurDE(i.incomeVat)}</E6000601>
                 </Sum>
-              </USt_Vereinnahmt_Unentgeltl>
+              </USt_Vereinnahmt_Unentgeltl>{beinExtra}
               <GesamtSum>
                 <E6001201>{formatEurDE(totalIncome)}</E6001201>
               </GesamtSum>

@@ -15,6 +15,8 @@ type
     vor*: Table[string, float]    # ERiC code → amount
     sa*: Table[string, float]
     agb*: Table[string, float]
+    hhn*: Table[string, float]    # §35a haushaltsnah (Minijob + SVB/DL)
+    hwk*: Table[string, float]    # §35a Handwerkerleistungen
     kids*: Table[string, Table[string, float]]  # kidName → (ERiC code → amount)
 
 func parseDeductions*(content: string, kidNames: seq[string]): DeductionsByForm =
@@ -22,6 +24,8 @@ func parseDeductions*(content: string, kidNames: seq[string]): DeductionsByForm 
   result.vor = initTable[string, float]()
   result.sa = initTable[string, float]()
   result.agb = initTable[string, float]()
+  result.hhn = initTable[string, float]()
+  result.hwk = initTable[string, float]()
   result.kids = initTable[string, Table[string, float]]()
 
   if content.strip.len == 0:
@@ -74,6 +78,8 @@ func parseDeductions*(content: string, kidNames: seq[string]): DeductionsByForm 
     of "vor": result.vor[ec] = result.vor.getOrDefault(ec) + amount
     of "sa":  result.sa[ec]  = result.sa.getOrDefault(ec)  + amount
     of "agb": result.agb[ec] = result.agb.getOrDefault(ec) + amount
+    of "hhn": result.hhn[ec] = result.hhn.getOrDefault(ec) + amount
+    of "hwk": result.hwk[ec] = result.hwk.getOrDefault(ec) + amount
     of "kind":
       if resolved.kidName notin result.kids:
         result.kids[resolved.kidName] = initTable[string, float]()

@@ -55,16 +55,17 @@ viking ustva --test -s freiberuf --period 41
 viking ustva --conf ./client-foo/viking.conf -s freiberuf --period 41
 ```
 
-The tax year comes from `personal.year` in `viking.conf`, not the CLI — copy the conf dir per year.
+The tax year comes from `[steuerzahler].year` in `viking.conf`, not the CLI — copy the conf dir per year.
 
 The `download` command queries the ELSTER Postfach, downloads documents from the OTTER server via `libotto`, and sends the mandatory confirmation (PostfachBestaetigung). Existing files are skipped unless `--force` is given.
 
 ## Configuration
 
-`viking.conf` is an INI file. The first section is the taxpayer — its name is your full name ("Vornamen Nachname"). Everything else classifies itself:
+`viking.conf` is an INI file. Four section names: `[steuerzahler]` (taxpayer, plus an optional second one for the spouse), `[kind]` (per child), `[einkommen]` (per income source — `typ=` dispatches) and `[auth]`:
 
 ```ini
-[Hans Maier]
+[steuerzahler]
+name       = Hans Maier
 year       = 2025             ; required — copy this dir per tax year
 steuernr   = 1234567890123
 idnr       = 04452397687
@@ -75,33 +76,44 @@ ort        = Berlin
 iban       = DE89370400440532013000
 abzuege    = abzuege.tsv      ; optional: ESt Abzüge TSV
 
-[Greta Maier]            ; later person-named section + idnr → spouse
+[steuerzahler]           ; second taxpayer → co-filing spouse
+name         = Greta Maier
 idnr         = 04452397688
 geburtsdatum = 12.07.1956
 
-[freiberuf]              ; reserved → Anlage S
+[einkommen]              ; typ=freiberuflich → Anlage S
+typ          = freiberuflich
 versteuerung = ist
-euer   = freelance.tsv
+euer         = freelance.tsv
 
-[Musterfirma GmbH]       ; suffix → Anlage G, rechtsform=gmbh (EÜR only for now)
+[einkommen]              ; typ=gewerbe with company name → Anlage G, rechtsform=gmbh
+typ          = gewerbe
+name         = Musterfirma GmbH
 versteuerung = soll
-euer   = musterfirma.tsv
+euer         = musterfirma.tsv
 
-[ibkr]                   ; marker → Anlage KAP
+[einkommen]              ; typ=kapital → Anlage KAP
+typ                = kapital
+name               = ibkr
 guenstigerpruefung = 1
 pauschbetrag       = 1000
 
-[Lena Maier]             ; marker → kid
-verhaeltnis   = leiblich
-geburtsdatum  = 15.03.2019
-idnr          = 02293417683
+[einkommen]              ; typ=rente → Anlage R
+typ   = rente
+rente = rente.tsv
+
+[kind]
+name         = Lena Maier
+verhaeltnis  = leiblich
+geburtsdatum = 15.03.2019
+idnr         = 02293417683
 
 [auth]                   ; signing material (required for live submit)
 cert = viking.pfx
 pin  = viking.pin        ; or inline, or `pincmd = pass show elster/pin`
 ```
 
-Rules: `[auth]`, `[freiberuf]` and `[gewerbe]` are the only reserved section names; `verhaeltnis` flags a kid, `guenstigerpruefung`/`pauschbetrag` Anlage KAP. The first person-named section is you (required: `year = YYYY`); any later person-named section with an `idnr` is your co-filing spouse (Zusammenveranlagung). A trailing legal-form in the section name (GmbH, UG, KG, OHG, GbR, PartG, eK, eG, KGaA, SE, "GmbH & Co. KG", …) picks the Rechtsform; otherwise it's an Einzelgewerbe. Company sections are accepted today but only EÜR is wired — full double-entry bookkeeping (Bilanz / E-Bilanz) is future work. External files are wired explicitly: EÜR sources declare their income/cost TSV via `euer=` (optional — zeros + warning if unset); the taxpayer declares the ESt `abzuege=` TSV; `[auth]` points at the `.pfx` (`cert=`) and either a PIN source (`pin=` file or inline) or a shell command (`pincmd=`). No filesystem scanning, no year interpolation, nothing implicit — copy the conf dir per year for clean data. See `viking init` for a full template and `docs.rst` for the slow tour.
+Rules: duplicate section names are allowed (parsecfg loop mode). The first `[steuerzahler]` is you (required: `year = YYYY`); any later `[steuerzahler]` with a different `name=` is your co-filing spouse (Zusammenveranlagung). `[einkommen].typ` picks the Anlage — `freiberuflich` (S), `gewerbe` (G), `kapital` (KAP), `rente` (R). For `typ=gewerbe`, an optional company `name=` with a trailing legal-form suffix (GmbH, UG, KG, OHG, GbR, PartG, eK, eG, KGaA, SE, "GmbH & Co. KG", …) picks the Rechtsform; otherwise it's an Einzelgewerbe. Company sections are accepted today but only EÜR is wired — full double-entry bookkeeping (Bilanz / E-Bilanz) is future work. External files are wired explicitly: EÜR sources declare their income/cost TSV via `euer=` (optional — zeros + warning if unset); rente sources declare their row TSV via `rente=`; the taxpayer declares the ESt `abzuege=` TSV; `[auth]` points at the `.pfx` (`cert=`) and either a PIN source (`pin=` file or inline) or a shell command (`pincmd=`). No filesystem scanning, no year interpolation, nothing implicit — copy the conf dir per year for clean data. See `viking init` for a full template and `docs.rst` for the slow tour.
 
 The conf is loaded from:
 

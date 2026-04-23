@@ -1,24 +1,31 @@
 ## viking.conf parser, validator, and auth resolver.
 ##
-## Sections are classified by name and by key markers (no `income =` needed):
+## Sections have fixed names; duplicates are permitted (parsecfg loop
+## mode). Entities are distinguished by the `name` key and — for
+## income sources — by the `typ` key:
 ##
-## * first non-reserved section (or one whose name matches an already-set
-##   personal name) → `Personal` (the taxpayer); section name = Vornamen
-##   Nachname (last word = Nachname, rest = Vornamen).
-## * `[auth]`                        → signing material (reserved)
-## * `[freiberuf]`                   → Anlage S source (rechtsform freiberuf)
-## * `[gewerbe]`                     → Anlage G Einzelgewerbe
-## * has `verhaeltnis` key           → `Kid`; section name = full name
-## * has `guenstigerpruefung`/`pauschbetrag` key → Anlage KAP source
-## * section name ends with a Rechtsform suffix (GmbH, UG, KG, OHG, GbR,
-##   PartG, eK, eG, KGaA, SE, GmbH & Co. KG, …) → Anlage G with that
-##   Rechtsform. No suffix → Einzelgewerbe.
-## * any remaining section with an `idnr` key → `Spouse` (triggers
-##   Zusammenveranlagung); section name = spouse's full name.
+## * `[steuerzahler]`  — first occurrence is the taxpayer (`Personal`);
+##                       a later occurrence with a different `name` is
+##                       the co-filing spouse (triggers Zusammen-
+##                       veranlagung). `name = Vornamen Nachname`
+##                       (last word = Nachname, rest = Vornamen).
+## * `[kind]`          — one per child. `name = full name` (first word
+##                       lowercased becomes the abzuege prefix).
+## * `[einkommen]`     — one per income source, classified via `typ=`:
+##                         `typ = freiberuflich` → Anlage S
+##                         `typ = gewerbe`       → Anlage G
+##                         `typ = kapital`       → Anlage KAP
+##                         `typ = rente`         → Anlage R
+##                       For `gewerbe`, the section's `name=` may be a
+##                       company name; the Rechtsform is inferred from
+##                       a trailing legal-form suffix (GmbH, UG, KG,
+##                       OHG, GbR, PartG, eK, eG, KGaA, SE, AG,
+##                       "GmbH & Co. KG", …). No suffix → Einzelgewerbe.
+## * `[auth]`          — signing material.
 ##
-## `loadVikingConf` merges the global and CWD confs (or honours an explicit
-## `--conf` path); `validateForX` returns a `seq[string]` of human-readable
-## errors per command.
+## `loadVikingConf` merges the global and CWD confs (or honours an
+## explicit `--conf` path); `validateForX` returns a `seq[string]` of
+## human-readable errors per command.
 ##
 ## All external-file wiring is explicit — there is no filesystem magic:
 ##
@@ -28,15 +35,16 @@
 ##   itself (dispatched via `fileExists` — if the resolved path exists,
 ##   read; else treat the value as the inline PIN). `pincmd=` is a shell
 ##   command executed with `confDir` as cwd; stdout is the PIN.
-## * `resolveEuerPath` reads `source.euer` (TSV path for EÜR income +
-##   cost data). Optional — unset sources submit zeros with a
+## * `resolveEuerPath` reads the EÜR source's `euer=` key (TSV of
+##   income + costs). Optional — unset sources submit zeros with a
 ##   warning. Presence of the key also marks the source as using
 ##   Einnahmen-Überschuss accounting (a different key will mark full
-##   double-entry once that lands). Paths are plain — users copy the
-##   conf per tax year rather than relying on year interpolation.
-## * `resolveDeductionsPath` reads `personal.deductions` (TSV path;
-##   optional). ESt warns when both the conf key and `--deductions` are
-##   absent unless `--force` is passed.
+##   double-entry once that lands).
+## * `resolveDeductionsPath` reads `steuerzahler.abzuege` (TSV path;
+##   optional). ESt warns when both the conf key and `--deductions`
+##   are absent unless `--force` is passed.
+## * `resolveRentePath` reads the rente source's `rente=` key
+##   (Anlage R TSV; one row per Rente/Leistung).
 ##
 ## Relative paths in all these resolve against the conf's own directory.
 
@@ -55,6 +63,10 @@ type
     deductions*: string              ## optional TSV path for ESt deductions
                                      ## (vor/sa/agb/per-kid codes). Relative
                                      ## to confDir.
+    alleinerziehend*: bool           ## §24b Entlastungsbetrag für
+                                     ## Alleinerziehende. Einzelveranlagung
+                                     ## only; requires at least one kid
+                                     ## with haushalt=a.
 
   Spouse* = object
     present*: bool
@@ -63,7 +75,8 @@ type
     religion*, profession*, kvArt*: string
 
   Kid* = object
-    firstname*, lastname*: string    ## from section name (last word = last)
+    firstname*, lastname*: string    ## from the section's `name=` key
+                                     ## (last word = last, rest = first)
     birthdate*, idnr*: string
     kindschaftsverhaeltnis*: string  ## Person A; default "1" (leibliches Kind)
     kindschaftsverhaeltnisB*: string ## Person B; unset = don't emit K_Verh_B
@@ -79,27 +92,60 @@ type
     wohnsitzVon*, wohnsitzBis*: string
                                      ## Wohnsitz im Inland (DD.MM); default
                                      ## follows verhaeltnisVon/verhaeltnisBis.
+    haushalt*: string                ## Kinderbetreuungskosten Haushalt-marker:
+                                     ## "a" (Person A), "b" (Person B), or
+                                     ## "beide" (default for Zusammenveranlagung).
+                                     ## Defaults: Zusammen -> "beide",
+                                     ## Einzel -> "a".
+    haushaltElternGetrennt*: string  ## Einzelveranlagung only: "1" if the
+                                     ## child's parents live in separate
+                                     ## households. Default: "1" under
+                                     ## Einzelveranlagung, unset otherwise.
 
   SourceKind* = enum
     skGewerbe    ## Anlage G (Gewerbebetrieb)
     skFreelance  ## Anlage S (Selbstaendige Arbeit)
     skKap        ## Anlage KAP
+    skRente      ## Anlage R (Renten / sonstige Leistungen)
 
   Source* = object
-    name*: string              ## from section name
+    name*: string              ## display / handle (from section's `name=`
+                               ## key, or the `typ` value when no name is
+                               ## given)
     kind*: SourceKind
     owner*: string             ## "personal" or "spouse"
     taxnumber*: string         ## override; empty = inherit owner's
     rechtsform*: string
     besteuerungsart*: string
+    art*: string               ## Art des Betriebs (EÜR E6000017). Optional;
+                               ## default "Dienstleistungen".
     vorauszahlungen*: float    ## EÜR sources only
     euer*: string              ## EÜR data TSV path (income and costs).
-                               ## Optional — unset sources submit
-                               ## zeros with a warning. Relative paths
-                               ## resolve against the conf dir.
+                               ## Optional — unset sources submit zeros
+                               ## with a warning. Relative paths resolve
+                               ## against the conf dir.
+    rente*: string             ## Anlage R TSV path. Relative paths resolve
+                               ## against the conf dir.
     ## KAP-only:
     gains*, tax*, soli*, kirchensteuer*, sparerPauschbetrag*: float
+    auslaendischeQuellensteuer*: float   ## Z.41 anrechenbare ausl. Quellensteuer
+    nichtAnrechenbarAqs*: float          ## Z.42 nicht anrechenbare ausl. Quellensteuer
+    verlusteAktien*: float               ## Z.23 Verluste Aktienveräußerung
+    verlusteSonstige*: float             ## Z.24 sonstige Verluste
     guenstigerpruefung*: bool
+    steuerabzug*: bool                   ## KAP: true = gains went through
+                                         ## inländischer Steuerabzug (KapESt
+                                         ## withheld at source); false = no
+                                         ## German withholding. Default: auto
+                                         ## — true when tax/soli/kirchensteuer
+                                         ## are set, else false.
+    steuerabzugSet*: bool                ## whether `steuerabzug` was set
+                                         ## explicitly in the conf (vs auto).
+    auslaendisch*: bool                  ## KAP: foreign source (Zeile 19
+                                         ## "Ausländische Kapitalerträge").
+                                         ## Only consulted when the source
+                                         ## has no Steuerabzug. Default false
+                                         ## (inländisch, Zeile 18).
 
   Auth* = object
     ## Raw [auth] values from the conf; paths not yet resolved.
@@ -180,6 +226,7 @@ func rechtsformFromName(name: string): string =
 
 proc applyPersonal(p: var Personal, key, val: string) =
   case key
+  of "name":                            discard  ## handled by section dispatch
   of "geburtsdatum", "birthdate":       p.birthdate = val
   of "idnr":                            p.idnr = val
   of "steuernr", "steuernummer", "taxnumber":
@@ -193,6 +240,7 @@ proc applyPersonal(p: var Personal, key, val: string) =
   of "beruf", "profession":             p.profession = val
   of "krankenkasse", "kv_art", "kvart": p.kvArt = val
   of "abzuege":                         p.deductions = val
+  of "alleinerziehend":                 p.alleinerziehend = parseBool(val)
   of "year", "jahr":
     try: p.year = parseInt(val.strip)
     except ValueError: discard
@@ -200,6 +248,7 @@ proc applyPersonal(p: var Personal, key, val: string) =
 
 proc applySpouse(s: var Spouse, key, val: string) =
   case key
+  of "name":                            discard
   of "geburtsdatum", "birthdate":       s.birthdate = val
   of "idnr":                            s.idnr = val
   of "steuernr", "steuernummer", "taxnumber":
@@ -215,6 +264,7 @@ proc applySpouse(s: var Spouse, key, val: string) =
 
 proc applyKid(k: var Kid, key, val: string) =
   case key
+  of "name":                      discard
   of "geburtsdatum", "birthdate": k.birthdate = val
   of "idnr":                      k.idnr = val
   of "verhaeltnis", "kindschaftsverhaeltnis":
@@ -230,6 +280,13 @@ proc applyKid(k: var Kid, key, val: string) =
   of "verhaeltnis_bis", "verhaeltnisbis": k.verhaeltnisBis = normalizeDayMonth(val)
   of "wohnsitz_von", "wohnsitzvon":       k.wohnsitzVon = normalizeDayMonth(val)
   of "wohnsitz_bis", "wohnsitzbis":       k.wohnsitzBis = normalizeDayMonth(val)
+  of "haushalt":                          k.haushalt = haushaltMap.resolve(val)
+  of "haushalt_eltern_getrennt", "haushaltelterngetrennt":
+    # Tri-state: "" (unset/default), "0" (explicit no), "1" (explicit
+    # yes). Under Einzelveranlagung the default is "1" (separated), but
+    # cohabiting unmarried parents need to override with `= 0`, so we
+    # must preserve the distinction between "user said no" and "unset".
+    k.haushaltElternGetrennt = (if parseBool(val): "1" else: "0")
   else: discard
 
 proc applyAuth(a: var Auth, key, val: string) =
@@ -241,12 +298,20 @@ proc applyAuth(a: var Auth, key, val: string) =
 
 proc applySource(s: var Source, key, val: string) =
   case key
-  of "steuernr", "steuernummer", "taxnumber": s.taxnumber = val
-  of "rechtsform": s.rechtsform = rechtsformMap.resolve(val)
+  of "name", "typ":                                       discard
+  of "steuernr", "steuernummer", "taxnumber":             s.taxnumber = val
+  of "rechtsform":                                        s.rechtsform = rechtsformMap.resolve(val)
   of "versteuerung", "besteuerungsart":
     s.besteuerungsart = besteuerungsartMap.resolve(val)
-  of "owner": s.owner = val.toLowerAscii
-  of "euer": s.euer = val
+  of "art":                                               s.art = val
+  of "owner":                                             s.owner = val.toLowerAscii
+  of "euer":                                              s.euer = val
+  of "rente", "renten":                                   s.rente = val
+  of "steuerabzug":
+    let v = val.strip.toLowerAscii
+    s.steuerabzugSet = true
+    s.steuerabzug = not (v == "no" or v == "nein" or v == "0" or v == "false")
+  of "ausland", "auslaendisch":                           s.auslaendisch = parseBool(val)
   of "vorauszahlungen":                                   setFloat(s.vorauszahlungen, val)
   of "gains":                                             setFloat(s.gains, val)
   of "tax":                                               setFloat(s.tax, val)
@@ -254,6 +319,12 @@ proc applySource(s: var Source, key, val: string) =
   of "kirchensteuer":                                     setFloat(s.kirchensteuer, val)
   of "pauschbetrag", "sparer_pauschbetrag",
      "sparerpauschbetrag":                                setFloat(s.sparerPauschbetrag, val)
+  of "auslaendische_quellensteuer",
+     "auslaendischequellensteuer", "aqs":                 setFloat(s.auslaendischeQuellensteuer, val)
+  of "nicht_anrechenbar_aqs",
+     "nichtanrechenbaraqs":                               setFloat(s.nichtAnrechenbarAqs, val)
+  of "verluste_aktien", "verlusteaktien":                 setFloat(s.verlusteAktien, val)
+  of "verluste_sonstige", "verlustesonstige":             setFloat(s.verlusteSonstige, val)
   of "guenstigerpruefung":                                s.guenstigerpruefung = parseBool(val)
   else: discard
 
@@ -264,11 +335,12 @@ type
     keys: OrderedTable[string, string]
 
   SectionKind = enum
-    sPersonal, sSpouse, sAuth, sKid, sFreelance, sGewerbe, sKap, sCompany
+    sPersonal, sSpouse, sAuth, sKid, sFreelance, sGewerbe, sKap, sRente
 
 proc readSections(path: string): seq[RawSection] =
-  ## Parse the INI into raw sections preserving key order and duplicates of [<name>].
-  ## Each distinct section occurrence is a separate RawSection; callers merge.
+  ## Parse the INI via parsecfg's loop (`next()`) mode so duplicate
+  ## `[section]` headers are preserved — each header-to-header span
+  ## becomes its own `RawSection`.
   let stream = newFileStream(path, fmRead)
   if stream == nil:
     raise newException(IOError, "Cannot open config file: " & path)
@@ -302,49 +374,94 @@ proc readSections(path: string): seq[RawSection] =
   if inSection:
     result.add(current)
 
-proc classify(sec: RawSection, conf: VikingConf): SectionKind =
+func normalizeTyp(val: string): string =
+  ## Fold known aliases into one of: "freiberuflich", "gewerbe",
+  ## "kapital", "rente". Unknown values pass through so the caller can
+  ## report them.
+  case val.strip.toLowerAscii
+  of "freiberuflich", "freiberuf", "freelance",
+     "selbstaendig", "selbststaendig": "freiberuflich"
+  of "gewerbe", "gewerbebetrieb", "einzelgewerbe": "gewerbe"
+  of "kapital", "kap", "kapitalertrag", "kapitalertraege": "kapital"
+  of "rente", "renten", "versorgung":              "rente"
+  else:                                            val.strip.toLowerAscii
+
+proc classifyEinkommen(sec: RawSection): tuple[kind: SourceKind, err: string] =
+  let raw = sec.keys.getOrDefault("typ", "")
+  let t = normalizeTyp(raw)
+  case t
+  of "freiberuflich": (skFreelance, "")
+  of "gewerbe":       (skGewerbe,   "")
+  of "kapital":       (skKap,       "")
+  of "rente":         (skRente,     "")
+  of "":
+    (skGewerbe,
+     "[einkommen]: `typ` key required " &
+     "(expected: freiberuflich, gewerbe, kapital, rente)")
+  else:
+    (skGewerbe,
+     "[einkommen]: unknown typ `" & raw.strip &
+     "` (expected: freiberuflich, gewerbe, kapital, rente)")
+
+proc classify(sec: RawSection, conf: VikingConf,
+              errors: var seq[string]): tuple[kind: SectionKind, ok: bool] =
   case sec.name
-  of "auth":      return sAuth
-  of "freiberuf": return sFreelance
-  of "gewerbe":   return sGewerbe
-  else: discard
-  if "verhaeltnis" in sec.keys or "kindschaftsverhaeltnis" in sec.keys:
-    return sKid
-  if "guenstigerpruefung" in sec.keys or
-     "pauschbetrag" in sec.keys or
-     "sparer_pauschbetrag" in sec.keys:
-    return sKap
-  if rechtsformFromName(sec.rawName) != "":
-    return sCompany
-  if conf.personal.lastname == "" and conf.personal.firstname == "":
-    return sPersonal
-  let fullName = (conf.personal.firstname & " " & conf.personal.lastname).strip
-  if fullName.toLowerAscii == sec.name:
-    return sPersonal
-  # A later person-named section with an IdNr is the co-filing spouse
-  # (Zusammenveranlagung). An IdNr is only issued to natural persons, so
-  # companies/sources never carry one.
-  if "idnr" in sec.keys:
-    return sSpouse
-  sCompany  # fallback: Einzelgewerbe named after owner
+  of "auth":         return (sAuth, true)
+  of "steuerzahler":
+    let sectionName = sec.keys.getOrDefault("name", "").strip
+    if conf.personal.firstname == "" and conf.personal.lastname == "":
+      return (sPersonal, true)
+    let personalName = (conf.personal.firstname & " " &
+                        conf.personal.lastname).strip
+    if sectionName != "" and sectionName == personalName:
+      return (sPersonal, true)
+    if conf.spouse.present:
+      let spouseName = (conf.spouse.firstname & " " &
+                        conf.spouse.lastname).strip
+      if sectionName != "" and sectionName == spouseName:
+        return (sSpouse, true)
+    return (sSpouse, true)
+  of "kind":         return (sKid, true)
+  of "einkommen":
+    let (k, err) = classifyEinkommen(sec)
+    if err != "":
+      errors.add(err)
+      return (sGewerbe, false)
+    let srcKind = case k
+      of skFreelance: sFreelance
+      of skGewerbe:   sGewerbe
+      of skKap:       sKap
+      of skRente:     sRente
+    return (srcKind, true)
+  else:
+    errors.add("unknown section `[" & sec.rawName &
+               "]` (expected: steuerzahler, kind, einkommen, auth)")
+    return (sGewerbe, false)
 
 proc applyPersonalSection(conf: var VikingConf, sec: RawSection) =
-  if conf.personal.lastname == "":
-    let (fn, ln) = parseFullName(sec.rawName)
+  let nm = sec.keys.getOrDefault("name", "").strip
+  if nm != "" and conf.personal.lastname == "":
+    let (fn, ln) = parseFullName(nm)
     conf.personal.firstname = fn
     conf.personal.lastname = ln
   for k, v in sec.keys: applyPersonal(conf.personal, k, v)
 
 proc applySpouseSection(conf: var VikingConf, sec: RawSection) =
   conf.spouse.present = true
-  if conf.spouse.lastname == "":
-    let (fn, ln) = parseFullName(sec.rawName)
+  let nm = sec.keys.getOrDefault("name", "").strip
+  if nm != "" and conf.spouse.lastname == "":
+    let (fn, ln) = parseFullName(nm)
     conf.spouse.firstname = fn
     conf.spouse.lastname = ln
   for k, v in sec.keys: applySpouse(conf.spouse, k, v)
 
-proc applyKidSection(conf: var VikingConf, sec: RawSection) =
-  let (fn, ln) = parseFullName(sec.rawName)
+proc applyKidSection(conf: var VikingConf, sec: RawSection,
+                     errors: var seq[string]) =
+  let nm = sec.keys.getOrDefault("name", "").strip
+  if nm == "":
+    errors.add("[kind]: `name` key required (full name, e.g. `name = Max Maier`)")
+    return
+  let (fn, ln) = parseFullName(nm)
   var kidIdx = -1
   for i, k in conf.kids:
     if k.firstname == fn and k.lastname == ln:
@@ -357,25 +474,43 @@ proc applyKidSection(conf: var VikingConf, sec: RawSection) =
   else:
     for k, v in sec.keys: applyKid(conf.kids[kidIdx], k, v)
 
-proc applySourceSection(conf: var VikingConf, sec: RawSection, kind: SourceKind,
-                        name: string, defaultRechtsform: string) =
+proc applySourceSection(conf: var VikingConf, sec: RawSection, kind: SourceKind) =
+  ## Handle-name rule:
+  ##   * explicit `name=` wins
+  ##   * otherwise the handle is the type slug (freiberuf / gewerbe /
+  ##     rente); KAP requires an explicit name.
+  let explicitName = sec.keys.getOrDefault("name", "").strip
+  var handle = explicitName
+  if handle == "":
+    handle = case kind
+      of skFreelance: "freiberuf"
+      of skGewerbe:   "gewerbe"
+      of skRente:     "rente"
+      of skKap:       ""
+  let defaultRechtsform = case kind
+    of skFreelance: "140"
+    of skGewerbe:
+      let rf = rechtsformFromName(explicitName)
+      if rf != "": rf else: "120"
+    else: ""
+
   var idx = -1
   for i, s in conf.sources:
-    if s.name == name:
+    if s.kind == kind and s.name == handle:
       idx = i
       break
   if idx < 0:
-    var src = Source(name: name, kind: kind, owner: "personal",
+    var src = Source(name: handle, kind: kind, owner: "personal",
                      rechtsform: defaultRechtsform)
     for k, v in sec.keys: applySource(src, k, v)
     conf.sources.add(src)
   else:
-    conf.sources[idx].kind = kind
     if conf.sources[idx].rechtsform == "":
       conf.sources[idx].rechtsform = defaultRechtsform
     for k, v in sec.keys: applySource(conf.sources[idx], k, v)
 
 const personalKeys = toHashSet([
+  "name",
   "year", "jahr",
   "geburtsdatum", "birthdate",
   "idnr",
@@ -389,9 +524,11 @@ const personalKeys = toHashSet([
   "beruf", "profession",
   "krankenkasse", "kv_art", "kvart",
   "abzuege",
+  "alleinerziehend",
 ])
 
 const spouseKeys = toHashSet([
+  "name",
   "geburtsdatum", "birthdate",
   "idnr",
   "steuernr", "steuernummer", "taxnumber",
@@ -405,6 +542,7 @@ const spouseKeys = toHashSet([
 ])
 
 const kidKeys = toHashSet([
+  "name",
   "geburtsdatum", "birthdate",
   "idnr",
   "verhaeltnis", "kindschaftsverhaeltnis",
@@ -417,20 +555,31 @@ const kidKeys = toHashSet([
   "verhaeltnis_bis", "verhaeltnisbis",
   "wohnsitz_von", "wohnsitzvon",
   "wohnsitz_bis", "wohnsitzbis",
+  "haushalt",
+  "haushalt_eltern_getrennt", "haushaltelterngetrennt",
 ])
 
 const authKeys = toHashSet(["cert", "pin", "pincmd"])
 
 const sourceKeys = toHashSet([
+  "name", "typ",
   "steuernr", "steuernummer", "taxnumber",
   "rechtsform",
   "versteuerung", "besteuerungsart",
+  "art",
   "owner",
   "euer",
+  "rente", "renten",
   "vorauszahlungen",
   "gains", "tax", "soli", "kirchensteuer",
   "pauschbetrag", "sparer_pauschbetrag", "sparerpauschbetrag",
+  "auslaendische_quellensteuer", "auslaendischequellensteuer", "aqs",
+  "nicht_anrechenbar_aqs", "nichtanrechenbaraqs",
+  "verluste_aktien", "verlusteaktien",
+  "verluste_sonstige", "verlustesonstige",
   "guenstigerpruefung",
+  "steuerabzug",
+  "ausland", "auslaendisch",
 ])
 
 func knownKeys(kind: SectionKind): HashSet[string] =
@@ -440,12 +589,13 @@ func knownKeys(kind: SectionKind): HashSet[string] =
   of sKid:                      kidKeys
   of sAuth:                     authKeys
   of sFreelance, sGewerbe,
-     sKap, sCompany:            sourceKeys
+     sKap, sRente:              sourceKeys
 
 proc applySection(conf: var VikingConf, sec: RawSection,
                   malformedKeys: HashSet[string],
                   errors: var seq[string]) =
-  let kind = classify(sec, conf)
+  let (kind, ok) = classify(sec, conf, errors)
+  if not ok: return
   let known = knownKeys(kind)
   for k in sec.keys.keys:
     if k in malformedKeys: continue  # already reported as malformed line
@@ -459,17 +609,15 @@ proc applySection(conf: var VikingConf, sec: RawSection,
   of sSpouse:
     applySpouseSection(conf, sec)
   of sKid:
-    applyKidSection(conf, sec)
+    applyKidSection(conf, sec, errors)
   of sFreelance:
-    applySourceSection(conf, sec, skFreelance, sec.name, "140")
+    applySourceSection(conf, sec, skFreelance)
   of sGewerbe:
-    applySourceSection(conf, sec, skGewerbe, sec.name, "120")
+    applySourceSection(conf, sec, skGewerbe)
   of sKap:
-    applySourceSection(conf, sec, skKap, sec.rawName, "")
-  of sCompany:
-    let rf = rechtsformFromName(sec.rawName)
-    let code = if rf != "": rf else: "120"
-    applySourceSection(conf, sec, skGewerbe, sec.rawName, code)
+    applySourceSection(conf, sec, skKap)
+  of sRente:
+    applySourceSection(conf, sec, skRente)
 
 proc findMalformedLines(path: string):
     tuple[errors: seq[string], keys: HashSet[string]] =
@@ -586,7 +734,7 @@ proc resolvePin*(conf: VikingConf): string =
     "[auth]: set pin= (plaintext PIN file path, or the PIN itself) " &
     "or pincmd= (shell command that prints the PIN on stdout)")
 
-## ---- EÜR TSV resolution ----
+## ---- EÜR / Rente TSV resolution ----
 
 proc resolveEuerPath*(conf: VikingConf, src: Source): string =
   ## EÜR TSV path (income + costs) from the source's `euer=` key.
@@ -597,11 +745,19 @@ proc resolveEuerPath*(conf: VikingConf, src: Source): string =
   conf.resolveRelative(src.euer)
 
 proc resolveDeductionsPath*(conf: VikingConf): string =
-  ## Deductions TSV path from the taxpayer section's `deductions=` key.
+  ## Deductions TSV path from the taxpayer section's `abzuege=` key.
   ## Optional — callers fall back to the `--deductions` CLI flag (or
   ## warn with `--force` semantics) when unset.
   if conf.personal.deductions == "": return ""
   conf.resolveRelative(conf.personal.deductions)
+
+proc resolveRentePath*(conf: VikingConf): string =
+  ## Anlage R TSV path from the first `[einkommen] typ=rente` source.
+  ## Optional — when unset, no Anlage R summary is emitted.
+  for s in conf.sources:
+    if s.kind == skRente and s.rente != "":
+      return conf.resolveRelative(s.rente)
+  ""
 
 ## ---- Accessors ----
 
@@ -680,12 +836,18 @@ proc checkSource(conf: VikingConf, src: Source, required: openArray[string]): se
       result.add(msg)
     elif f == "taxnumber" and v.len != 13:
       result.add("source [" & src.name & "].taxnumber must be 13 digits, got " & $v.len)
+  if src.art.len > 25:
+    result.add("source [" & src.name & "].art must be <= 25 characters, got " &
+               $src.art.len)
 
 func validateForEst*(conf: VikingConf): seq[string] =
   result = checkPersonal(conf.personal,
     ["firstname", "lastname", "birthdate", "taxnumber", "iban"])
   if conf.personal.kvArt notin ["privat", "gesetzlich"]:
     result.add("personal.kv_art must be 'privat' or 'gesetzlich'")
+  if conf.personal.profession.len > 25:
+    result.add("personal.beruf must be <= 25 characters, got " &
+               $conf.personal.profession.len)
   for src in conf.euerSources:
     result.add(checkSource(conf, src, ["taxnumber", "rechtsform"]))
 
